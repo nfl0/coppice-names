@@ -377,7 +377,13 @@ impl NamesApplication {
         }
     }
 
-    fn save_snapshot(&self, core: &CoreRuntime) -> Result<Vec<u8>, NamesRuntimeSnapshotError> {
+    /// Saves the Names application-owned snapshot payload against the supplied
+    /// canonical Core position. Hosts composing Names with another public
+    /// application can persist Core and each application independently.
+    pub fn save_application_snapshot(
+        &self,
+        core: &CoreRuntime,
+    ) -> Result<Vec<u8>, NamesRuntimeSnapshotError> {
         validate_names_core_position(self.tip, core)?;
         validate_names_state_shape(&self.state, &self.deployment, self.tip.height)?;
         let checkpoint = core
@@ -422,7 +428,9 @@ impl NamesApplication {
         serde_json::to_vec(&stored).map_err(|_| NamesRuntimeSnapshotError::Encoding)
     }
 
-    fn load_snapshot(
+    /// Restores the Names application-owned snapshot payload against a
+    /// validated canonical Core position.
+    pub fn load_application_snapshot(
         deployment: DeploymentParameters,
         core: &CoreRuntime,
         bytes: &[u8],
@@ -1020,7 +1028,7 @@ impl NamesRuntime {
                 .core
                 .save_snapshot()
                 .map_err(NamesRuntimeSnapshotError::Core)?,
-            application_snapshot: self.names.save_snapshot(&self.core)?,
+            application_snapshot: self.names.save_application_snapshot(&self.core)?,
         };
         serde_json::to_vec(&stored).map_err(|_| NamesRuntimeSnapshotError::Encoding)
     }
@@ -1051,8 +1059,11 @@ impl NamesRuntime {
             .map_err(|_| NamesRuntimeSnapshotError::Initialization)?;
         let core = CoreRuntime::load_snapshot(parameters, configuration, &stored.core_snapshot)
             .map_err(NamesRuntimeSnapshotError::Core)?;
-        let names =
-            NamesApplication::load_snapshot(deployment, &core, &stored.application_snapshot)?;
+        let names = NamesApplication::load_application_snapshot(
+            deployment,
+            &core,
+            &stored.application_snapshot,
+        )?;
         if store_application_tip(names.tip).height != stored.tip.height
             || names.tip.block_hash != stored.tip.block_hash
             || names.state_root != stored.application_state_root

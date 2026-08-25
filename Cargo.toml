@@ -20,7 +20,7 @@ halo2_gadgets = { version = "0.5", default-features = false }
 halo2_proofs = "=0.3.2"
 hex = "0.4"
 incrementalmerkletree = { version = "0.8.2", features = ["legacy-api"] }
-orchard = { version = "0.15.0", features = ["std"] }
+orchard = { version = "=0.15.3", features = ["std"] }
 pasta_curves = "0.5"
 rand_chacha = "0.3"
 rand_core = "0.6"
@@ -39,7 +39,7 @@ zip321 = { git = "https://github.com/zcash/librustzcash.git", rev = "6c07e5f3297
 zip32 = "0.2.1"
 
 [patch.crates-io]
-orchard = { path = "../coppice/vendor/orchard" }
+orchard = { git = "https://github.com/nfl0/orchard-coppice.git", rev = "9907318813ceb8d66a9f3fa9fe7ea773a53899a4" }
 zcash_primitives = { git = "https://github.com/zcash/librustzcash.git", rev = "6c07e5f3297febf469e5cc8d0b91321e0767cdd7" }
 zcash_protocol = { git = "https://github.com/zcash/librustzcash.git", rev = "6c07e5f3297febf469e5cc8d0b91321e0767cdd7" }
 zcash_transparent = { git = "https://github.com/zcash/librustzcash.git", rev = "6c07e5f3297febf469e5cc8d0b91321e0767cdd7" }

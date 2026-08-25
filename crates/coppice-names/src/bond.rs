@@ -1,4 +1,8 @@
-//! Dedicated Coppice bond-proof relation and its wallet-facing prover.
+//! Dedicated Coppice Names application BondProof relation and wallet-facing prover.
+//!
+//! BondProof is a non-consensus proof over a real Ironwood note. It composes
+//! Orchard circuit gadgets to prove private membership, value, position, and
+//! ownership facts without changing Zcash transaction validity.
 use crate::{
     bond_tag::{derive_v1_bond_tag, v1_bond_tag_domain_field},
     config::{DeploymentEncodingError, DeploymentParameters, Rendezvous},

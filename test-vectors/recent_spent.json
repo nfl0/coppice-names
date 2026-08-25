@@ -1,0 +1,39 @@
+{
+  "status": "generated_from_protocol_spec",
+  "requirement_ids": [
+    "P-SPENT-001",
+    "P-SPENT-002",
+    "P-SPENT-003",
+    "P-SPENT-004"
+  ],
+  "vectors": [
+    {
+      "id": "empty-at-activation",
+      "oldest_retained_height": 10,
+      "canonical_preimage_hex": "0000000a00000000",
+      "expected_root_hex": "d2133dfb47460feb97fcad9ea1845502869bd43c3a018901fdb8ae62fd8a04d1"
+    },
+    {
+      "id": "two-sorted",
+      "oldest_retained_height": 101,
+      "canonical_preimage_hex": "000000650000000221212121212121212121212121212121212121212121212121212121212121210000006f31313131313131313131313131313131313131313131313131313131313131310000006e",
+      "expected_root_hex": "58047d75bdae444ac0f9d915f8fdac59f26fab2ca4baccf19d76ebb8629349d2"
+    },
+    {
+      "id": "pruning-boundary",
+      "activation_height": 10,
+      "height": 120,
+      "bond_note_max_age_blocks": 100,
+      "commit_ttl_blocks": 20,
+      "expected_oldest_retained_height": 10
+    },
+    {
+      "id": "pruning-after-window",
+      "activation_height": 10,
+      "height": 250,
+      "bond_note_max_age_blocks": 100,
+      "commit_ttl_blocks": 20,
+      "expected_oldest_retained_height": 131
+    }
+  ]
+}

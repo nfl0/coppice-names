@@ -1,0 +1,22 @@
+{
+  "status": "generated_from_protocol_spec",
+  "note": "Fixture parameters are for conformance only; they do not declare a public deployment.",
+  "requirement_ids": [
+    "P-DEP-001",
+    "P-DEP-002"
+  ],
+  "input": {
+    "network_id_hex": "636f70706963652d726567746573742d7631",
+    "network_type": "Regtest",
+    "network_type_code": 3,
+    "activation_height": 10,
+    "minimum_bond_value": 100000000,
+    "commit_ttl_blocks": 20,
+    "reuse_delay_blocks": 10,
+    "bond_note_max_age_blocks": 100,
+    "rendezvous_ivk_hex": "65deb2b3ee7ac69020543f40f21122cb6dc1f4201a329fcdf9d5e3bb2dfbbabe29d542352fe36c3c7b24c2989dc9d0000b9e04f444e05dc4538bde395c0e6008",
+    "rendezvous_receiver_hex": "9ec59e4d447ba285086cc3456cadf62004a19b6a7989c726daaa9944a6cdbf25f7bfa51afa15b66da53881"
+  },
+  "canonical_preimage_hex": "0012636f70706963652d726567746573742d7631030000000a0000000005f5e100000000140000000a00000064004065deb2b3ee7ac69020543f40f21122cb6dc1f4201a329fcdf9d5e3bb2dfbbabe29d542352fe36c3c7b24c2989dc9d0000b9e04f444e05dc4538bde395c0e6008002b9ec59e4d447ba285086cc3456cadf62004a19b6a7989c726daaa9944a6cdbf25f7bfa51afa15b66da53881",
+  "expected_deployment_id_hex": "0f769b29c0ed5c5f9a101300e15c846ca15aeae2198043da3e785f839a56f5d7"
+}

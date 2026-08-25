@@ -11,8 +11,8 @@ publish = false
 workspace = true
 
 [dependencies]
+coppice-names.workspace = true
 coppice.workspace = true
-coppice-core.workspace = true
 coppice-librustzcash.workspace = true
 orchard.workspace = true
 rand_core.workspace = true

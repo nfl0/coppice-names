@@ -1,6 +1,6 @@
 use std::{collections::BTreeSet, fmt::Debug};
 
-use coppice::{
+use coppice_names::{
     bond_tag::{BondTagError, derive_v1_bond_tag},
     names_runtime::NamesRuntime,
     state::CoppiceState,
@@ -247,30 +247,30 @@ mod tests {
         let mut names = BTreeMap::new();
         names.insert(
             "active".to_owned(),
-            coppice::record::NameRecord {
+            coppice_names::record::NameRecord {
                 owner_pk: [1; 32],
                 bond_tag: [2; 32],
                 sequence: 0,
                 address: Vec::new(),
-                status: coppice::record::NameStatus::Active,
+                status: coppice_names::record::NameStatus::Active,
             },
         );
         names.insert(
             "terminal".to_owned(),
-            coppice::record::NameRecord {
+            coppice_names::record::NameRecord {
                 owner_pk: [1; 32],
                 bond_tag: [3; 32],
                 sequence: 1,
                 address: Vec::new(),
-                status: coppice::record::NameStatus::Released {
+                status: coppice_names::record::NameStatus::Released {
                     terminal_height: 10,
                 },
             },
         );
         let state = CoppiceState::from_authoritative_parts(
             names,
-            coppice::pending::PendingCommitments::new(),
-            coppice::recent_spent::RecentSpent::new(),
+            coppice_names::pending::PendingCommitments::new(),
+            coppice_names::recent_spent::RecentSpent::new(),
         )
         .unwrap();
         assert_eq!(

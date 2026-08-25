@@ -411,7 +411,7 @@ pub fn reconcile_locks<B: CoppiceLockBackend>(
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
 
-    use coppice::{
+    use coppice_names::{
         config::{DeploymentParameters, REGTEST, Rendezvous},
         constants::REGTEST_ACTIVATION_HEIGHT,
         owner::{OwnerSigningKey, owner_key_bytes},
@@ -548,7 +548,7 @@ mod tests {
     }
 
     fn tag(id: u8) -> [u8; 32] {
-        coppice::bond_tag::derive_v1_bond_tag(&[id; 32]).unwrap()
+        coppice_names::bond_tag::derive_v1_bond_tag(&[id; 32]).unwrap()
     }
 
     fn deployment() -> DeploymentParameters {

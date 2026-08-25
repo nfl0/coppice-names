@@ -1,3 +1,4 @@
+use ::coppice as coppice_core;
 use coppice::{
     config::{DeploymentParameters, DeploymentValidationError, Rendezvous},
     envelope::{self, Operation},
@@ -170,7 +171,7 @@ fn structurally_valid_but_unsupported_runtime_semantics_are_rejected() {
 #[test]
 fn three_identity_vector_and_production_transport_binding_match() {
     let fixture: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../../coppice/test-vectors/application_envelopes.json"
+        "../../../test-vectors/application_envelopes.json"
     ))
     .unwrap();
     let derivation = &fixture["application_id_derivation"];
@@ -271,7 +272,7 @@ fn three_identity_vector_and_production_transport_binding_match() {
 #[test]
 fn core_runtime_identity_is_independent_of_names_policy_and_application_activation() {
     let envelope_fixture: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../../coppice/test-vectors/application_envelopes.json"
+        "../../../test-vectors/application_envelopes.json"
     ))
     .unwrap();
     let (_, runtime_parameters) = runtime_fixture();

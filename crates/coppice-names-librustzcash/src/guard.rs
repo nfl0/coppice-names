@@ -1,6 +1,6 @@
 use std::fmt::Debug;
 
-use coppice::names_runtime::{CoreReplayTip, NamesRuntime};
+use coppice_names::names_runtime::{CoreReplayTip, NamesRuntime};
 
 use crate::{
     CoppiceLockBackend, IronwoodViewingCapability, PendingRegistrationCollection,
@@ -170,7 +170,7 @@ where
 mod tests {
     use std::collections::BTreeMap;
 
-    use coppice::{
+    use coppice_names::{
         config::{DeploymentParameters, REGTEST, Rendezvous},
         constants::REGTEST_ACTIVATION_HEIGHT,
         names_runtime::{CoreReplayActivationCheckpoint, IronwoodFrontier, NamesRuntime},
@@ -388,7 +388,7 @@ mod tests {
     }
 
     fn tag(id: u8) -> [u8; 32] {
-        coppice::bond_tag::derive_v1_bond_tag(&[id; 32]).unwrap()
+        coppice_names::bond_tag::derive_v1_bond_tag(&[id; 32]).unwrap()
     }
 
     fn run<Proposal>(

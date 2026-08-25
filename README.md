@@ -19,7 +19,9 @@ test-vectors/                        Names normative vectors
 The application uses Coppice's public `CoppiceApplication` contract and
 `CoppiceRuntime` compositor. Its Core+Names snapshot wrapper remains a
 Names-owned compatibility format around the generic Core and application
-snapshots.
+snapshots. Generic CompactBlock ingestion and host-authoritative canonical
+reconciliation are imported from Coppice; this repository adds only
+Names-specific wallet and policy reconciliation.
 
 ## License
 

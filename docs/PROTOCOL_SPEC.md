@@ -1,26 +1,34 @@
-# Coppice Protocol Specification
+# Coppice Names v1 Protocol Specification
 
-**Status:** Normative v1 specification; production-authoritative code path; pre-release
+**Status:** Normative Names v1 specification; pre-release
 **Protocol version:** 1  
 **Wire version:** 1  
 **Last architecture decision:** 2026-08-24
 
 ## 1. Purpose and authority
 
-This document is the normative interoperability specification for Coppice v1.
+This document is the normative interoperability specification for Coppice
+Names v1. It owns NamesDeploymentId, the Names application identity/version,
+COMMIT/REVEAL/UPDATE/RELEASE, bonds, BondProof, owner signatures, NameTree,
+Names state roots, Names rejection rules, and Names-specific vectors.
 
-A conforming implementation MUST derive the same application state from the
-same canonical Zcash history and validated parameters. For Coppice Names v1,
-that application state is Names state; Core state is the generic canonical
-replay, Ironwood-effect, transport, and checkpoint context. Implementation
-details that do not affect these results are outside this document.
+Generic Core identity, CPV1/CA01 framing, application routing and activation,
+canonical Ironwood effects, replay, persistence, and host reconciliation are
+normatively specified by `coppice/docs/PROTOCOL_SPEC.md` in the Coppice Core
+repository. Generic material retained in this file is compatibility context
+for Names rules and MUST defer to that Core document when wording or APIs
+differ.
+
+A conforming implementation MUST derive the same Names state from the same
+canonical Zcash history and validated parameters. Implementation details that
+do not affect Names results are outside this document.
 
 Precedence for v1 development is:
 
 ```text
 PROTOCOL_SPEC.md
     >
-normative machine-readable test vectors
+Names normative machine-readable test vectors
     >
 IMPLEMENTATION.md
     >
@@ -28,15 +36,16 @@ all historical Coppice documents and code behavior
 ```
 
 Historical `PROTOCOL.md`, `REFERENCE.md`, `SYSTEM_DESIGN*.md`, and existing
-application behavior MUST NOT override this specification.
+application behavior MUST NOT override this specification. Core semantics are
+not redefined here.
 
 The key words MUST, MUST NOT, REQUIRED, SHOULD, SHOULD NOT, and MAY are normative.
 
 ## 2. Protocol model
 
-Coppice Core is an adminless deterministic runtime over the host application's
-accepted canonical Zcash chain. Coppice Names v1 is the first application
-composed with that runtime and derives Names state from the Core context.
+Coppice Names v1 is an adminless deterministic application over the Core
+runtime's host-selected canonical Zcash history. It derives Names state from
+the validated application-scoped Core context.
 
 It has:
 
@@ -48,8 +57,8 @@ It has:
 - no Zcash consensus change.
 
 The host selects canonical Zcash history. Core consumes that history and emits
-canonical Ironwood effects and routed application context. Names v1 consumes
-that context and derives Names state.
+canonical Ironwood effects and routed application context as specified by the
+Coppice Core protocol. Names v1 consumes that context and derives Names state.
 
 Coppice Names v1 has exactly four explicit application operations:
 
@@ -84,9 +93,12 @@ the Coppice v1 protocol scope to the pre-Ironwood Orchard protocol.
 
 ## 3. Conformance rule
 
-For every protocol rule, byte serialization, hash domain, validation condition,
-and state-transition order in this document, an implementation MUST behave
-exactly as specified.
+For every Names-specific protocol rule, byte serialization, hash domain,
+validation condition, and state-transition order in this document, an
+implementation MUST behave exactly as specified. The Core compatibility
+reference below is informative here; Core identity, transport, routing,
+activation, canonical effects, replay, and reconciliation MUST be implemented
+from the authoritative Coppice Core specification.
 
 Unknown or malformed Names v1 operations are deterministic application
 rejections,
@@ -164,6 +176,15 @@ fields inside `CoppiceBondCircuit`, including `bond_tag` derivation and the
 field-valued deployment/context/owner bindings. Implementations MUST NOT replace
 a specified BLAKE2b hash with Poseidon, or a specified Poseidon relation with
 BLAKE2b, without changing the protocol version.
+
+## Core compatibility reference (non-authoritative)
+
+The following identity, activation, envelope, carrier, reduction, and
+reconciliation passages preserve the context used by the frozen Names v1
+vectors. They are not a second Core specification. When this reference and
+`coppice/docs/PROTOCOL_SPEC.md` differ, the Coppice Core document and its
+generic APIs control; the Names-specific rules below control only Names
+payloads, state, cryptography, and policy.
 
 ## P-IDENTITY-001 — Three independent identity domains
 
@@ -1865,7 +1886,8 @@ Properties:
 - it provides no protocol authority;
 - outputs are zero-valued;
 - clients can trial-decrypt compact outputs;
-- full transactions are fetched only for matching candidate transactions.
+- full transactions are fetched only for matching carrier candidates or an
+  explicit extended-effect selector request.
 
 If Coppice is later deployed, its rendezvous capability SHOULD be generated
 through a transparent no-known-spending-key procedure, but protocol correctness
@@ -2111,10 +2133,12 @@ For every compact Ironwood action:
    rendezvous Ironwood IVK (provided by the `orchard` crate);
 3. compare the decrypted recipient to the exact configured rendezvous receiver;
 4. only if both decryption and receiver comparison succeed, mark the
-   transaction as requiring full retrieval.
+   transaction as requiring full retrieval for carrier routing.
 
-A transaction with no exact-receiver matching action requires no full transaction
-fetch for Coppice Core.
+A transaction with no exact-receiver matching action does not require a full
+transaction for Names carrier routing. The host may still use Coppice Core's
+independent extended-effect selector for that transaction; such acquisition
+does not make it a carrier candidate.
 
 ## P-CARRIER-006 — Full candidate verification
 
@@ -2168,7 +2192,8 @@ pub struct CanonicalTxInput {
     pub ironwood_nullifiers: Vec<[u8; 32]>,
     pub ironwood_commitments: Vec<[u8; 32]>,
 
-    pub candidate_full_tx: Option<Vec<u8>>,
+    pub full_transaction_acquisition: FullTransactionAcquisition,
+    pub full_transaction: Option<Vec<u8>>,
 }
 ```
 
@@ -2186,7 +2211,7 @@ Examples:
 - predecessor mismatch;
 - non-increasing tx indexes;
 - malformed commitment bytes from supposed canonical source;
-- required candidate full tx missing;
+- required full transaction missing;
 - full tx txid mismatch;
 - full/compact Ironwood effects mismatch.
 

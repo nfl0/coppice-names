@@ -13,21 +13,21 @@ Mainnet deployment, and no independent security audit has been completed.
 ## Workspace dependency direction
 
 ```text
-coppice-core
-    generic identities, CPV1, CA01, canonical replay, Core persistence
+coppice (external repository)
+    generic identities, CPV1, CA01, canonical replay, persistence,
+    compositor, CompactBlock adapter, and host reconciliation
 
-coppice
-    depends on coppice-core
-    Coppice Names v1 protocol, state, cryptography, application composition
+coppice-names
+    Names v1 protocol, state, cryptography, application composition wrapper
 
-coppice-librustzcash
-    depends on coppice-core and coppice
-    CompactBlock adapter, canonical reconciliation, wallet construction/policy
+coppice-names-librustzcash
+    Names wallet, bond, pending-intent, and protection helpers
 ```
 
-`coppice-core` must never depend on either other crate. The Names crate may
-consume immutable Core contexts, but Core never imports an application state,
-root, operation, policy parameter, or persistence type.
+The generic `coppice-core` implementation must never depend on either other
+repository. The Names crate consumes its public surface through `coppice` and
+may consume immutable Core contexts, but Core never imports an application
+state, root, operation, policy parameter, or persistence type.
 
 ## Identity and activation model
 
@@ -42,9 +42,11 @@ Three non-interchangeable identities are used:
 
 `CoreRuntimeParameters::validate()` must succeed before a `CoreRuntimeId` can
 be derived. Validation includes a cryptographic correspondence check between
-the rendezvous IVK and receiver. Candidate classification and full extraction
-also require the decrypted recipient to equal the exact configured receiver;
-IVK-only decryptability is not enough. Names policy values are absent from the
+the rendezvous IVK and receiver. Carrier classification and carrier-frame
+extraction require the decrypted recipient to equal the exact configured
+receiver; IVK-only decryptability is not enough. A separately selected
+extended-effect transaction need not be a carrier and is still authenticated
+by Core against its compact effects. Names policy values are absent from the
 Core preimage.
 
 Runtime activation belongs to Core. Application activation belongs to the
@@ -62,8 +64,8 @@ CPV1 START binding = CoreRuntimeId
 CPV1 payload        = CA01 || application_id || u16be(version) || payload
 ```
 
-`coppice-core::transport` owns CPV1 framing and strict reconstruction.
-`coppice-core::application` owns the strict CA01 envelope. The maximum CPV1
+`coppice::transport` owns CPV1 framing and strict reconstruction.
+`coppice::application` owns the strict CA01 envelope. The maximum CPV1
 payload is 16,093 bytes and the maximum application payload is 16,055 bytes.
 
 `CoreRuntime` decrypts frames only at its validated exact receiver, reconstructs
@@ -77,7 +79,7 @@ transport or envelopes never fall back to naked Names decoding.
 
 - canonical tip and predecessor validation;
 - canonical transaction ordering and transaction IDs;
-- candidate/full-transaction consistency;
+- compact/full-transaction consistency and independent acquisition reasons;
 - ordered validated Ironwood nullifiers and commitments;
 - Ironwood frontier, root, tree size, and retained checkpoints;
 - block-atomic application;
@@ -85,7 +87,7 @@ transport or envelopes never fall back to naked Names decoding.
 
 Each accepted block emits `CoreBlockContext`. Each transaction context contains
 the height, block hash, transaction index and ID, ordered Ironwood effects, and
-candidate/full-transaction status. `CoreRuntime` pairs this with the routed
+carrier/extended-effect acquisition status. `CoreRuntime` pairs this with the routed
 application message status. Core does not interpret application payload bytes.
 
 Fatal input failures leave the Core tip, frontier, checkpoints, and journal
@@ -131,8 +133,8 @@ is explicit generic configuration. Names v1 calculates its required horizon
 from Names policy and passes that value into Core construction; Core does not
 import the policy.
 
-If the host reorg is older than the retained common ancestor, reconciliation
-returns a rebuild requirement. The adapter rebuilds from the configured
+If the host reorg is older than the retained common ancestor, generic Coppice
+reconciliation returns a rebuild requirement. The host rebuilds from the configured
 activation checkpoint along the host-selected canonical chain. Fresh replay,
 rewind followed by replay, and persisted restoration must converge on the same
 Core frontier and Names root.
@@ -154,16 +156,14 @@ integration atomically replaces the composite manifest after each successful
 block or rewind boundary. The development-only monolithic snapshot is not
 accepted; the host rebuilds it from activation.
 
-## librustzcash adapter
+## Wallet integration boundary
 
-`coppice-librustzcash` is the only bridge between host wallet facts and the
-runtime. It provides:
+The generic `coppice-librustzcash` crate is the bridge between hostile host
+CompactBlocks and any Coppice runtime. It provides strict CompactBlock
+conversion, selective full acquisition, and host-tip-frozen reconciliation; it
+does not know Names. `coppice-names-librustzcash` layers Names-specific wallet
+policy and provides:
 
-- strict CompactBlock conversion into `CoreCanonicalBlockInput`;
-- exact-receiver rendezvous candidate detection before full-transaction
-  fetching;
-- full transaction fetching only for candidates;
-- host-tip-frozen reconciliation, shallow rewind, and deep rebuild signaling;
 - normal librustzcash proposal/construction for CPV1/CA01 Names carriers;
 - wallet-local owned-note inventory, witnesses, bond proofs, pending intents,
   advisory locks, owner operations, and protected-spend guards.
@@ -199,10 +199,11 @@ transactions.
 
 Long-term public surfaces are:
 
-- `coppice-core::{identity, application, transport, replay, runtime}`;
-- `coppice::{names_application, names_runtime}` plus frozen Names protocol
+- `coppice::{identity, application, transport, replay, runtime}`;
+- `coppice-names::{names_application, names_runtime}` plus frozen Names protocol
   modules;
-- `coppice-librustzcash` adapter traits and wallet workflow functions.
+- `coppice-librustzcash` generic adapter traits, plus
+  `coppice-names-librustzcash` wallet workflow functions.
 
 Callers use typed `CoreRuntimeId`, `ApplicationId`, `ApplicationKey`, and
 `NamesDeploymentId`. The production Names composition exposes
@@ -211,7 +212,7 @@ Callers use typed `CoreRuntimeId`, `ApplicationId`, `ApplicationKey`, and
 
 Internal snapshot layouts and wallet filesystem paths are versioned integration
 details, not protocol identifiers. Wallet-specific database and RPC types do
-not enter `coppice-core` or the Names state machine.
+not enter the generic Core or the Names state machine.
 
 ## Required invariants
 
@@ -219,8 +220,8 @@ Every change must preserve:
 
 - Zcash as the sole ordering and fork-choice layer;
 - canonical transaction order and block atomicity;
-- exact candidate/full-transaction validation;
-- candidate-only full transaction fetching;
+- exact compact/full-transaction validation;
+- independent carrier and extended-effect acquisition decisions;
 - deterministic Ironwood frontier/checkpoint tracking;
 - independent Core and application roots/undo state;
 - deterministic rewind/replay and fresh reconstruction;

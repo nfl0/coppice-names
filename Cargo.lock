@@ -302,6 +302,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d52eff69cd5e647efe296129160853a42795992097e8af39800e1060caeea9b"
 
 [[package]]
+name = "coppice"
+version = "0.1.0"
+dependencies = [
+ "coppice-core",
+ "zcash_protocol",
+]
+
+[[package]]
 name = "coppice-core"
 version = "0.1.0"
 dependencies = [
@@ -330,7 +338,7 @@ name = "coppice-names"
 version = "0.1.0"
 dependencies = [
  "blake2b_simd",
- "coppice-core",
+ "coppice",
  "halo2_gadgets",
  "halo2_proofs",
  "hex",
@@ -353,7 +361,7 @@ dependencies = [
 name = "coppice-names-librustzcash"
 version = "0.1.0"
 dependencies = [
- "coppice-core",
+ "coppice",
  "coppice-librustzcash",
  "coppice-names",
  "hex",

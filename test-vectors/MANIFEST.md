@@ -11,7 +11,6 @@ Required files:
 ```text
 hashes.json
 deployment.json
-core_runtime_id.json
 application_envelopes.json
 names.json
 owner_keys.json
@@ -36,8 +35,8 @@ coppice_bond_v1.json
 `CoppiceDeployV1` output is the byte-for-byte `NamesDeploymentId`; it is not the
 generic runtime identity.
 
-`core_runtime_id.json` freezes the application-independent `CoreRuntimeId`,
-including runtime activation and shared CPV1 rendezvous context.
+The application vectors reference the generic `CoreRuntimeId` vector owned by
+the Coppice Core repository. Names does not copy or redefine that identity.
 
 `application_envelopes.json` freezes the `CoppiceAppIdV1` derivation for the
 exact `coppice.names` application identity, Names routing version 1, the CA01
@@ -45,6 +44,12 @@ envelope, and the production CPV1 frame bound to `CoreRuntimeId`.
 `carrier.json` remains unchanged because it freezes the parameterized CPV1
 framing algorithm rather than assigning semantic ownership to its sample
 32-byte binding value.
+
+`application_envelopes.json`, `carrier.json`, and `reorg.json` are retained
+here as Names interoperability oracles because their frozen samples bind
+NamesDeploymentId, `coppice.names`, or Names operation outcomes. The generic
+CPV1/CA01 mechanics and replay property are specified and versioned by Coppice
+Core.
 
 Every vector entry SHOULD contain:
 

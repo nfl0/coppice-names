@@ -3,7 +3,7 @@
 
 use std::fmt::Debug;
 
-use coppice::{
+use coppice_names::{
     authorization,
     envelope::{self, Operation},
     names_runtime::NamesRuntime,
@@ -328,7 +328,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use coppice::{
+    use coppice_names::{
         config::{DeploymentParameters, REGTEST},
         names_runtime::{CoreReplayActivationCheckpoint, IronwoodFrontier},
         owner_kdf::derive_v1_owner_signing_key,

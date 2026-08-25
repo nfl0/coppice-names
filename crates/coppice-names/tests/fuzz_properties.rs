@@ -1,3 +1,4 @@
+use ::coppice as coppice_core;
 use coppice::{
     config::{DeploymentParameters, REGTEST},
     envelope::decode_operation,
@@ -72,8 +73,9 @@ fn apply_generated(runtime: &mut NamesRuntime, hash: [u8; 32], append: bool) {
                     txid: [0; 32],
                     ironwood_nullifiers: vec![],
                     ironwood_commitments: vec![MerkleHashOrchard::empty_leaf().to_bytes()],
-                    full_tx_required: false,
-                    candidate_full_tx: None,
+                    full_transaction_acquisition:
+                        coppice_core::replay::FullTransactionAcquisition::None,
+                    full_transaction: None,
                 })
                 .into_iter()
                 .collect(),

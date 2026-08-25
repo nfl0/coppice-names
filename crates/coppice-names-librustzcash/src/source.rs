@@ -33,7 +33,7 @@ pub enum IronwoodNoteConversionError {
     },
     NonCanonicalNullifier {
         output_id: IronwoodOutputId,
-        source: coppice::bond_tag::BondTagError,
+        source: coppice_names::bond_tag::BondTagError,
     },
 }
 
@@ -228,7 +228,7 @@ fn convert_ironwood_received_note<NoteRef>(
             position: raw_position,
         })?;
     let nullifier = received.note().nullifier(orchard_fvk).to_bytes();
-    coppice::bond_tag::derive_v1_bond_tag(&nullifier).map_err(|source| {
+    coppice_names::bond_tag::derive_v1_bond_tag(&nullifier).map_err(|source| {
         IronwoodNoteConversionError::NonCanonicalNullifier { output_id, source }
     })?;
 
@@ -628,7 +628,7 @@ mod tests {
         let notes = facade.owned_unspent_ironwood_notes().unwrap();
         assert_eq!(notes.len(), 1);
         let output = notes[0].output_id;
-        let tag = coppice::bond_tag::derive_v1_bond_tag(&notes[0].nullifier).unwrap();
+        let tag = coppice_names::bond_tag::derive_v1_bond_tag(&notes[0].nullifier).unwrap();
         facade
             .ensure_coppice_lock(&output, tag, facade.max_lock_expiry_height())
             .unwrap();
@@ -685,8 +685,8 @@ mod tests {
             let expected = received.note().nullifier(&key).to_bytes();
             assert_eq!(owned.nullifier, expected);
             assert_eq!(
-                coppice::bond_tag::derive_v1_bond_tag(&owned.nullifier).unwrap(),
-                coppice::bond_tag::derive_v1_bond_tag(&expected).unwrap()
+                coppice_names::bond_tag::derive_v1_bond_tag(&owned.nullifier).unwrap(),
+                coppice_names::bond_tag::derive_v1_bond_tag(&expected).unwrap()
             );
             assert_eq!(
                 owned.position,

@@ -1,6 +1,6 @@
 //! Thin wallet composition for the core dedicated v1 BondProof prover.
 
-use coppice::{
+use coppice_names::{
     bond::{V1BondProof, V1BondProver, V1BondProverError, V1BondWitness},
     bond_tag::derive_v1_bond_tag,
     config::DeploymentParameters,
@@ -100,7 +100,7 @@ pub fn prove_selected_bond<R: RngCore + CryptoRng>(
 
 #[cfg(test)]
 mod tests {
-    use coppice::{
+    use coppice_names::{
         bond::V1BondProver,
         config::Rendezvous,
         owner::{OwnerSigningKey, owner_key_bytes},

@@ -19,12 +19,12 @@ use crate::{
     state::{CoppiceState, StateMutationError},
     state_root::{self, StateRootInput},
 };
-pub use coppice_core::replay::{
+pub use coppice::replay::{
     CoreCanonicalBlockInput, CoreCanonicalTransactionInput, CoreIronwoodCheckpoint, CoreReplay,
     CoreReplayActivationCheckpoint, CoreReplayConfiguration, CoreReplayConfigurationError,
     CoreReplayError, CoreReplayTip, CoreRewindError, IronwoodFrontier,
 };
-use coppice_core::{
+use coppice::{
     application::{ApplicationDescriptor, ApplicationTip, CoppiceApplication},
     compositor::{CoppiceRuntime, CoppiceRuntimeError, CoppiceRuntimeRewindError},
     runtime::{
@@ -567,7 +567,7 @@ impl NamesApplication {
     fn apply_operation(
         &self,
         state: &mut CoppiceState,
-        block: &coppice_core::replay::CoreBlockContext,
+        block: &coppice::replay::CoreBlockContext,
         tx_index: u32,
         operation: &Operation,
     ) -> Result<NamesTransactionOutcome, NamesApplicationError> {
@@ -743,7 +743,7 @@ impl CoppiceApplication for NamesApplication {
 
     fn apply_block(
         &mut self,
-        block: &coppice_core::application::ApplicationBlockContext,
+        block: &coppice::application::ApplicationBlockContext,
     ) -> Result<Self::BlockOutput, Self::ApplyError> {
         let core = block
             .core()
@@ -929,11 +929,11 @@ impl NamesRuntime {
         self.names.state_root()
     }
 
-    pub fn tip(&self) -> coppice_core::replay::CoreReplayTip {
+    pub fn tip(&self) -> coppice::replay::CoreReplayTip {
         self.core.tip()
     }
 
-    pub fn ironwood_frontier(&self) -> &coppice_core::replay::IronwoodFrontier {
+    pub fn ironwood_frontier(&self) -> &coppice::replay::IronwoodFrontier {
         self.core.ironwood_frontier()
     }
 
@@ -957,7 +957,7 @@ impl NamesRuntime {
         self.core.has_rewind_snapshot(height) && self.names.has_rewind_snapshot(height)
     }
 
-    pub fn retained_tip_at(&self, height: u32) -> Option<coppice_core::replay::CoreReplayTip> {
+    pub fn retained_tip_at(&self, height: u32) -> Option<coppice::replay::CoreReplayTip> {
         let core = self.core.retained_tip_at(height)?;
         let names = self.names.retained_tip_at(height)?;
         (core.height == names.height && core.block_hash == names.block_hash).then_some(core)
@@ -1077,15 +1077,15 @@ impl CanonicalRuntime for NamesRuntime {
     type ApplyError = NamesRuntimeError;
     type RewindError = NamesRuntimeRewindError;
 
-    fn core_parameters(&self) -> &coppice_core::identity::ValidatedCoreRuntimeParameters {
+    fn core_parameters(&self) -> &coppice::identity::ValidatedCoreRuntimeParameters {
         self.core.parameters()
     }
 
-    fn rendezvous(&self) -> &coppice_core::carrier::CoreRendezvous {
+    fn rendezvous(&self) -> &coppice::carrier::CoreRendezvous {
         self.core.rendezvous()
     }
 
-    fn tip(&self) -> coppice_core::replay::CoreReplayTip {
+    fn tip(&self) -> coppice::replay::CoreReplayTip {
         self.tip()
     }
 
@@ -1093,7 +1093,7 @@ impl CanonicalRuntime for NamesRuntime {
         self.oldest_rewind_height()
     }
 
-    fn retained_tip_at(&self, height: u32) -> Option<coppice_core::replay::CoreReplayTip> {
+    fn retained_tip_at(&self, height: u32) -> Option<coppice::replay::CoreReplayTip> {
         self.retained_tip_at(height)
     }
 

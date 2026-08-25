@@ -3,11 +3,11 @@
 //! Names uses its frozen deployment identity internally while Core owns
 //! runtime transport identity and application routing.
 
-use coppice_core::application::{
+use coppice::application::{
     ApplicationDescriptor, ApplicationEnvelopeError, ApplicationEnvelopeV1, ApplicationId,
     ApplicationKey, derive_application_id,
 };
-use coppice_core::{
+use coppice::{
     carrier::CPV1_PROTOCOL_ID,
     identity::{
         CORE_RUNTIME_PROTOCOL_ID_V1, CORE_RUNTIME_PROTOCOL_VERSION_V1, CoreRuntimeId,

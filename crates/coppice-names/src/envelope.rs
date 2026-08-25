@@ -172,13 +172,13 @@ pub fn encode_operation(op: &Operation) -> Result<Vec<u8>, Error> {
             o.extend_from_slice(signature)
         }
     }
-    if o.len() > coppice_core::carrier::MAX_CPV1_PAYLOAD_LEN {
+    if o.len() > coppice::carrier::MAX_CPV1_PAYLOAD_LEN {
         return Err(Error::Length);
     }
     Ok(o)
 }
 pub fn decode_operation(mut p: &[u8]) -> Result<Operation, Error> {
-    if p.len() > coppice_core::carrier::MAX_CPV1_PAYLOAD_LEN {
+    if p.len() > coppice::carrier::MAX_CPV1_PAYLOAD_LEN {
         return Err(Error::Length);
     }
     let ty = *take(&mut p, 1)?.first().ok_or(Error::Malformed)?;
@@ -360,7 +360,7 @@ mod tests {
             Err(Error::Length)
         );
 
-        let mut oversized_operation = vec![0; coppice_core::carrier::MAX_CPV1_PAYLOAD_LEN + 1];
+        let mut oversized_operation = vec![0; coppice::carrier::MAX_CPV1_PAYLOAD_LEN + 1];
         oversized_operation[0] = 1;
         assert_eq!(decode_operation(&oversized_operation), Err(Error::Length));
 
@@ -402,7 +402,7 @@ mod tests {
         };
         let payload = encode_operation(&operation).unwrap();
         assert_eq!(payload.len(), 8_906);
-        let frames = coppice_core::transport::encode_frames([0; 32], &payload).unwrap();
+        let frames = coppice::transport::encode_frames([0; 32], &payload).unwrap();
         assert_eq!(frames.len(), 18);
         assert!(frames.len() <= usize::from(constants::MAX_FRAMES));
     }

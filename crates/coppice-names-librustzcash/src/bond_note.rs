@@ -8,7 +8,7 @@
 
 use std::fmt::Debug;
 
-use coppice::{config::DeploymentParameters, names_runtime::NamesRuntime};
+use coppice_names::{config::DeploymentParameters, names_runtime::NamesRuntime};
 use sapling::prover::{OutputProver, SpendProver};
 use zcash_address::ZcashAddress;
 use zcash_client_backend::{
@@ -417,7 +417,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use coppice::constants::REGTEST_ACTIVATION_HEIGHT;
+    use coppice_names::constants::REGTEST_ACTIVATION_HEIGHT;
     use zcash_keys::address::UnifiedAddress;
     use zcash_protocol::consensus::NetworkType;
 
@@ -433,7 +433,7 @@ mod tests {
             commit_ttl_blocks: input["commit_ttl_blocks"].as_u64().unwrap() as u32,
             reuse_delay_blocks: input["reuse_delay_blocks"].as_u64().unwrap() as u32,
             bond_note_max_age_blocks: input["bond_note_max_age_blocks"].as_u64().unwrap() as u32,
-            rendezvous: coppice::config::Rendezvous {
+            rendezvous: coppice_names::config::Rendezvous {
                 orchard_ivk: hex::decode(input["rendezvous_ivk_hex"].as_str().unwrap())
                     .unwrap()
                     .try_into()
@@ -468,7 +468,7 @@ mod tests {
     #[test]
     fn request_targets_the_deployment_minimum() {
         let deployment = deployment();
-        let orchard = coppice::carrier::bulletin_address(deployment.rendezvous).unwrap();
+        let orchard = coppice_names::carrier::bulletin_address(deployment.rendezvous).unwrap();
         let recipient = UnifiedAddress::from_receivers(Some(orchard), None, None)
             .unwrap()
             .to_zcash_address(deployment.address_network);

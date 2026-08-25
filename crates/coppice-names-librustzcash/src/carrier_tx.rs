@@ -4,13 +4,13 @@
 use std::fmt::Debug;
 
 use coppice::{
-    config::DeploymentParameters, envelope, names_application::names_v1_application_key,
-    names_runtime::NamesRuntime,
-};
-use coppice_core::{
     identity::ValidatedCoreRuntimeParameters,
     replay::MAX_FULL_TRANSACTION_LEN,
     runtime::{ApplicationMessageStatus, inspect_transaction},
+};
+use coppice_names::{
+    config::DeploymentParameters, envelope, names_application::names_v1_application_key,
+    names_runtime::NamesRuntime,
 };
 use sapling::prover::{OutputProver, SpendProver};
 use zcash_client_backend::{
@@ -60,7 +60,7 @@ pub fn carrier_transaction_request(
     deployment
         .validate()
         .map_err(|_| CarrierTransactionRequestError::InvalidDeployment)?;
-    let orchard = coppice::carrier::bulletin_address(deployment.rendezvous)
+    let orchard = coppice_names::carrier::bulletin_address(deployment.rendezvous)
         .map_err(|_| CarrierTransactionRequestError::InvalidRendezvous)?;
     let ua = UnifiedAddress::from_receivers(Some(orchard), None, None)
         .ok_or(CarrierTransactionRequestError::InvalidRendezvous)?;
@@ -457,7 +457,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use coppice::{
+    use coppice_names::{
         config::DeploymentParameters,
         constants::{MAX_ADDRESS_LEN, MAX_BOND_PROOF_LEN, REGTEST_ACTIVATION_HEIGHT},
         envelope::Operation,
@@ -480,7 +480,7 @@ mod tests {
             commit_ttl_blocks: input["commit_ttl_blocks"].as_u64().unwrap() as u32,
             reuse_delay_blocks: input["reuse_delay_blocks"].as_u64().unwrap() as u32,
             bond_note_max_age_blocks: input["bond_note_max_age_blocks"].as_u64().unwrap() as u32,
-            rendezvous: coppice::config::Rendezvous {
+            rendezvous: coppice_names::config::Rendezvous {
                 orchard_ivk: hex::decode(input["rendezvous_ivk_hex"].as_str().unwrap())
                     .unwrap()
                     .try_into()
@@ -495,7 +495,7 @@ mod tests {
 
     fn prepared(deployment: &DeploymentParameters, operation: Operation) -> PreparedCarrier {
         let parameters =
-            coppice::names_application::names_v1_core_runtime_parameters(deployment).unwrap();
+            coppice_names::names_application::names_v1_core_runtime_parameters(deployment).unwrap();
         PreparedCarrier::from_operation(parameters.core_runtime_id(), &operation).unwrap()
     }
 
@@ -506,7 +506,7 @@ mod tests {
         let request = carrier_transaction_request(&deployment, &prepared).unwrap();
         assert_eq!(request.payments().len(), expected_frames);
 
-        let orchard = coppice::carrier::bulletin_address(deployment.rendezvous).unwrap();
+        let orchard = coppice_names::carrier::bulletin_address(deployment.rendezvous).unwrap();
         let ua = UnifiedAddress::from_receivers(Some(orchard), None, None).unwrap();
         assert_eq!(
             ua.orchard().unwrap().to_raw_address_bytes(),
@@ -553,7 +553,7 @@ mod tests {
     fn syntactic_max_reveal_maps_eighteen_distinct_payments() {
         assert_request(
             Operation::Reveal {
-                name: "n".repeat(coppice::constants::MAX_NAME_LEN),
+                name: "n".repeat(coppice_names::constants::MAX_NAME_LEN),
                 owner_pk: [1; 32],
                 bond_tag: [2; 32],
                 bond_anchor_height: u32::MAX,

@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use coppice::{
+use coppice_names::{
     config::{DeploymentEncodingError, DeploymentParameters, DeploymentValidationError},
     crypto, envelope,
     owner::parse_v1_owner_key,
@@ -422,7 +422,11 @@ pub fn pending_commit_expired(
     commit_ttl_blocks: u32,
     height: u32,
 ) -> Result<bool, PendingTimingError> {
-    coppice::pending::commitment_expired_at_end_of_block(commit_height, commit_ttl_blocks, height)
+    coppice_names::pending::commitment_expired_at_end_of_block(
+        commit_height,
+        commit_ttl_blocks,
+        height,
+    )
 }
 
 /// Returns whether a local attempt's last observed canonical COMMIT height is
@@ -441,7 +445,7 @@ pub fn pending_attempt_expired(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use coppice::{
+    use coppice_names::{
         config::{DeploymentParameters, REGTEST, Rendezvous},
         constants::REGTEST_ACTIVATION_HEIGHT,
         owner::{OwnerSigningKey, owner_key_bytes},

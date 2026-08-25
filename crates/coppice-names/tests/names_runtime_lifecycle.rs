@@ -1,3 +1,4 @@
+use ::coppice as coppice_core;
 use coppice::{
     authorization,
     bond::{V1BondProver, V1BondWitness},
@@ -134,8 +135,8 @@ fn transaction_from_envelope(
         txid: transaction.txid().into(),
         ironwood_nullifiers: effects.nullifiers,
         ironwood_commitments: effects.commitments,
-        full_tx_required: true,
-        candidate_full_tx: Some(bytes),
+        full_transaction_acquisition: coppice_core::replay::FullTransactionAcquisition::Carrier,
+        full_transaction: Some(bytes),
     }
 }
 
@@ -236,8 +237,8 @@ fn bond_transaction(runtime: &NamesRuntime, seed: u8) -> BondMaterial {
             txid: transaction.txid().into(),
             ironwood_nullifiers: effects.nullifiers,
             ironwood_commitments: effects.commitments,
-            full_tx_required: false,
-            candidate_full_tx: None,
+            full_transaction_acquisition: coppice_core::replay::FullTransactionAcquisition::None,
+            full_transaction: None,
         },
         note,
         full_viewing_key,
@@ -453,8 +454,8 @@ fn routed_names_lifecycle_rewind_bond_spend_pruning_and_fresh_replay() {
         txid: [0x77; 32],
         ironwood_nullifiers: vec![bond_nullifier],
         ironwood_commitments: vec![],
-        full_tx_required: false,
-        candidate_full_tx: None,
+        full_transaction_acquisition: coppice_core::replay::FullTransactionAcquisition::None,
+        full_transaction: None,
     };
     let block_105_spend = block(&runtime, vec![bond_spend]);
     runtime.apply_block(&block_105_spend).unwrap();

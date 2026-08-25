@@ -1,4 +1,4 @@
-use coppice::bond_tag::derive_v1_bond_tag;
+use coppice_names::bond_tag::derive_v1_bond_tag;
 
 use crate::inventory::{InventoryError, IronwoodViewingCapability, OwnedIronwoodNote};
 
@@ -321,7 +321,7 @@ mod tests {
         assert_eq!(selected.value_zat, 10);
         assert_eq!(
             selected.bond_tag,
-            coppice::bond_tag::derive_v1_bond_tag(&[7; 32]).unwrap()
+            coppice_names::bond_tag::derive_v1_bond_tag(&[7; 32]).unwrap()
         );
     }
 

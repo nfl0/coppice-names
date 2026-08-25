@@ -1,9 +1,9 @@
 # Wallet integration
 
-`coppice-librustzcash` is the host/wallet adapter. It connects a Zcash wallet
-and a canonical CompactBlock source to Coppice Core and Coppice Names v1 while
-keeping wallet databases, accounts, note selection, and locks outside the
-deterministic protocol state.
+The generic `coppice-librustzcash` adapter connects a canonical CompactBlock
+source to Coppice Core. `coppice-names-librustzcash` adds the Names wallet
+workflow while keeping wallet databases, accounts, note selection, and locks
+outside deterministic protocol state.
 
 ## Canonical-chain contract
 
@@ -21,10 +21,12 @@ independent `WalletAccountId` ownership and bond locks.
 
 Start from the configured activation checkpoint. Compact actions are first
 classified against both the public rendezvous IVK and the exact configured
-rendezvous receiver. Only a matching candidate causes a full transaction fetch.
-Full extraction repeats the exact receiver check, then validates the full
-transaction ID and its Ironwood commitments/nullifiers against the compact
-record before CPV1/CA01 routing.
+rendezvous receiver. Only a matching carrier candidate requires a full
+transaction for CPV1/CA01 routing. A host may independently select additional
+transactions when Names or another application needs extended public Ironwood
+effects. Every selected full transaction is parsed under the canonical branch
+and checked for the transaction ID and compact Ironwood commitments/nullifiers
+before any effects or routing are exposed.
 
 If a required full transaction is unavailable or inconsistent, the runtime
 must not advance past the block. A shallow reorg rewinds Core and Names to the

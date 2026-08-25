@@ -1,3 +1,4 @@
+use ::coppice as coppice_core;
 use coppice::{
     config::{DeploymentParameters, Rendezvous},
     envelope::Operation,
@@ -148,8 +149,8 @@ fn candidate_transaction_to_receiver(
         txid: transaction.txid().into(),
         ironwood_nullifiers: nullifiers,
         ironwood_commitments: commitments,
-        full_tx_required: true,
-        candidate_full_tx: Some(bytes),
+        full_transaction_acquisition: coppice_core::replay::FullTransactionAcquisition::Carrier,
+        full_transaction: Some(bytes),
     }
 }
 
@@ -443,7 +444,7 @@ fn same_ivk_alternate_receiver_is_not_routed_or_applied_by_names() {
         8,
         alternate_rendezvous_receiver(&deployment),
     );
-    let full_bytes = transaction.candidate_full_tx.as_deref().unwrap();
+    let full_bytes = transaction.full_transaction.as_deref().unwrap();
     let parsed = zcash_primitives::transaction::Transaction::read(
         &mut Cursor::new(full_bytes),
         BranchId::Nu6_3,

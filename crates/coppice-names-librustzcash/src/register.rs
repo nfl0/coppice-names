@@ -6,7 +6,8 @@
 
 use std::{convert::Infallible, fmt::Debug};
 
-use coppice::{
+use coppice::{identity::CoreRuntimeId, transport};
+use coppice_names::{
     bond::V1BondProver,
     config::DeploymentValidationError,
     envelope::{self, Operation},
@@ -20,7 +21,6 @@ use coppice::{
     reveal::{RevealValidationError, canonical_v1_address},
     state::CoppiceState,
 };
-use coppice_core::{identity::CoreRuntimeId, transport};
 use rand_core::{CryptoRng, RngCore};
 
 use crate::{
@@ -159,7 +159,7 @@ pub enum BeginRegistrationError<HostError, BackendError: Debug> {
     NoEligibleBond,
     InvalidExternalOwner,
     OwnerDerivation(OwnerKdfError),
-    Commitment(coppice::config::DeploymentEncodingError),
+    Commitment(coppice_names::config::DeploymentEncodingError),
     PendingValidation(crate::PendingRegistrationValidationError),
     Carrier(CarrierPreparationError),
     Lock(BackendError),
@@ -430,7 +430,7 @@ pub enum PrepareRevealError<HostError, BackendError: Debug, WitnessError, Materi
     PrivateMaterial(MaterialError),
     BondProof(WalletBondProverError),
     RevealInvariantMismatch,
-    Commitment(coppice::config::DeploymentEncodingError),
+    Commitment(coppice_names::config::DeploymentEncodingError),
     Carrier(CarrierPreparationError),
 }
 
@@ -744,7 +744,7 @@ where
 mod tests {
     use std::{cell::Cell, collections::BTreeMap};
 
-    use coppice::{
+    use coppice_names::{
         bond::V1BondProver,
         config::{DeploymentParameters, REGTEST, Rendezvous},
         constants::REGTEST_ACTIVATION_HEIGHT,
@@ -1039,7 +1039,7 @@ mod tests {
             bond_anchor_height: runtime.tip().height,
             bond_anchor: [3; 32],
             bond_proof: vec![4; 4_960],
-            address: vec![5; coppice::constants::MAX_ADDRESS_LEN],
+            address: vec![5; coppice_names::constants::MAX_ADDRESS_LEN],
             secret: [6; 32],
         };
         let prepared = prepare_carrier(&runtime, &operation).unwrap();
@@ -1094,7 +1094,8 @@ mod tests {
         let runtime = runtime();
         let host = Host(runtime.tip());
         let selected_note = note(runtime.deployment().minimum_bond_value, 1);
-        let selected_tag = coppice::bond_tag::derive_v1_bond_tag(&selected_note.nullifier).unwrap();
+        let selected_tag =
+            coppice_names::bond_tag::derive_v1_bond_tag(&selected_note.nullifier).unwrap();
         let mut rng = ChaCha20Rng::from_seed([12; 32]);
         let mut secret = [0; 32];
         rng.fill_bytes(&mut secret);

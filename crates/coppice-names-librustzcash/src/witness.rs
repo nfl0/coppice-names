@@ -5,7 +5,7 @@
 //! richer backend may later implement [`IronwoodWitnessSource`] to reconstruct
 //! older witnesses, but callers must never silently substitute another anchor.
 
-use coppice::names_runtime::NamesRuntime;
+use coppice_names::names_runtime::NamesRuntime;
 use incrementalmerkletree::Position;
 use orchard::tree::{Anchor, MerklePath};
 use shardtree::{ShardTree, error::ShardTreeError, store::ShardStore};
@@ -348,7 +348,7 @@ pub fn resolve_canonical_ironwood_witness<S: IronwoodWitnessSource>(
 mod tests {
     use std::convert::Infallible;
 
-    use coppice::{
+    use coppice_names::{
         config::{DeploymentParameters, Rendezvous},
         constants::REGTEST_NETWORK_ID,
         names_runtime::{
@@ -401,8 +401,8 @@ mod tests {
                 ironwood_commitments: (0..commitments)
                     .map(|index| leaf((height as u8).wrapping_add(index as u8)).to_bytes())
                     .collect(),
-                full_tx_required: false,
-                candidate_full_tx: None,
+                full_transaction_acquisition: coppice::replay::FullTransactionAcquisition::None,
+                full_transaction: None,
             })
             .into_iter()
             .collect();

@@ -1,7 +1,7 @@
 //! Public Ironwood rendezvous construction and compact candidate detection.
 //!
 //! CPV1 framing, runtime binding, and application-envelope routing are owned
-//! by `coppice-core`.
+//! by the generic `coppice` runtime.
 
 use crate::config::Rendezvous;
 use orchard::keys::IncomingViewingKey;
@@ -30,12 +30,12 @@ pub fn compact_action_is_bulletin(
     action: &orchard::note_encryption::CompactAction,
     rendezvous: Rendezvous,
 ) -> Result<bool, Error> {
-    let context = coppice_core::carrier::CoreRendezvous::try_new(
+    let context = coppice::carrier::CoreRendezvous::try_new(
         &rendezvous.orchard_ivk,
         &rendezvous.orchard_receiver,
     )
     .map_err(|_| Error::Build)?;
-    Ok(coppice_core::carrier::compact_action_is_rendezvous(
+    Ok(coppice::carrier::compact_action_is_rendezvous(
         action, &context,
     ))
 }

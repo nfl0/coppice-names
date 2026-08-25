@@ -1,3 +1,4 @@
+use ::coppice as coppice_core;
 use coppice_core::{carrier, transport};
 
 const RUNTIME_ID: [u8; 32] = [0x11; 32];
@@ -36,11 +37,9 @@ fn payload_from_frames(frames: &[[u8; 512]], payload_length: usize) -> Vec<u8> {
 }
 
 #[test]
-fn frozen_cpv1_vectors_are_byte_exact_under_core_authority() {
-    let fixture: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../../coppice/test-vectors/carrier.json"
-    ))
-    .unwrap();
+fn frozen_names_cpv1_vectors_preserve_core_framing() {
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("../../../test-vectors/carrier.json")).unwrap();
     let binding: [u8; 32] = hex::decode(fixture["deployment_id_hex"].as_str().unwrap())
         .unwrap()
         .try_into()

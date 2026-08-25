@@ -12,8 +12,8 @@ repository = "https://github.com/nfl0/coppice-names"
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(zcash_unstable, values("nu7"))'] }
 
 [workspace.dependencies]
-coppice = { package = "coppice-names", path = "crates/coppice-names" }
-coppice-core = { path = "../coppice/crates/coppice-core" }
+coppice = { package = "coppice", path = "../coppice/crates/coppice" }
+coppice-names = { package = "coppice-names", path = "crates/coppice-names" }
 coppice-librustzcash = { path = "../coppice/crates/coppice-librustzcash" }
 blake2b_simd = "1"
 halo2_gadgets = { version = "0.5", default-features = false }

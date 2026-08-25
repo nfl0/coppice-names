@@ -12,7 +12,6 @@ mod inventory;
 mod locking;
 mod operations;
 mod pending;
-mod reconcile;
 mod register;
 mod selection;
 mod source;
@@ -42,11 +41,6 @@ pub use pending::{
     PendingRegistrationPersistenceError, PendingRegistrationTransitionError,
     PendingRegistrationValidationError, WalletAccountId, pending_attempt_expired,
     pending_commit_expired,
-};
-pub use reconcile::{
-    CanonicalBlockSource, CanonicalTip, FrozenCanonicalBlockSource, ReconcileError, ReconcileKind,
-    ReconcileOutcome, ReconcileResult, reconcile_canonical_chain,
-    reconcile_canonical_chain_with_progress,
 };
 pub use register::{
     BeginRegistrationError, CanonicalCommitMissing, CarrierPreparationError, CommitTransitionError,
@@ -88,9 +82,10 @@ pub use carrier_tx::{
     propose_carrier_transaction,
 };
 pub use coppice_librustzcash::{
-    CanonicalRuntime, CompactBlockAdapterError, CompactBlockApplyError, FullTransactionSource,
-    MAX_CANDIDATE_FULL_TX_BYTES, apply_compact_block, prepare_canonical_block,
-    prepare_canonical_block_with_transaction_selector,
+    CanonicalCompactTransactionSummary, CanonicalRuntime, CompactBlockAdapterError,
+    CompactBlockApplyError, FullTransactionSource, MAX_CANDIDATE_FULL_TX_BYTES,
+    MAX_FULL_TRANSACTION_BYTES, apply_compact_block, apply_compact_block_with_transaction_selector,
+    prepare_canonical_block, prepare_canonical_block_with_transaction_selector,
 };
 /// The exact pinned librustzcash lock-owner type used by this adapter.
 pub use zcash_client_backend::wallet::LockOwner;

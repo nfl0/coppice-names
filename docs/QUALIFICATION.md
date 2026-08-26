@@ -67,11 +67,14 @@ set:
   `ae3511076ec8ecb39ffc02d9cdaf19c441c5b53d`.
 
 Live qualification used local Zakura `f892b9074002a04a678ef2365ec7658795796572`
-and Zaino `b819583a1a6663a01cb7681ac5b5fc2a174596a0`. The preserved Phase 7 run
-was `/tmp/coppice-live-qualification.aMnVFQ`: common height 54, abandoned
+and Zaino `b819583a1a6663a01cb7681ac5b5fc2a174596a0`. The preserved final Phase 7
+run was `/tmp/coppice-live-qualification.EAT8lm`: common height 54, abandoned
 release at height 55, equal-length replacement at height 185, reorg depth 131,
-and rebuilt/fresh snapshot SHA-256
-`5a98a002c241606d947b26014aab263f6b2fb835aa9704232abfa8ed43e53d5c`.
+old/new height-185 tip hashes
+`23a48edd76576607b828789d18f7cc023076849bca542765de004ac754ef1868` /
+`2cf39a410ab57fb3eedcf7f3f4e9144c025fffc4a728d3b21d8d58bcc082c69f`, and
+rebuilt/fresh snapshot SHA-256
+`a3c54cd9cf89887faa2c610562bacab7db946da71196111f18b1ab1c05cc6d09`.
 Phase 6 logs are preserved at `/tmp/coppice-phase6-deep-reorg.kTkjyE`.
 
 The frozen Names v1 evidence remains `V1_BOND_VK_ID`

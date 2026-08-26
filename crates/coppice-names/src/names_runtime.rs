@@ -258,10 +258,7 @@ impl Clone for NamesApplication {
             state: self.state.clone(),
             tip: self.tip,
             state_root: self.state_root,
-            // Verifier construction is deterministic public setup and has no
-            // application state. Keeping it out of the clone boundary avoids
-            // assuming upstream proving-key internals are Clone.
-            verifier: V1BondVerifier::new().expect("frozen Coppice Names verifier must initialize"),
+            verifier: self.verifier.clone(),
             retention_blocks: self.retention_blocks,
             history: self.history.clone(),
         }

@@ -285,6 +285,7 @@ pub enum V1BondVerifierError {
     VerifierIdentityMismatch,
 }
 
+#[derive(Clone)]
 pub struct V1BondVerifier {
     params: Params<vesta::Affine>,
     verifying_key: VerifyingKey<vesta::Affine>,

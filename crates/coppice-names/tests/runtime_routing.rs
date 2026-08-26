@@ -91,6 +91,16 @@ fn candidate_transaction_to_receiver(
     receiver: orchard::Address,
 ) -> CoreCanonicalTransactionInput {
     let frames = transport::encode_frames(runtime_id, envelope).unwrap();
+    candidate_transaction_with_frames(runtime_id, frames, tx_index, seed, receiver)
+}
+
+fn candidate_transaction_with_frames(
+    _runtime_id: [u8; 32],
+    frames: Vec<[u8; 512]>,
+    tx_index: u32,
+    seed: u8,
+    receiver: orchard::Address,
+) -> CoreCanonicalTransactionInput {
     let version = BundleVersion::ironwood_v3();
     let mut builder = Builder::new(
         BundleType::UNPADDED,
@@ -485,6 +495,45 @@ fn same_ivk_alternate_receiver_is_not_routed_or_applied_by_names() {
     assert_eq!(runtime.names().state().pending, before.pending);
     assert_eq!(runtime.names().state().recent_spent.len(), 1);
     assert!(!runtime.names().state().pending.contains_key(&[0x55; 32]));
+}
+
+#[test]
+fn malformed_cpv1_transport_is_not_exposed_as_names_payload() {
+    let deployment = deployment();
+    let mut runtime =
+        NamesRuntime::from_names_deployment(deployment.clone(), checkpoint()).unwrap();
+    let operation = Operation::Commit {
+        commitment: [0x66; 32],
+    };
+    let envelope = encode_names_v1_envelope(&operation).unwrap();
+    let mut frames =
+        transport::encode_frames(runtime.core().runtime_id().to_bytes(), &envelope).unwrap();
+    frames[0][511] = 1;
+    let transaction = candidate_transaction_with_frames(
+        runtime.core().runtime_id().to_bytes(),
+        frames,
+        0,
+        10,
+        coppice::carrier::bulletin_address(deployment.rendezvous).unwrap(),
+    );
+
+    let applied = runtime
+        .apply_block(&block(
+            runtime.core().tip(),
+            ACTIVATION_HEIGHT,
+            vec![transaction],
+        ))
+        .unwrap();
+    assert!(matches!(
+        applied.core.transactions()[0].message(),
+        ApplicationMessageStatus::MalformedTransport(transport::Error::Padding)
+    ));
+    assert_eq!(
+        applied.names.transaction_outcomes,
+        vec![NamesTransactionOutcome::NoOperation]
+    );
+    assert!(runtime.names().state().names.is_empty());
+    assert!(runtime.names().state().pending.is_empty());
 }
 
 #[test]

@@ -5,14 +5,16 @@ use coppice::{
     bond_tag,
     config::{DeploymentParameters, Rendezvous},
     envelope::Operation,
-    names_application::encode_names_v1_envelope,
+    names_application::{encode_names_v1_envelope, names_v1_application_key},
     names_runtime::{
         CoreCanonicalBlockInput, CoreCanonicalTransactionInput, CoreReplayActivationCheckpoint,
         IronwoodFrontier, NamesProtocolRejection, NamesRuntime, NamesTransactionOutcome,
     },
     record::NameStatus,
 };
-use coppice_core::transport;
+use coppice_core::{
+    application::ApplicationEnvelopeError, runtime::ApplicationMessageStatus, transport,
+};
 use coppice_names as coppice;
 use incrementalmerkletree::Retention;
 use orchard::{
@@ -511,22 +513,94 @@ fn routing_isolated_unknown_apps_and_malformed_envelopes_are_nonfatal() {
     )
     .unwrap()
     .encode();
+    let wrong_version = coppice_core::application::ApplicationEnvelopeV1::new(
+        coppice_core::application::ApplicationKey::new(
+            names_v1_application_key().id,
+            names_v1_application_key().version + 1,
+        ),
+        vec![1, 2, 3],
+    )
+    .unwrap()
+    .encode();
     let malformed = b"not-an-application-envelope";
+    let sibling = coppice_core::application::ApplicationEnvelopeV1::new(
+        coppice_core::application::ApplicationKey::new(
+            coppice_core::application::derive_application_id(b"test.sibling").unwrap(),
+            1,
+        ),
+        vec![4, 5, 6],
+    )
+    .unwrap()
+    .encode();
     let block = block(
         &runtime,
         vec![
             transaction_from_envelope(&runtime, &unknown, 0, 30),
-            transaction_from_envelope(&runtime, malformed, 1, 31),
+            transaction_from_envelope(&runtime, &wrong_version, 1, 31),
+            transaction_from_envelope(&runtime, malformed, 2, 32),
+            transaction_from_envelope(&runtime, &sibling, 3, 33),
         ],
     );
     let applied = runtime.apply_block(&block).unwrap();
+    assert!(matches!(
+        applied.core.transactions()[0].message(),
+        ApplicationMessageStatus::Message(message) if message.key() != names_v1_application_key()
+    ));
+    assert!(matches!(
+        applied.core.transactions()[1].message(),
+        ApplicationMessageStatus::Message(message) if message.key() != names_v1_application_key()
+    ));
+    assert!(matches!(
+        applied.core.transactions()[2].message(),
+        ApplicationMessageStatus::MalformedEnvelope(ApplicationEnvelopeError::TooShort)
+    ));
+    assert!(matches!(
+        applied.core.transactions()[3].message(),
+        ApplicationMessageStatus::Message(message) if message.key() != names_v1_application_key()
+    ));
     assert_eq!(
         applied.names.transaction_outcomes,
-        vec![
-            NamesTransactionOutcome::NoOperation,
-            NamesTransactionOutcome::Rejected(NamesProtocolRejection::MalformedCarrier),
-        ]
+        vec![NamesTransactionOutcome::NoOperation; 4]
     );
     assert!(runtime.state().names.is_empty());
     assert!(runtime.state().pending.is_empty());
+}
+
+#[test]
+fn exact_names_route_rejects_malformed_operation_but_applies_valid_operation() {
+    let mut runtime = new_runtime();
+    let malformed_names_payload = coppice_core::application::ApplicationEnvelopeV1::new(
+        names_v1_application_key(),
+        vec![0xff],
+    )
+    .unwrap()
+    .encode();
+    let commitment = [0x66; 32];
+    let valid_names_payload = encode_names_v1_envelope(&Operation::Commit { commitment }).unwrap();
+    let block = block(
+        &runtime,
+        vec![
+            transaction_from_envelope(&runtime, &malformed_names_payload, 0, 34),
+            transaction_from_envelope(&runtime, &valid_names_payload, 1, 35),
+        ],
+    );
+
+    let applied = runtime.apply_block(&block).unwrap();
+    assert!(matches!(
+        applied.core.transactions()[0].message(),
+        ApplicationMessageStatus::Message(message) if message.key() == names_v1_application_key()
+    ));
+    assert!(matches!(
+        applied.core.transactions()[1].message(),
+        ApplicationMessageStatus::Message(message) if message.key() == names_v1_application_key()
+    ));
+    assert_eq!(
+        applied.names.transaction_outcomes,
+        vec![
+            NamesTransactionOutcome::Rejected(NamesProtocolRejection::MalformedOperation),
+            NamesTransactionOutcome::Applied,
+        ]
+    );
+    assert!(runtime.state().pending.contains_key(&commitment));
+    assert!(runtime.state().names.is_empty());
 }

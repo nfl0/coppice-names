@@ -567,7 +567,7 @@ fn routing_isolated_unknown_apps_and_malformed_envelopes_are_nonfatal() {
 }
 
 #[test]
-fn exact_names_route_rejects_malformed_operation_but_applies_valid_operation() {
+fn exact_names_route_rejects_malformed_payload_but_applies_valid_operation() {
     let mut runtime = new_runtime();
     let malformed_names_payload = coppice_core::application::ApplicationEnvelopeV1::new(
         names_v1_application_key(),
@@ -597,7 +597,7 @@ fn exact_names_route_rejects_malformed_operation_but_applies_valid_operation() {
     assert_eq!(
         applied.names.transaction_outcomes,
         vec![
-            NamesTransactionOutcome::Rejected(NamesProtocolRejection::MalformedOperation),
+            NamesTransactionOutcome::Rejected(NamesProtocolRejection::MalformedCarrier),
             NamesTransactionOutcome::Applied,
         ]
     );

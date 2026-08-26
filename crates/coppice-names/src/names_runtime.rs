@@ -777,9 +777,9 @@ impl CoppiceApplication for NamesApplication {
                     Ok(operation) => {
                         self.apply_operation(&mut state, core, transaction.tx_index(), &operation)?
                     }
-                    Err(_) => NamesTransactionOutcome::Rejected(
-                        NamesProtocolRejection::MalformedOperation,
-                    ),
+                    Err(_) => {
+                        NamesTransactionOutcome::Rejected(NamesProtocolRejection::MalformedCarrier)
+                    }
                 },
             };
             transaction_outcomes.push(outcome);

@@ -57,7 +57,7 @@ set:
 - runtime API design-freeze baseline: `coppice` at
   `360170369dd2517fd86a7efc5ccc094fed3bb948`;
 - Names application qualification code: `coppice-names` at
-  `ebf96e6a926c2b5f1f1dc119d0c5e332c2daa8f6`;
+  `2dc9b8e5702b9fbcf75b5fe27a7948b68ddd55d4`;
 - Receipts qualification code: `coppice-receipts` at
   `37b3b17e6223931858296427046622cb6373ca32`;
 - reference wallet qualification harness: `zcash-devtool` at

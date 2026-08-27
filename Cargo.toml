@@ -39,7 +39,9 @@ zip321 = { git = "https://github.com/zcash/librustzcash.git", rev = "6c07e5f3297
 zip32 = "0.2.1"
 
 [patch.crates-io]
-orchard = { git = "https://github.com/nfl0/orchard-coppice.git", rev = "9907318813ceb8d66a9f3fa9fe7ea773a53899a4" }
+# The v2 experiment is pinned to its explicit post-v1 Orchard commit. The
+# frozen v1 release remains at its immutable tag and is not moved or rewritten.
+orchard = { git = "https://github.com/nfl0/orchard-coppice.git", rev = "3c1a1bef199f9ba4959a8c236051a4a9c18bde8b" }
 zcash_primitives = { git = "https://github.com/zcash/librustzcash.git", rev = "6c07e5f3297febf469e5cc8d0b91321e0767cdd7" }
 zcash_protocol = { git = "https://github.com/zcash/librustzcash.git", rev = "6c07e5f3297febf469e5cc8d0b91321e0767cdd7" }
 zcash_transparent = { git = "https://github.com/zcash/librustzcash.git", rev = "6c07e5f3297febf469e5cc8d0b91321e0767cdd7" }

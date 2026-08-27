@@ -20,3 +20,6 @@ pub mod registration;
 pub mod reveal;
 pub mod state;
 pub mod state_root;
+/// Experimental Names v2 state-note protocol. This namespace is intentionally
+/// separate from the frozen v1 envelope, replay, and identity modules.
+pub mod v2;

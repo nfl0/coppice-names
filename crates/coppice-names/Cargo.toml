@@ -17,7 +17,7 @@ halo2_gadgets = { version = "0.5", default-features = false }
 halo2_proofs = "=0.3.2"
 hex = "0.4"
 incrementalmerkletree = { version = "0.8.2", features = ["legacy-api"] }
-orchard = { version = "0.15.0", features = ["std"] }
+orchard = { version = "0.15.0", features = ["std", "experimental-state-note"] }
 pasta_curves = "0.5"
 rand_chacha = "0.3"
 rand_core = "0.6"

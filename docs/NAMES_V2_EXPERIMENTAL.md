@@ -60,13 +60,16 @@ is no single `REGISTER` operation and no `TRANSFER` operation in this slice.
    `FrozenV1BondProofVerifier` additionally requires `record` to be a
    canonical v1 Unified Address; an alternate experimental bond verifier may
    define a different record encoding without changing the state-note proof.
-   The replay state also keeps the v1-style active-bond uniqueness guard; it
-   is a derived application index, not a Core index or transaction root.
+   V2 has no `active_bonds` map or bond-tag uniqueness rule: that would make
+   fresh name-local resolution depend on unrelated names. The retained v1
+   proof is transitional registration evidence, not a persistent v2 global
+   bond state.
 3. A replacement commitment must be mined no earlier than the height at which
    the old name became claimable. This preserves the v1 anti-precommit rule.
-4. Active state is payable only while `height < lease_expiry`. Missed renewal
-   produces an explicit expired/grace result; it does not silently resolve the
-   old record as active.
+4. Payability/currentness and lease ownership are separate. With last anchor
+   `a`, a record is payable only while `height < a + refresh_deadline`. It is
+   stale (never payable) until `lease_expiry`, but its owner may still make a
+   scheduled RENEW before that lease boundary.
 5. An expired name becomes claimable at `lease_expiry + grace_period`. An
    explicitly released name becomes claimable at `terminal_height +
    reuse_delay`; these are deliberately separate terminal policies.
@@ -80,8 +83,10 @@ slot(name_id, epoch) = epoch * E + H_slot(name_id || epoch) mod E
 ```
 
 `H_slot` uses a v2-only domain. A `REVEAL` or `RENEW` is valid only at that
-exact height. The experiment requires `commit_ttl >= 2E - 1` and
-`lease_duration > 2E - 1`.
+exact height. The experiment requires `commit_ttl >= 2E - 1`,
+`refresh_deadline >= 2E - 1`, and `lease_duration > 2(2E - 1)`. The last
+relation gives an owner that misses one slot a further scheduled renewal
+opportunity before lease loss.
 
 For consecutive slots `s_e` and `s_(e+1)`:
 
@@ -89,10 +94,36 @@ For consecutive slots `s_e` and `s_(e+1)`:
 s_(e+1) - s_e = E + offset_(e+1) - offset_e <= 2E - 1
 ```
 
-Therefore the formal maximum inter-anchor gap is `2E - 1`, not `E`. A fresh
-resolver probes the recent scheduled slots covering that bound, authenticates
-the newest valid `REVEAL` or `RENEW`, and scans only the canonical tail after
-that anchor.
+Therefore the formal maximum inter-anchor gap is `2E - 1`, not `E`. An anchor
+at `a` remains payable through `a + refresh_deadline - 1`; fresh candidates
+are exactly those in that window. The resolver replays only this name's
+visible operations in canonical block/transaction/message order across that
+bounded tail. Invalid Names messages are deterministic rejections; missing or
+structurally inconsistent canonical blocks remain fatal acquisition errors.
+
+## Bounded reset for hidden COMMITs
+
+Let `D` be `lease_duration`, `G` grace, and `R` reuse delay. An anchor at `a`
+can leave active/grace state unavailable only until `a + D + G`. RELEASE can
+be accepted no later than `a + D - 1`, then blocks only until
+`a + D - 1 + R`. The reset horizon is therefore:
+
+```text
+H = max(D + G, D - 1 + R)
+```
+
+At height `C`, an anchor at or before `C - H` cannot make the name unavailable;
+only a strictly newer accepted REVEAL/RENEW can. Hidden COMMIT eligibility is
+evaluated at its own canonical height when REVEAL discloses the preimage.
+Normal reclaim supplies the exact claimable terminal `StateRef`. A
+no-predecessor REVEAL requires no accepted anchor newer than `C - H`; before a
+full horizon exists, search begins at activation without a trusted snapshot.
+
+The no-predecessor path is deliberately conservative: a released lineage
+inside the horizon can require an unaware caller to wait for reset. A caller
+with the authenticated terminal reference retains exact claimability timing.
+Reset probes only scheduled anchor blocks and authenticates encountered
+per-name predecessor chains; it never needs a global nonmembership index.
 
 ## Authenticated predecessor-position chain
 

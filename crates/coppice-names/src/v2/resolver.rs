@@ -120,68 +120,38 @@ impl FreshResolver {
             cache: BTreeMap::new(),
             visiting: BTreeSet::new(),
         };
-        let (mut state, anchor, anchor_position) =
-            match auth.find_latest_anchor(name_id, tip.height)? {
-                Some(found) => found,
-                None => {
-                    return Ok(ResolutionResult {
-                        status: ResolutionStatus::Missing,
-                        state: None,
-                        anchor: None,
-                        stats: auth.stats,
-                    });
-                }
-            };
-
-        let start = anchor_position.height;
-        let mut height = start;
-        while height <= tip.height {
-            if height > start {
-                auth.stats.tail_blocks_scanned = auth
-                    .stats
-                    .tail_blocks_scanned
-                    .checked_add(1)
-                    .ok_or(ResolveError::ArithmeticOverflow)?;
-            }
-            if let Some(block) = source.block(height) {
-                let after_anchor = height > start;
-                for transaction in &block.transactions {
-                    for (operation_index, operation) in transaction.operations.iter().enumerate() {
-                        if !after_anchor
-                            && (transaction.tx_index < anchor_position.tx_index
-                                || (transaction.tx_index == anchor_position.tx_index
-                                    && operation_index <= anchor_position.operation_index))
-                        {
-                            continue;
-                        }
-                        if operation.name_id() != Some(name_id) || operation.kind().is_none() {
-                            continue;
-                        }
-                        let Some(predecessor) = transition_predecessor(operation) else {
-                            continue;
-                        };
-                        if predecessor != state.state_ref {
-                            if is_competing_or_later_producer(predecessor, state.state_ref) {
-                                return Err(ResolveError::InvalidLineage);
-                            }
-                            continue;
-                        }
-                        let successor =
-                            auth.authenticate_transition(&block, transaction, operation)?;
-                        state = successor;
-                    }
-                }
-            }
-            if height == tip.height {
-                break;
-            }
-            height = height
-                .checked_add(1)
-                .ok_or(ResolveError::ArithmeticOverflow)?;
+        let fresh_lower = tip
+            .height
+            .saturating_sub(
+                self.params
+                    .max_anchor_age()
+                    .map_err(|_| ResolveError::InvalidParameters)?,
+            )
+            .max(self.params.activation_height);
+        let mut replay = auth.replay_name_window(name_id, fresh_lower, tip.height)?;
+        if replay.anchor.is_none() {
+            let reset_lower = tip
+                .height
+                .saturating_sub(
+                    self.params
+                        .reset_horizon()
+                        .map_err(|_| ResolveError::InvalidParameters)?,
+                )
+                .max(self.params.activation_height);
+            replay = auth.replay_name_window(name_id, reset_lower, tip.height)?;
         }
+        let Some(state) = replay.state else {
+            return Ok(ResolutionResult {
+                status: ResolutionStatus::Missing,
+                state: None,
+                anchor: None,
+                stats: auth.stats,
+            });
+        };
 
         let status = match self.params.lifecycle(&state.data, tip.height) {
             Lifecycle::Active => ResolutionStatus::Active,
+            Lifecycle::Stale => ResolutionStatus::Stale,
             Lifecycle::Grace => ResolutionStatus::Grace,
             Lifecycle::Released => ResolutionStatus::Released,
             Lifecycle::Claimable => ResolutionStatus::Expired,
@@ -189,17 +159,16 @@ impl FreshResolver {
         Ok(ResolutionResult {
             status,
             state: Some(state),
-            anchor: Some(anchor),
+            anchor: replay.anchor,
             stats: auth.stats,
         })
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-struct EventPosition {
-    height: u32,
-    tx_index: u32,
-    operation_index: usize,
+#[derive(Clone, Debug, Default)]
+struct NameWindowReplay {
+    state: Option<NameState>,
+    anchor: Option<StateRef>,
 }
 
 struct Authenticator<'a, S, P, B> {
@@ -218,55 +187,118 @@ where
     P: V2StateProofVerifier,
     B: BondProofVerifier,
 {
-    fn find_latest_anchor(
+    /// Replays only this name's visible operations in canonical block,
+    /// transaction, and carrier-message order. A rejected Names message is
+    /// skipped; absent or structurally inconsistent canonical block data is
+    /// still fatal.
+    fn replay_name_window(
         &mut self,
         name_id: NameId,
+        start_height: u32,
         tip_height: u32,
-    ) -> Result<Option<(NameState, StateRef, EventPosition)>, ResolveError> {
-        let candidates = schedule::candidate_anchor_heights(name_id, tip_height, self.params);
-        for height in candidates.into_iter().rev() {
-            self.stats.candidate_block_probes = self
-                .stats
-                .candidate_block_probes
-                .checked_add(1)
-                .ok_or(ResolveError::ArithmeticOverflow)?;
-            let Some(block) = self.source.block(height) else {
-                continue;
-            };
-            for (transaction_index, transaction) in block.transactions.iter().enumerate().rev() {
-                for (operation_index, operation) in transaction.operations.iter().enumerate().rev()
-                {
-                    if operation.name_id() != Some(name_id)
-                        || !matches!(
-                            operation,
-                            V2Operation::Reveal { .. } | V2Operation::Renew { .. }
-                        )
-                    {
+    ) -> Result<NameWindowReplay, ResolveError> {
+        let mut replay = NameWindowReplay::default();
+        let mut previous_hash = None;
+        for height in start_height..=tip_height {
+            let block = self
+                .source
+                .block(height)
+                .ok_or(ResolveError::InvalidLineage)?;
+            if block.height != height
+                || previous_hash.is_some_and(|hash| block.prev_block_hash != hash)
+                || block
+                    .transactions
+                    .windows(2)
+                    .any(|pair| pair[0].tx_index >= pair[1].tx_index)
+                || block.transactions.iter().any(|transaction| {
+                    transaction
+                        .actions
+                        .iter()
+                        .enumerate()
+                        .any(|(index, action)| action.action_index != index as u32)
+                        || !transaction.has_canonical_operation_order()
+                })
+            {
+                return Err(ResolveError::InvalidLineage);
+            }
+            previous_hash = Some(block.block_hash);
+            if schedule::is_anchor_height(name_id, height, self.params) {
+                self.stats.candidate_block_probes = self
+                    .stats
+                    .candidate_block_probes
+                    .checked_add(1)
+                    .ok_or(ResolveError::ArithmeticOverflow)?;
+            }
+            if height > start_height {
+                self.stats.tail_blocks_scanned = self
+                    .stats
+                    .tail_blocks_scanned
+                    .checked_add(1)
+                    .ok_or(ResolveError::ArithmeticOverflow)?;
+            }
+            for transaction in &block.transactions {
+                for operation in &transaction.operations {
+                    if operation.name_id() != Some(name_id) {
                         continue;
                     }
-                    let state = match operation {
+                    let candidate = match operation {
+                        V2Operation::Commit { .. } => continue,
                         V2Operation::Reveal { .. } => {
-                            self.authenticate_reveal(&block, transaction, operation)?
+                            self.authenticate_reveal(&block, transaction, operation)
                         }
-                        V2Operation::Renew { .. } => {
-                            self.authenticate_transition(&block, transaction, operation)?
+                        V2Operation::Update { .. }
+                        | V2Operation::Renew { .. }
+                        | V2Operation::Release { .. } => {
+                            self.authenticate_transition(&block, transaction, operation)
                         }
-                        _ => unreachable!(),
                     };
-                    let reference = state.state_ref;
-                    return Ok(Some((
-                        state,
-                        reference,
-                        EventPosition {
-                            height,
-                            tx_index: block.transactions[transaction_index].tx_index,
-                            operation_index,
+                    let Ok(successor) = candidate else {
+                        continue;
+                    };
+                    let accepted = match operation {
+                        V2Operation::Reveal {
+                            replacement_predecessor,
+                            commit,
+                            ..
+                        } => match &replay.state {
+                            Some(current) => {
+                                let claimable = self
+                                    .params
+                                    .claimable_from(
+                                        current.data.status,
+                                        current.data.lease_expiry,
+                                        current.data.terminal_height,
+                                    )
+                                    .ok_or(ResolveError::ArithmeticOverflow)?;
+                                replacement_predecessor == &Some(current.state_ref)
+                                    && block.height >= claimable
+                                    && commit.position.height >= claimable
+                            }
+                            None => replacement_predecessor.is_none(),
                         },
-                    )));
+                        V2Operation::Update { predecessor, .. }
+                        | V2Operation::Renew { predecessor, .. }
+                        | V2Operation::Release { predecessor, .. } => replay
+                            .state
+                            .as_ref()
+                            .map(|current| current.state_ref == *predecessor)
+                            .unwrap_or(true),
+                        V2Operation::Commit { .. } => false,
+                    };
+                    if !accepted {
+                        continue;
+                    }
+                    if matches!(
+                        operation,
+                        V2Operation::Reveal { .. } | V2Operation::Renew { .. }
+                    ) {
+                        replay.anchor = Some(successor.state_ref);
+                    }
+                    replay.state = Some(successor);
                 }
             }
         }
-        Ok(None)
+        Ok(replay)
     }
 
     fn authenticate_state_ref(&mut self, reference: StateRef) -> Result<NameState, ResolveError> {
@@ -423,6 +455,8 @@ where
             {
                 return Err(ResolveError::InvalidOperation);
             }
+        } else if !self.no_predecessor_reset_eligible(name_id, commit.position.height)? {
+            return Err(ResolveError::InvalidOperation);
         }
         let action = transaction
             .action(*action_index)
@@ -445,6 +479,65 @@ where
         Ok(name_state)
     }
 
+    /// Authenticates the bounded no-predecessor COMMIT rule at the COMMIT
+    /// height. The range begins at activation when there is not yet a full
+    /// reset horizon of v2 history; no trusted snapshot is involved.
+    fn no_predecessor_reset_eligible(
+        &mut self,
+        name_id: NameId,
+        commit_height: u32,
+    ) -> Result<bool, ResolveError> {
+        let horizon = self
+            .params
+            .reset_horizon()
+            .map_err(|_| ResolveError::InvalidParameters)?;
+        let candidates = schedule::candidate_anchor_heights_with_age(
+            name_id,
+            commit_height,
+            self.params,
+            horizon,
+        );
+        for height in candidates {
+            if height < self.params.activation_height {
+                continue;
+            }
+            self.stats.candidate_block_probes = self
+                .stats
+                .candidate_block_probes
+                .checked_add(1)
+                .ok_or(ResolveError::ArithmeticOverflow)?;
+            let block = self
+                .source
+                .block(height)
+                .ok_or(ResolveError::InvalidLineage)?;
+            for transaction in &block.transactions {
+                for operation in &transaction.operations {
+                    if operation.name_id() != Some(name_id)
+                        || !matches!(
+                            operation,
+                            V2Operation::Reveal { .. } | V2Operation::Renew { .. }
+                        )
+                    {
+                        continue;
+                    }
+                    let valid = match operation {
+                        V2Operation::Reveal { .. } => self
+                            .authenticate_reveal(&block, transaction, operation)
+                            .is_ok(),
+                        V2Operation::Renew { .. } => self
+                            .authenticate_transition(&block, transaction, operation)
+                            .is_ok(),
+                        _ => false,
+                    };
+                    if valid {
+                        return Ok(false);
+                    }
+                }
+            }
+        }
+        Ok(true)
+    }
+
     fn authenticate_transition(
         &mut self,
         block: &CanonicalBlock,
@@ -465,7 +558,8 @@ where
         if predecessor.data.name_id != state.name_id
             || predecessor.data.owner_pk != state.owner_pk
             || predecessor.state_ref != *predecessor_ref
-            || !predecessor.is_active_at(block.height)
+            || predecessor.data.status != StateStatus::Active
+            || block.height >= predecessor.data.lease_expiry
         {
             return Err(ResolveError::InvalidOperation);
         }
@@ -554,32 +648,6 @@ fn exact_transaction(
         .transactions
         .iter()
         .find(|transaction| transaction.tx_index == tx_index && transaction.txid == txid)
-}
-
-fn transition_predecessor(operation: &V2Operation) -> Option<StateRef> {
-    match operation {
-        V2Operation::Update { predecessor, .. }
-        | V2Operation::Renew { predecessor, .. }
-        | V2Operation::Release { predecessor, .. } => Some(*predecessor),
-        V2Operation::Commit { .. } | V2Operation::Reveal { .. } => None,
-    }
-}
-
-/// Returns true for a competing producer at the current position or any
-/// later producer. A changed txid at the same block/transaction/action slot
-/// is also a reorg-sensitive conflict, not an older harmless stale spend.
-fn is_competing_or_later_producer(candidate: StateRef, current: StateRef) -> bool {
-    (
-        candidate.producer_height,
-        candidate.producer_tx_index,
-        candidate.producer_txid,
-        candidate.producer_action_index,
-    ) >= (
-        current.producer_height,
-        current.producer_tx_index,
-        current.producer_txid,
-        current.producer_action_index,
-    )
 }
 
 type TransitionParts<'a> = Option<(

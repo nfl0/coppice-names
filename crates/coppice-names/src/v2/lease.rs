@@ -13,6 +13,9 @@ pub enum LeaseParameterError {
     CommitTtlTooShort,
     /// A lease could expire before a name reaches its next scheduled anchor.
     LeaseDurationTooShort,
+    /// A payable state could outlive the window in which a fresh resolver
+    /// probes its deterministic anchors.
+    RefreshDeadlineTooShort,
     /// A grace or reuse interval of zero is not used by this experiment.
     ZeroTerminalInterval,
     /// A checked parameter sum overflowed u32.
@@ -31,6 +34,12 @@ pub struct V2Parameters {
     pub epoch_size: u32,
     /// Inclusive COMMIT-to-REVEAL lifetime in blocks.
     pub commit_ttl_blocks: u32,
+    /// Exclusive age at which an anchor stops making a state payable.
+    ///
+    /// This is deliberately independent from the longer lease lifetime. A
+    /// missed slot therefore makes a record stale without immediately taking
+    /// the name away from its owner.
+    pub refresh_deadline_blocks: u32,
     /// Lease length measured from the accepted REVEAL or RENEW height.
     pub lease_duration_blocks: u32,
     /// Grace interval after lease expiry before a name is reclaimable.
@@ -48,6 +57,7 @@ impl V2Parameters {
             activation_height: 1,
             epoch_size: 8,
             commit_ttl_blocks: 15,
+            refresh_deadline_blocks: 16,
             lease_duration_blocks: 32,
             grace_period_blocks: 3,
             reuse_delay_blocks: 4,
@@ -69,7 +79,12 @@ impl V2Parameters {
         if self.max_anchor_gap()? > self.commit_ttl_blocks {
             return Err(LeaseParameterError::CommitTtlTooShort);
         }
-        if self.lease_duration_blocks <= self.max_anchor_gap()? {
+        if self.refresh_deadline_blocks < self.max_anchor_gap()? {
+            return Err(LeaseParameterError::RefreshDeadlineTooShort);
+        }
+        // This gives an owner that misses one scheduled opportunity another
+        // scheduled opportunity before the lease itself expires.
+        if self.lease_duration_blocks <= self.max_two_slot_gap()? {
             return Err(LeaseParameterError::LeaseDurationTooShort);
         }
         self.lease_expiry(self.activation_height)
@@ -93,6 +108,60 @@ impl V2Parameters {
             .ok_or(LeaseParameterError::ArithmeticOverflow)
     }
 
+    /// The largest delay from an anchor through the following two scheduled
+    /// opportunities. A lease longer than this gives a missed refresh one
+    /// recovery opportunity before ownership is lost.
+    pub fn max_two_slot_gap(self) -> Result<u32, LeaseParameterError> {
+        self.max_anchor_gap()?
+            .checked_mul(2)
+            .ok_or(LeaseParameterError::ArithmeticOverflow)
+    }
+
+    /// Returns the inclusive maximum age of a payable anchor.
+    ///
+    /// An anchor at `a` is fresh at exactly the integer heights in
+    /// `[a, a + refresh_deadline_blocks)`, so its maximum age is
+    /// `refresh_deadline_blocks - 1`.
+    pub fn max_anchor_age(self) -> Result<u32, LeaseParameterError> {
+        self.refresh_deadline_blocks
+            .checked_sub(1)
+            .ok_or(LeaseParameterError::RefreshDeadlineTooShort)
+    }
+
+    /// Recovers an anchor height from the deterministic lease encoding.
+    pub fn anchor_height(self, lease_expiry: u32) -> Option<u32> {
+        lease_expiry.checked_sub(self.lease_duration_blocks)
+    }
+
+    /// Returns whether an active state has a current discovery anchor.
+    pub fn is_fresh(self, state: &StateData, height: u32) -> bool {
+        state.status == StateStatus::Active
+            && self
+                .anchor_height(state.lease_expiry)
+                .and_then(|anchor| anchor.checked_add(self.refresh_deadline_blocks))
+                .is_some_and(|deadline| height < deadline)
+    }
+
+    /// Maximum lookback after which an old accepted anchor cannot block a
+    /// no-predecessor registration at height `C`.
+    ///
+    /// Active/grace state becomes claimable at `a + D + G`. A release can be
+    /// accepted only through `a + D - 1` and then blocks through
+    /// `a + D - 1 + R`. The greater of those two exclusive claimability
+    /// points is the reset horizon.
+    pub fn reset_horizon(self) -> Result<u32, LeaseParameterError> {
+        let active = self
+            .lease_duration_blocks
+            .checked_add(self.grace_period_blocks)
+            .ok_or(LeaseParameterError::ArithmeticOverflow)?;
+        let released = self
+            .lease_duration_blocks
+            .checked_sub(1)
+            .and_then(|value| value.checked_add(self.reuse_delay_blocks))
+            .ok_or(LeaseParameterError::ArithmeticOverflow)?;
+        Ok(active.max(released))
+    }
+
     /// Computes an exclusive lease expiry for an accepted anchor.
     pub fn lease_expiry(self, anchor_height: u32) -> Option<u32> {
         anchor_height.checked_add(self.lease_duration_blocks)
@@ -114,7 +183,10 @@ impl V2Parameters {
     /// Classifies a state at a canonical height.
     pub fn lifecycle(self, state: &StateData, height: u32) -> Lifecycle {
         match state.status {
-            StateStatus::Active if height < state.lease_expiry => Lifecycle::Active,
+            StateStatus::Active if height < state.lease_expiry && self.is_fresh(state, height) => {
+                Lifecycle::Active
+            }
+            StateStatus::Active if height < state.lease_expiry => Lifecycle::Stale,
             StateStatus::Active => {
                 let claimable = self
                     .claimable_from(state.status, state.lease_expiry, state.terminal_height)
@@ -153,10 +225,46 @@ impl V2Parameters {
 pub enum Lifecycle {
     /// The state is payable and can be updated, renewed, or released.
     Active,
+    /// The lease still belongs to the owner, but its last anchor is too old
+    /// to resolve/pay. A scheduled RENEW can recover it before lease expiry.
+    Stale,
     /// The state is no longer payable but still blocks replacement.
     Grace,
     /// The state can be replaced by a valid COMMIT/REVEAL.
     Claimable,
     /// An explicitly released state waiting for its reuse delay.
     Released,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reset_horizon_covers_active_and_latest_possible_release() {
+        let params = V2Parameters::testing();
+        let anchor = 100;
+        let horizon = params.reset_horizon().unwrap();
+        assert_eq!(horizon, 35);
+        assert_eq!(params.lease_expiry(anchor), Some(132));
+        assert_eq!(
+            params.claimable_from(StateStatus::Active, 132, 0),
+            Some(anchor + horizon)
+        );
+        // RELEASE is valid through height 131, and its delay also ends at
+        // the same reset boundary for the test constants.
+        assert_eq!(
+            params.claimable_from(StateStatus::Released, 132, 131),
+            Some(anchor + horizon)
+        );
+    }
+
+    #[test]
+    fn payable_window_is_separate_from_lease_lifetime() {
+        let params = V2Parameters::testing();
+        assert_eq!(params.max_anchor_gap().unwrap(), 15);
+        assert_eq!(params.max_anchor_age().unwrap(), 15);
+        assert_eq!(params.max_two_slot_gap().unwrap(), 30);
+        assert!(params.lease_duration_blocks > params.max_two_slot_gap().unwrap());
+    }
 }

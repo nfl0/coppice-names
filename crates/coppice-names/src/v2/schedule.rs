@@ -29,16 +29,15 @@ pub fn is_anchor_height(name_id: NameId, height: u32, params: V2Parameters) -> b
     slot_height(name_id, epoch, params) == Some(height)
 }
 
-/// Derives every candidate slot in the formal freshness window, oldest first.
-pub fn candidate_anchor_heights(
+/// Derives every candidate slot in an inclusive anchor-age window, oldest
+/// first. `maximum_age` is an age, not a count of blocks.
+pub fn candidate_anchor_heights_with_age(
     name_id: NameId,
     tip_height: u32,
     params: V2Parameters,
+    maximum_age: u32,
 ) -> Vec<u32> {
-    let Ok(max_gap) = params.max_anchor_gap() else {
-        return Vec::new();
-    };
-    let lower = tip_height.saturating_sub(max_gap);
+    let lower = tip_height.saturating_sub(maximum_age);
     let first_epoch = u64::from(lower / params.epoch_size.max(1));
     let last_epoch = u64::from(tip_height / params.epoch_size.max(1));
     let mut result = Vec::new();
@@ -51,6 +50,43 @@ pub fn candidate_anchor_heights(
         }
     }
     result
+}
+
+/// Derives scheduled anchors that can still make a state payable at the tip.
+pub fn fresh_candidate_anchor_heights(
+    name_id: NameId,
+    tip_height: u32,
+    params: V2Parameters,
+) -> Vec<u32> {
+    let Ok(max_age) = params.max_anchor_age() else {
+        return Vec::new();
+    };
+    candidate_anchor_heights_with_age(name_id, tip_height, params, max_age)
+}
+
+/// Derives scheduled anchors whose resulting lineage could still affect a
+/// no-predecessor COMMIT at the tip.
+pub fn reset_candidate_anchor_heights(
+    name_id: NameId,
+    height: u32,
+    params: V2Parameters,
+) -> Vec<u32> {
+    let Ok(horizon) = params.reset_horizon() else {
+        return Vec::new();
+    };
+    candidate_anchor_heights_with_age(name_id, height, params, horizon)
+}
+
+/// Backward-compatible test helper for the schedule's physical slot gap.
+pub fn candidate_anchor_heights(
+    name_id: NameId,
+    tip_height: u32,
+    params: V2Parameters,
+) -> Vec<u32> {
+    let Ok(max_gap) = params.max_anchor_gap() else {
+        return Vec::new();
+    };
+    candidate_anchor_heights_with_age(name_id, tip_height, params, max_gap)
 }
 
 /// Computes the next scheduled slot at or after a height.

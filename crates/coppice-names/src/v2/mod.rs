@@ -30,8 +30,8 @@ pub use state::{
     NameId, NameState, OwnerKey, ProducerPosition, StateData, StateError, StateRef, StateStatus,
 };
 pub use transition::{
-    GenesisStatement, OrchardV2ProofVerifier, StatementError, TransitionStatement,
-    V2StateProofVerifier,
+    GenesisStatement, OrchardV2ProofProver, OrchardV2ProofVerifier, ProofCreationError,
+    StatementError, TransitionStatement, V2StateProofVerifier,
 };
 pub use wire::{
     WireError, decode_operation, decode_operations, encode_operation, encode_operations,

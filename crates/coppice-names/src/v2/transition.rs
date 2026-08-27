@@ -8,10 +8,12 @@ use super::{
     },
 };
 use orchard::circuit::state_note_binding::{
-    self as orchard_state_note, GenesisPublicInputs, GenesisVerifier, TransitionPublicInputs,
-    TransitionVerifier,
+    self as orchard_state_note, GenesisProver, GenesisPublicInputs, GenesisVerifier,
+    GenesisWitness, TransitionProver, TransitionPublicInputs, TransitionVerifier,
+    TransitionWitness,
 };
 use pasta_curves::{group::ff::PrimeField, pallas};
+use rand_core::RngCore;
 
 /// Errors while constructing canonical proof public inputs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -302,6 +304,75 @@ pub trait V2StateProofVerifier {
 pub struct OrchardV2ProofVerifier {
     transition: TransitionVerifier,
     genesis: GenesisVerifier,
+}
+
+/// Errors while creating an experimental v2 proof.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProofCreationError {
+    /// The host statement could not be converted to canonical circuit inputs.
+    InvalidStatement(StatementError),
+    /// Halo2 proof creation failed.
+    Proving,
+}
+
+/// Wallet-facing adapter over the experimental Orchard proving keys.
+pub struct OrchardV2ProofProver {
+    transition: TransitionProver,
+    genesis: GenesisProver,
+}
+
+impl OrchardV2ProofProver {
+    /// Generates the experimental proving keys. Deployment tooling should
+    /// persist/cache keys rather than doing this per transaction.
+    pub fn new() -> Self {
+        let (transition, _, genesis, _) = orchard_state_note::keygen();
+        Self {
+            transition,
+            genesis,
+        }
+    }
+
+    /// Builds the adapter from already-generated experimental proving keys.
+    pub const fn from_parts(transition: TransitionProver, genesis: GenesisProver) -> Self {
+        Self {
+            transition,
+            genesis,
+        }
+    }
+
+    /// Proves the Ironwood-native registration-note to state-note relation.
+    pub fn prove_genesis<R: RngCore>(
+        &self,
+        statement: &GenesisStatement,
+        witness: GenesisWitness,
+        rng: R,
+    ) -> Result<Vec<u8>, ProofCreationError> {
+        let inputs = statement
+            .orchard_inputs()
+            .map_err(ProofCreationError::InvalidStatement)?;
+        orchard_state_note::prove_genesis(&self.genesis, witness, &inputs, rng)
+            .map_err(|_| ProofCreationError::Proving)
+    }
+
+    /// Proves one value-preserving state-note transition.
+    pub fn prove_transition<R: RngCore>(
+        &self,
+        statement: &TransitionStatement,
+        witness: TransitionWitness,
+        rng: R,
+    ) -> Result<Vec<u8>, ProofCreationError> {
+        let inputs = statement
+            .orchard_inputs()
+            .map_err(ProofCreationError::InvalidStatement)?;
+        orchard_state_note::prove_transition(&self.transition, witness, &inputs, rng)
+            .map_err(|_| ProofCreationError::Proving)
+    }
+}
+
+impl Default for OrchardV2ProofProver {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl OrchardV2ProofVerifier {

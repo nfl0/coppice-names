@@ -233,7 +233,7 @@ real 4,640-byte Halo2 proofs and a 64-byte record fixture, exact footprints are:
 | RENEW | 4,949 | 4,640 | 10 | 1 |
 
 The unchanged CPV1 maximum is 16,093 bytes / 32 frames. A typical v2 state
-operation therefore uses one Ironwood action and about 3% of a hypothetical
+operation therefore uses one Ironwood action and about 0.3% of a hypothetical
 330-action block budget; 330 is instrumentation context, not a Coppice rule.
 Final epoch, refresh, lease, grace, reuse, TTL, and rewind-retention values must
 be selected in post-NU7 wall-clock terms if target spacing changes; this

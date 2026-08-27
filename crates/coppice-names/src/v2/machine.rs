@@ -819,6 +819,62 @@ mod tests {
         assert!(machine.pending(carol_commitment).is_some());
     }
 
+    #[test]
+    fn invalid_scheduled_candidate_does_not_mask_later_valid_anchor() {
+        let params = V2Parameters::testing();
+        let mut machine = V2StateMachine::new(params).unwrap();
+        let mut source = BTreeMap::new();
+        let alice = intent(33, "anchor-skip", b"record");
+        let commit_ref = commit(&mut machine, &mut source, &alice, 0, 33);
+        let name_id = alice.name_id().unwrap();
+        let reveal_height =
+            schedule::next_anchor_height(name_id, commit_ref.position.height + 1, params).unwrap();
+        advance_to(&mut machine, &mut source, reveal_height - 1);
+        let state = StateData {
+            name_id,
+            owner_pk: alice.owner_pk,
+            sequence: 0,
+            record: alice.record.clone(),
+            lease_expiry: params.lease_expiry(reveal_height).unwrap(),
+            status: StateStatus::Active,
+            terminal_height: 0,
+        };
+        let mut bogus_intent = alice.clone();
+        bogus_intent.secret[0] ^= 1;
+        let result = append(
+            &mut machine,
+            &mut source,
+            vec![transaction(
+                0,
+                34,
+                vec![IronwoodActionRef {
+                    action_index: 0,
+                    nullifier: field(3300),
+                    commitment: field(3301),
+                }],
+                vec![
+                    reveal_operation(&bogus_intent, commit_ref, state.clone(), field(3301), None),
+                    reveal_operation(&alice, commit_ref, state, field(3301), None),
+                ],
+            )],
+        )
+        .unwrap();
+        assert!(matches!(
+            result.operations.as_slice(),
+            [
+                AppliedOperation {
+                    result: AppliedOperationResult::Rejected(ApplyError::CommitmentMismatch),
+                    ..
+                },
+                AppliedOperation {
+                    result: AppliedOperationResult::Accepted(Some((name, AppliedOperationKind::Reveal))),
+                    ..
+                },
+            ] if *name == name_id
+        ));
+        assert_fresh_matches_replay(&machine, &source, "anchor-skip");
+    }
+
     fn advance_to(
         machine: &mut V2StateMachine,
         source: &mut BTreeMap<u32, CanonicalBlock>,

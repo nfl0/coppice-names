@@ -25,6 +25,9 @@ pub struct OperationFootprint {
     pub proof_bytes: usize,
     /// Frozen CPV1 frame count.
     pub cpv1_frames: usize,
+    /// Minimum Ironwood actions with unrestricted cross-address pairing,
+    /// excluding fee-funding and change effects.
+    pub minimum_ironwood_actions: usize,
 }
 
 /// Encodes one operation under an unambiguous Names-v2-only prefix.
@@ -83,10 +86,21 @@ pub fn operation_footprint(operation: &V2Operation) -> Result<OperationFootprint
     };
     let cpv1_frames =
         coppice::transport::required_frames(bytes.len()).map_err(|_| WireError::TooLarge)?;
+    // Every CPV1 memo frame requires a distinct rendezvous output. State
+    // operations add one successor state-note output; their one designated
+    // spend can share that action when cross-address pairing is enabled.
+    let minimum_ironwood_actions = match operation {
+        V2Operation::Commit { .. } => cpv1_frames,
+        V2Operation::Reveal { .. }
+        | V2Operation::Update { .. }
+        | V2Operation::Renew { .. }
+        | V2Operation::Release { .. } => cpv1_frames.checked_add(1).ok_or(WireError::TooLarge)?,
+    };
     Ok(OperationFootprint {
         operation_bytes: bytes.len(),
         proof_bytes,
         cpv1_frames,
+        minimum_ironwood_actions,
     })
 }
 
@@ -192,16 +206,19 @@ mod tests {
                     operation_bytes: 5_056,
                     proof_bytes: 4_640,
                     cpv1_frames: 11,
+                    minimum_ironwood_actions: 12,
                 },
                 OperationFootprint {
                     operation_bytes: 4_950,
                     proof_bytes: 4_640,
                     cpv1_frames: 10,
+                    minimum_ironwood_actions: 11,
                 },
                 OperationFootprint {
                     operation_bytes: 4_949,
                     proof_bytes: 4_640,
                     cpv1_frames: 10,
+                    minimum_ironwood_actions: 11,
                 },
             ]
         );

@@ -147,8 +147,9 @@ impl FreshResolver {
         };
 
         let status = if let Some(abandoned) = state.abandoned_height {
-            if abandoned
-                .checked_add(self.params.reuse_delay_blocks)
+            if self
+                .params
+                .head_claimable_from(&state.data, Some(abandoned))
                 .is_some_and(|claimable| tip.height >= claimable)
             {
                 ResolutionStatus::Expired
@@ -307,18 +308,9 @@ where
                             ..
                         } => match &replay.state {
                             Some(current) => {
-                                let claimable = current
-                                    .abandoned_height
-                                    .map_or_else(
-                                        || {
-                                            self.params.claimable_from(
-                                                current.data.status,
-                                                current.data.lease_expiry,
-                                                current.data.terminal_height,
-                                            )
-                                        },
-                                        |height| height.checked_add(self.params.reuse_delay_blocks),
-                                    )
+                                let claimable = self
+                                    .params
+                                    .head_claimable_from(&current.data, current.abandoned_height)
                                     .ok_or(ResolveError::ArithmeticOverflow)?;
                                 replacement_predecessor == &Some(current.state_ref)
                                     && block.height >= claimable
@@ -527,18 +519,9 @@ where
             {
                 previous.abandon(height);
             }
-            let claimable = previous
-                .abandoned_height
-                .map_or_else(
-                    || {
-                        self.params.claimable_from(
-                            previous.data.status,
-                            previous.data.lease_expiry,
-                            previous.data.terminal_height,
-                        )
-                    },
-                    |height| height.checked_add(self.params.reuse_delay_blocks),
-                )
+            let claimable = self
+                .params
+                .head_claimable_from(&previous.data, previous.abandoned_height)
                 .ok_or(ResolveError::ArithmeticOverflow)?;
             if previous.data.name_id != name_id
                 || block.height < claimable

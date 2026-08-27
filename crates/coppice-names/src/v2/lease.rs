@@ -154,8 +154,9 @@ impl V2Parameters {
     /// Maximum lookback after which an old accepted anchor cannot block a
     /// no-predecessor registration at height `C`.
     ///
-    /// Active/grace state becomes claimable at `a + D + G`. A release can be
-    /// accepted only through `a + D - 1` and then blocks through
+    /// Active/grace state becomes claimable no later than `a + D + G`, because
+    /// unmatched-spend abandonment is capped at that ordinary boundary. A
+    /// release can be accepted only through `a + D - 1` and then blocks through
     /// `a + D - 1 + R`. The greater of those two exclusive claimability
     /// points is the reset horizon.
     pub fn reset_horizon(self) -> Result<u32, LeaseParameterError> {
@@ -186,6 +187,26 @@ impl V2Parameters {
         match status {
             StateStatus::Active => lease_expiry.checked_add(self.grace_period_blocks),
             StateStatus::Released => terminal_height.checked_add(self.reuse_delay_blocks),
+        }
+    }
+
+    /// Returns the claimability height for a replayed state head.
+    ///
+    /// An unmatched spend makes an active state non-payable immediately, but
+    /// cannot extend its ordinary lease-and-grace lifetime. Released terminal
+    /// states retain their explicit release boundary.
+    pub fn head_claimable_from(
+        self,
+        state: &StateData,
+        abandoned_height: Option<u32>,
+    ) -> Option<u32> {
+        let ordinary =
+            self.claimable_from(state.status, state.lease_expiry, state.terminal_height)?;
+        match (state.status, abandoned_height) {
+            (StateStatus::Active, Some(height)) => height
+                .checked_add(self.reuse_delay_blocks)
+                .map(|abandoned| abandoned.min(ordinary)),
+            _ => Some(ordinary),
         }
     }
 

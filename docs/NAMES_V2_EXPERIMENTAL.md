@@ -103,10 +103,13 @@ Replay and fresh resolution inspect the ordinary ordered Ironwood nullifiers
 already present in canonical transaction effects. If the current active note's
 nullifier appears and that action does not produce an accepted Names
 UPDATE/RENEW/RELEASE, the lineage becomes `Abandoned` immediately and is never
-payable. It becomes reclaimable at `spend_height + reuse_delay`. A proof-valid
-but Names-rejected successor does not prevent abandonment. No lookup RPC or
-global nullifier index is required: a fresh lookup scans the same bounded tail
-used for that name.
+payable. Its claimability height is
+`min(spend_height + reuse_delay, lease_expiry + grace_period)`: an unmatched
+spend may accelerate availability but can never extend the ordinary
+lease-and-grace lifetime. A proof-valid but Names-rejected successor does not
+prevent abandonment. Full replay uses a derived local future-nullifier map;
+fresh lookup remains name-local and scans the same bounded tail used for that
+name. Neither path requires a lookup RPC or protocol-visible global index.
 
 RELEASE already creates an authenticated terminal state, so spending its note
 for refund does not change release/reuse timing. Likewise, ordinary refund
@@ -226,15 +229,20 @@ binary encoding. The decoder re-encodes and compares bytes, and the prefix is
 disjoint from frozen v1. Generic CPV1 framing is unchanged. With the current
 real 4,640-byte Halo2 proofs and a 64-byte record fixture, exact footprints are:
 
-| operation | envelope bytes | proof bytes | CPV1 frames | Ironwood actions |
+| operation | envelope bytes | proof bytes | CPV1 frames | minimum Ironwood actions |
 | --- | ---: | ---: | ---: | ---: |
-| REVEAL | 5,056 | 4,640 | 11 | 1 |
-| UPDATE | 4,950 | 4,640 | 10 | 1 |
-| RENEW | 4,949 | 4,640 | 10 | 1 |
+| REVEAL | 5,056 | 4,640 | 11 | 12 |
+| UPDATE | 4,950 | 4,640 | 10 | 11 |
+| RENEW | 4,949 | 4,640 | 10 | 11 |
 
-The unchanged CPV1 maximum is 16,093 bytes / 32 frames. A typical v2 state
-operation therefore uses one Ironwood action and about 0.3% of a hypothetical
-330-action block budget; 330 is instrumentation context, not a Coppice rule.
+Each CPV1 frame is carried by a distinct Ironwood rendezvous output, and each
+state operation adds its successor state-note output. With the one required
+Names spend paired with that successor output, the protocol minimum is
+therefore 12 actions for REVEAL and 11 for UPDATE or RENEW, excluding any
+fee-funding or change effects. These are about 3.6% and 3.3% respectively of a
+hypothetical 330-action block budget. The final wallet transaction counts are
+not known until real construction; 330 is instrumentation context, not a
+Coppice rule. The unchanged CPV1 maximum is 16,093 bytes / 32 frames.
 Final epoch, refresh, lease, grace, reuse, TTL, and rewind-retention values must
 be selected in post-NU7 wall-clock terms if target spacing changes; this
 experiment does not freeze them.
@@ -249,15 +257,18 @@ current note. This requires no Core change or Names-specific RPC.
 
 ## Transaction construction boundary
 
-The current Orchard builder randomizes spend and output action positions and
-returns their final indices in `BundleMetadata`. A memo cannot safely insert
-that index after the output commitment has been finalized. The sound existing
-construction is therefore an unpadded bundle with exactly one requested
-Ironwood spend and one requested Ironwood output: there is exactly one action,
-so the registration/state spend and successor commitment are necessarily
-paired at index zero. Fees or unrelated value should use non-Ironwood inputs
-and outputs for this first qualification path. General multi-action wallet
-construction still needs a builder API that deliberately pairs one requested
-spend/output before shuffling complete pairs, or a later protocol change to
-identify a unique `(nullifier, commitment)` action pair without carrying an
-index. No retry-until-random-order workaround is permitted.
+The current Orchard builder randomizes requested spend and output positions
+independently and returns their final indices in `BundleMetadata`. Names needs
+a multi-action bundle because every CPV1 frame is a rendezvous output. One
+designated registration/predecessor spend must be deliberately paired in the
+same action with the designated successor state-note output, so that
+`action.nf` is the Names input nullifier and `action.cmx` is the successor
+commitment. The remaining actions carry the CPV1 outputs and any necessary
+fee-funding or change effects; exact fee-related action count is not yet known.
+
+A memo cannot safely insert a discovered final action index after the output
+commitment has been finalized. Wallet construction therefore needs a builder
+API that preserves the designated spend/output pairing while shuffling
+complete actions, or a later protocol change to identify a unique
+`(nullifier, commitment)` action pair without carrying an index. No
+retry-until-random-order workaround is permitted.

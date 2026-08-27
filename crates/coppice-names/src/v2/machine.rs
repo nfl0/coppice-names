@@ -9,7 +9,7 @@ use super::{
     state::{NameId, NameState, StateData, StateError, StateRef, StateStatus},
     transition::{GenesisStatement, StatementError, TransitionStatement, V2StateProofVerifier},
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Errors from canonical v2 block application.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -144,6 +144,7 @@ pub struct V2StateMachine {
     tip: ChainTip,
     pending: BTreeMap<[u8; 32], CommitRef>,
     heads: BTreeMap<NameId, NameState>,
+    current_by_nullifier: BTreeMap<[u8; 32], BTreeSet<NameId>>,
 }
 
 impl V2StateMachine {
@@ -158,6 +159,7 @@ impl V2StateMachine {
             params,
             pending: BTreeMap::new(),
             heads: BTreeMap::new(),
+            current_by_nullifier: BTreeMap::new(),
         })
     }
 
@@ -291,16 +293,19 @@ impl V2StateMachine {
                     result,
                 });
             }
-            for head in self.heads.values_mut() {
-                if head.abandoned_height.is_none()
-                    && head.data.status == StateStatus::Active
-                    && self.params.lifecycle(&head.data, block.height) != Lifecycle::Claimable
-                    && transaction
-                        .actions
-                        .iter()
-                        .any(|action| action.nullifier == head.state_ref.nullifier)
-                {
-                    head.abandon(block.height);
+            for action in &transaction.actions {
+                if let Some(names) = self.current_by_nullifier.remove(&action.nullifier) {
+                    for name_id in names {
+                        if let Some(head) = self.heads.get_mut(&name_id)
+                            && head.state_ref.nullifier == action.nullifier
+                            && head.abandoned_height.is_none()
+                            && head.data.status == StateStatus::Active
+                            && self.params.lifecycle(&head.data, block.height)
+                                != Lifecycle::Claimable
+                        {
+                            head.abandon(block.height);
+                        }
+                    }
                 }
             }
         }
@@ -441,7 +446,7 @@ impl V2StateMachine {
             return Err(ApplyError::InvalidStateProof);
         }
         self.pending.remove(&commit.commitment);
-        self.heads.insert(name_id, name_state.clone());
+        self.replace_head(name_id, name_state.clone());
         Ok(name_state)
     }
 
@@ -561,7 +566,7 @@ impl V2StateMachine {
         if !proofs.verify_transition(&statement, proof) {
             return Err(ApplyError::InvalidStateProof);
         }
-        self.heads.insert(name_id, successor);
+        self.replace_head(name_id, successor);
         let applied_kind = match kind {
             OperationKind::Update => AppliedOperationKind::Update,
             OperationKind::Renew => AppliedOperationKind::Renew,
@@ -576,8 +581,9 @@ impl V2StateMachine {
             return ResolutionStatus::Missing;
         };
         if let Some(abandoned) = state.abandoned_height {
-            return if abandoned
-                .checked_add(self.params.reuse_delay_blocks)
+            return if self
+                .params
+                .head_claimable_from(&state.data, Some(abandoned))
                 .is_some_and(|claimable| height >= claimable)
             {
                 ResolutionStatus::Expired
@@ -592,6 +598,25 @@ impl V2StateMachine {
             Lifecycle::Released => ResolutionStatus::Released,
             Lifecycle::Claimable => ResolutionStatus::Expired,
         }
+    }
+
+    fn replace_head(&mut self, name_id: NameId, successor: NameState) {
+        if let Some(predecessor) = self.heads.get(&name_id) {
+            let nullifier = predecessor.state_ref.nullifier;
+            if let Some(names) = self.current_by_nullifier.get_mut(&nullifier) {
+                names.remove(&name_id);
+                if names.is_empty() {
+                    self.current_by_nullifier.remove(&nullifier);
+                }
+            }
+        }
+        if successor.data.status == StateStatus::Active {
+            self.current_by_nullifier
+                .entry(successor.state_ref.nullifier)
+                .or_default()
+                .insert(name_id);
+        }
+        self.heads.insert(name_id, successor);
     }
 }
 
@@ -621,16 +646,7 @@ pub enum ResolutionStatus {
 }
 
 fn claimable_from_head(params: V2Parameters, state: &NameState) -> Option<u32> {
-    state.abandoned_height.map_or_else(
-        || {
-            params.claimable_from(
-                state.data.status,
-                state.data.lease_expiry,
-                state.data.terminal_height,
-            )
-        },
-        |height| height.checked_add(params.reuse_delay_blocks),
-    )
+    params.head_claimable_from(&state.data, state.abandoned_height)
 }
 
 fn validate_action_order(transaction: &CanonicalTransaction) -> Result<(), ApplyError> {
@@ -1073,7 +1089,15 @@ mod tests {
         let (_, state0, _) = register(&mut machine, &mut source, &alice, 39);
         let name_id = alice.name_id().unwrap();
         let spend_height = machine.tip().height + 1;
-        append(
+        let invalid_successor = state_after(
+            &state0,
+            &state0.data.record,
+            1,
+            state0.data.lease_expiry,
+            StateStatus::Active,
+            0,
+        );
+        let unmatched = append(
             &mut machine,
             &mut source,
             vec![transaction(
@@ -1084,10 +1108,17 @@ mod tests {
                     nullifier: state0.state_ref.nullifier,
                     commitment: field(3601),
                 }],
-                Vec::new(),
+                vec![transition_operation(
+                    OperationKind::Update,
+                    state0.state_ref,
+                    invalid_successor,
+                    field(3601),
+                    0,
+                )],
             )],
         )
         .unwrap();
+        assert_rejected(&unmatched, ApplyError::InvalidUpdate);
         assert_eq!(
             machine.head(name_id).unwrap().abandoned_height,
             Some(spend_height)
@@ -1138,6 +1169,48 @@ mod tests {
             ResolutionStatus::Expired
         );
         assert_fresh_matches_replay(&machine, &source, "ordinary-spend");
+    }
+
+    #[test]
+    fn last_grace_spend_cannot_extend_reset_claimability() {
+        let params = V2Parameters::testing();
+        let mut machine = V2StateMachine::new(params).unwrap();
+        let mut source = BTreeMap::new();
+        let alice = intent(37, "grace-spend", b"record");
+        let (anchor, state, _) = register(&mut machine, &mut source, &alice, 43);
+        let name_id = alice.name_id().unwrap();
+        let ordinary_claimable = state.data.lease_expiry + params.grace_period_blocks;
+        assert_eq!(ordinary_claimable, anchor + params.reset_horizon().unwrap());
+
+        let last_grace_height = ordinary_claimable - 1;
+        advance_to(&mut machine, &mut source, last_grace_height - 1);
+        append(
+            &mut machine,
+            &mut source,
+            vec![transaction(
+                0,
+                44,
+                vec![IronwoodActionRef {
+                    action_index: 0,
+                    nullifier: state.state_ref.nullifier,
+                    commitment: field(3701),
+                }],
+                Vec::new(),
+            )],
+        )
+        .unwrap();
+        assert_eq!(
+            machine.resolution_at(name_id, last_grace_height),
+            ResolutionStatus::Abandoned
+        );
+        assert_fresh_matches_replay(&machine, &source, "grace-spend");
+
+        advance_to(&mut machine, &mut source, ordinary_claimable);
+        assert_eq!(
+            machine.resolution_at(name_id, ordinary_claimable),
+            ResolutionStatus::Expired
+        );
+        assert_fresh_matches_replay(&machine, &source, "grace-spend");
     }
 
     #[test]

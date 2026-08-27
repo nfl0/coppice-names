@@ -4,7 +4,7 @@ use super::{
     lease::{Lifecycle, V2Parameters},
     machine::ResolutionStatus,
     operation::{CanonicalBlock, CanonicalTransaction, ChainTip, OperationKind, V2Operation},
-    registration::{BondProofVerifier, CommitRef, RegistrationIntent},
+    registration::{CommitRef, RegistrationIntent},
     schedule,
     state::{NameId, NameState, StateData, StateRef, StateStatus},
     transition::{GenesisStatement, TransitionStatement, V2StateProofVerifier},
@@ -97,17 +97,15 @@ impl FreshResolver {
     }
 
     /// Resolves a canonical name from only the canonical tip and block bodies.
-    pub fn resolve<S, P, B>(
+    pub fn resolve<S, P>(
         self,
         name: &str,
         source: &S,
         proofs: &P,
-        bonds: &B,
     ) -> Result<ResolutionResult, ResolveError>
     where
         S: CanonicalSource,
         P: V2StateProofVerifier,
-        B: BondProofVerifier,
     {
         let name_id = super::state::name_id(name).map_err(|_| ResolveError::InvalidName)?;
         let tip = source.tip();
@@ -115,7 +113,6 @@ impl FreshResolver {
             params: self.params,
             source,
             proofs,
-            bonds,
             stats: ResolutionStats::default(),
             cache: BTreeMap::new(),
             visiting: BTreeSet::new(),
@@ -149,12 +146,23 @@ impl FreshResolver {
             });
         };
 
-        let status = match self.params.lifecycle(&state.data, tip.height) {
-            Lifecycle::Active => ResolutionStatus::Active,
-            Lifecycle::Stale => ResolutionStatus::Stale,
-            Lifecycle::Grace => ResolutionStatus::Grace,
-            Lifecycle::Released => ResolutionStatus::Released,
-            Lifecycle::Claimable => ResolutionStatus::Expired,
+        let status = if let Some(abandoned) = state.abandoned_height {
+            if abandoned
+                .checked_add(self.params.reuse_delay_blocks)
+                .is_some_and(|claimable| tip.height >= claimable)
+            {
+                ResolutionStatus::Expired
+            } else {
+                ResolutionStatus::Abandoned
+            }
+        } else {
+            match self.params.lifecycle(&state.data, tip.height) {
+                Lifecycle::Active => ResolutionStatus::Active,
+                Lifecycle::Stale => ResolutionStatus::Stale,
+                Lifecycle::Grace => ResolutionStatus::Grace,
+                Lifecycle::Released => ResolutionStatus::Released,
+                Lifecycle::Claimable => ResolutionStatus::Expired,
+            }
         };
         Ok(ResolutionResult {
             status,
@@ -178,21 +186,19 @@ struct MessagePosition {
     operation_index: u32,
 }
 
-struct Authenticator<'a, S, P, B> {
+struct Authenticator<'a, S, P> {
     params: V2Parameters,
     source: &'a S,
     proofs: &'a P,
-    bonds: &'a B,
     stats: ResolutionStats,
     cache: BTreeMap<StateRef, NameState>,
     visiting: BTreeSet<StateRef>,
 }
 
-impl<'a, S, P, B> Authenticator<'a, S, P, B>
+impl<'a, S, P> Authenticator<'a, S, P>
 where
     S: CanonicalSource,
     P: V2StateProofVerifier,
-    B: BondProofVerifier,
 {
     /// Replays only this name's visible operations in canonical block,
     /// transaction, and carrier-message order. A rejected Names message is
@@ -273,6 +279,9 @@ where
                     if operation.name_id() != Some(name_id) {
                         continue;
                     }
+                    if !transaction.is_first_action_claim(operation_index) {
+                        continue;
+                    }
                     let candidate = match operation {
                         V2Operation::Commit { .. } => continue,
                         V2Operation::Reveal { .. } => {
@@ -298,12 +307,17 @@ where
                             ..
                         } => match &replay.state {
                             Some(current) => {
-                                let claimable = self
-                                    .params
-                                    .claimable_from(
-                                        current.data.status,
-                                        current.data.lease_expiry,
-                                        current.data.terminal_height,
+                                let claimable = current
+                                    .abandoned_height
+                                    .map_or_else(
+                                        || {
+                                            self.params.claimable_from(
+                                                current.data.status,
+                                                current.data.lease_expiry,
+                                                current.data.terminal_height,
+                                            )
+                                        },
+                                        |height| height.checked_add(self.params.reuse_delay_blocks),
                                     )
                                     .ok_or(ResolveError::ArithmeticOverflow)?;
                                 replacement_predecessor == &Some(current.state_ref)
@@ -315,7 +329,10 @@ where
                         V2Operation::Update { predecessor, .. }
                         | V2Operation::Renew { predecessor, .. }
                         | V2Operation::Release { predecessor, .. } => match replay.state.as_ref() {
-                            Some(current) => current.state_ref == *predecessor,
+                            Some(current) => {
+                                current.abandoned_height.is_none()
+                                    && current.state_ref == *predecessor
+                            }
                             // `authenticate_transition` has already established that this
                             // predecessor is an accepted Names producer. This bounded replay
                             // may start after that producer, but must never bootstrap from a
@@ -334,6 +351,17 @@ where
                         replay.anchor = Some(successor.state_ref);
                     }
                     replay.state = Some(successor);
+                }
+                if let Some(current) = replay.state.as_mut()
+                    && current.abandoned_height.is_none()
+                    && current.data.status == StateStatus::Active
+                    && self.params.lifecycle(&current.data, height) != Lifecycle::Claimable
+                    && transaction
+                        .actions
+                        .iter()
+                        .any(|action| action.nullifier == current.state_ref.nullifier)
+                {
+                    current.abandon(height);
                 }
             }
         }
@@ -376,8 +404,12 @@ where
                 .operations
                 .get(reference.producer_operation_index as usize)
                 .ok_or(ResolveError::InvalidLineage)?;
+            if !transaction.is_first_action_claim(reference.producer_operation_index as usize) {
+                return Err(ResolveError::InvalidOperation);
+            }
             if operation.action_index() != Some(reference.producer_action_index)
                 || operation.state_commitment() != Some(reference.commitment)
+                || operation.state_nullifier() != Some(reference.nullifier)
                 || operation.name_id().is_none()
             {
                 return Err(ResolveError::InvalidLineage);
@@ -431,8 +463,8 @@ where
             replacement_predecessor,
             state,
             state_commitment,
+            state_nullifier,
             action_index,
-            bond,
             proof,
         } = operation
         else {
@@ -484,21 +516,32 @@ where
         if !schedule::is_anchor_height(name_id, block.height, self.params) {
             return Err(ResolveError::InvalidOperation);
         }
-        if bond.bond_tag != intent.bond_tag || !self.bonds.verify(intent, bond) {
-            return Err(ResolveError::InvalidOperation);
-        }
         if let Some(previous_ref) = replacement_predecessor {
-            let previous = self.authenticate_accepted_state_ref(*previous_ref)?;
-            let claimable = self
-                .params
-                .claimable_from(
-                    previous.data.status,
-                    previous.data.lease_expiry,
-                    previous.data.terminal_height,
+            let mut previous = self.authenticate_accepted_state_ref(*previous_ref)?;
+            if let Some(height) = self.find_nullifier_spend_height(
+                previous.state_ref.nullifier,
+                previous.state_ref.producer_height,
+                block.height,
+            )? && previous.data.status == StateStatus::Active
+                && self.params.lifecycle(&previous.data, height) != Lifecycle::Claimable
+            {
+                previous.abandon(height);
+            }
+            let claimable = previous
+                .abandoned_height
+                .map_or_else(
+                    || {
+                        self.params.claimable_from(
+                            previous.data.status,
+                            previous.data.lease_expiry,
+                            previous.data.terminal_height,
+                        )
+                    },
+                    |height| height.checked_add(self.params.reuse_delay_blocks),
                 )
                 .ok_or(ResolveError::ArithmeticOverflow)?;
             if previous.data.name_id != name_id
-                || self.params.lifecycle(&previous.data, block.height) != Lifecycle::Claimable
+                || block.height < claimable
                 || commit.position.height < claimable
             {
                 return Err(ResolveError::InvalidOperation);
@@ -517,15 +560,41 @@ where
             *action_index,
             operation_index(transaction, operation)?,
             *state_commitment,
+            *state_nullifier,
         );
         let name_state = NameState::new(state.clone(), *state_commitment, state_ref)
             .map_err(|_| ResolveError::InvalidOperation)?;
-        let statement = GenesisStatement::from_state(&name_state, action)
-            .map_err(|_| ResolveError::InvalidOperation)?;
+        let statement =
+            GenesisStatement::from_state(&name_state, action, self.params.minimum_bond_zatoshis)
+                .map_err(|_| ResolveError::InvalidOperation)?;
         if !self.proofs.verify_genesis(&statement, proof) {
             return Err(ResolveError::InvalidOperation);
         }
         Ok(name_state)
+    }
+
+    fn find_nullifier_spend_height(
+        &self,
+        nullifier: [u8; 32],
+        start_height: u32,
+        end_height: u32,
+    ) -> Result<Option<u32>, ResolveError> {
+        for height in start_height..=end_height {
+            let block = self
+                .source
+                .block(height)
+                .ok_or(ResolveError::InvalidLineage)?;
+            validate_block_shape(&block, height)?;
+            if block.transactions.iter().any(|transaction| {
+                transaction
+                    .actions
+                    .iter()
+                    .any(|action| action.nullifier == nullifier)
+            }) {
+                return Ok(Some(height));
+            }
+        }
+        Ok(None)
     }
 
     /// Verifies that `commit` names the exact message which was admitted to
@@ -627,6 +696,9 @@ where
         let Some(commitment) = operation.state_commitment() else {
             return Ok(false);
         };
+        let Some(nullifier) = operation.state_nullifier() else {
+            return Ok(false);
+        };
         let Ok(index) = operation_index(transaction, operation) else {
             return Err(ResolveError::InvalidLineage);
         };
@@ -635,6 +707,7 @@ where
             action_index,
             index,
             commitment,
+            nullifier,
         )) {
             Ok(_) => Ok(true),
             Err(ResolveError::InvalidOperation | ResolveError::InvalidName) => Ok(false),
@@ -705,8 +778,15 @@ where
             .predecessor_chain_steps
             .checked_add(1)
             .ok_or(ResolveError::ArithmeticOverflow)?;
-        let Some((kind, predecessor_ref, state, state_commitment, action_index, proof)) =
-            transition_parts(operation)
+        let Some((
+            kind,
+            predecessor_ref,
+            state,
+            state_commitment,
+            state_nullifier,
+            action_index,
+            proof,
+        )) = transition_parts(operation)
         else {
             return Err(ResolveError::InvalidOperation);
         };
@@ -716,6 +796,7 @@ where
             || predecessor.state_ref != *predecessor_ref
             || predecessor.data.status != StateStatus::Active
             || block.height >= predecessor.data.lease_expiry
+            || predecessor.abandoned_height.is_some()
         {
             return Err(ResolveError::InvalidOperation);
         }
@@ -776,6 +857,7 @@ where
             action_index,
             operation_index(transaction, operation)?,
             *state_commitment,
+            *state_nullifier,
         );
         let successor = NameState::new(state.clone(), *state_commitment, state_ref)
             .map_err(|_| ResolveError::InvalidOperation)?;
@@ -845,6 +927,7 @@ type TransitionParts<'a> = Option<(
     &'a StateRef,
     &'a StateData,
     &'a [u8; 32],
+    &'a [u8; 32],
     u32,
     &'a [u8],
 )>;
@@ -855,6 +938,7 @@ fn transition_parts(operation: &V2Operation) -> TransitionParts<'_> {
             predecessor,
             state,
             state_commitment,
+            state_nullifier,
             action_index,
             proof,
         } => Some((
@@ -862,6 +946,7 @@ fn transition_parts(operation: &V2Operation) -> TransitionParts<'_> {
             predecessor,
             state,
             state_commitment,
+            state_nullifier,
             *action_index,
             proof,
         )),
@@ -869,6 +954,7 @@ fn transition_parts(operation: &V2Operation) -> TransitionParts<'_> {
             predecessor,
             state,
             state_commitment,
+            state_nullifier,
             action_index,
             proof,
         } => Some((
@@ -876,6 +962,7 @@ fn transition_parts(operation: &V2Operation) -> TransitionParts<'_> {
             predecessor,
             state,
             state_commitment,
+            state_nullifier,
             *action_index,
             proof,
         )),
@@ -883,6 +970,7 @@ fn transition_parts(operation: &V2Operation) -> TransitionParts<'_> {
             predecessor,
             state,
             state_commitment,
+            state_nullifier,
             action_index,
             proof,
         } => Some((
@@ -890,6 +978,7 @@ fn transition_parts(operation: &V2Operation) -> TransitionParts<'_> {
             predecessor,
             state,
             state_commitment,
+            state_nullifier,
             *action_index,
             proof,
         )),

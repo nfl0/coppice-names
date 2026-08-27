@@ -5,7 +5,7 @@ use super::{
     operation::{
         ActionViewError, CanonicalBlock, CanonicalTransaction, ChainTip, OperationKind, V2Operation,
     },
-    registration::{BondProofVerifier, CommitRef},
+    registration::CommitRef,
     state::{NameId, NameState, StateData, StateError, StateRef, StateStatus},
     transition::{GenesisStatement, StatementError, TransitionStatement, V2StateProofVerifier},
 };
@@ -40,8 +40,6 @@ pub enum ApplyError {
     RevealOutsideAnchor,
     /// The disclosed registration intent is malformed.
     InvalidRegistration,
-    /// The v1 BondProof evidence was not accepted.
-    InvalidBondProof,
     /// A name is not claimable at REVEAL.
     NameUnavailable,
     /// A replacement COMMIT predates the claimability boundary.
@@ -54,6 +52,9 @@ pub enum ApplyError {
     InvalidState(StateError),
     /// A proof statement could not be constructed.
     InvalidStatement(StatementError),
+    /// An earlier carrier message in this transaction already claimed the
+    /// selected physical Ironwood action.
+    ActionAlreadyClaimed,
     /// A state proof did not verify.
     InvalidStateProof,
     /// The selected action commitment is not the declared successor commitment.
@@ -181,31 +182,27 @@ impl V2StateMachine {
     }
 
     /// Applies a canonical block atomically after v2 proof and policy checks.
-    pub fn apply_block<P, B>(
+    pub fn apply_block<P>(
         &mut self,
         block: &CanonicalBlock,
         proofs: &P,
-        bonds: &B,
     ) -> Result<AppliedBlock, ApplyError>
     where
         P: V2StateProofVerifier,
-        B: BondProofVerifier,
     {
         let mut next = self.clone();
-        let applied = next.apply_block_inner(block, proofs, bonds)?;
+        let applied = next.apply_block_inner(block, proofs)?;
         *self = next;
         Ok(applied)
     }
 
-    fn apply_block_inner<P, B>(
+    fn apply_block_inner<P>(
         &mut self,
         block: &CanonicalBlock,
         proofs: &P,
-        bonds: &B,
     ) -> Result<AppliedBlock, ApplyError>
     where
         P: V2StateProofVerifier,
-        B: BondProofVerifier,
     {
         let expected_height = self
             .tip
@@ -241,38 +238,42 @@ impl V2StateMachine {
                 // index, or application-side nullifier before a later valid
                 // operation is processed.
                 let before = self.clone();
-                let outcome = match operation {
-                    V2Operation::Commit { commitment } => {
-                        let position = transaction.position(block.height);
-                        let commit = CommitRef::new(position, operation_index as u32, *commitment);
-                        if self.pending.contains_key(commitment) {
-                            Err(ApplyError::DuplicateCommitment)
-                        } else {
-                            self.pending.insert(*commitment, commit);
-                            Ok(None)
+                let outcome = if !transaction.is_first_action_claim(operation_index) {
+                    Err(ApplyError::ActionAlreadyClaimed)
+                } else {
+                    match operation {
+                        V2Operation::Commit { commitment } => {
+                            let position = transaction.position(block.height);
+                            let commit =
+                                CommitRef::new(position, operation_index as u32, *commitment);
+                            if self.pending.contains_key(commitment) {
+                                Err(ApplyError::DuplicateCommitment)
+                            } else {
+                                self.pending.insert(*commitment, commit);
+                                Ok(None)
+                            }
                         }
+                        V2Operation::Reveal { .. } => self
+                            .apply_reveal(
+                                block,
+                                transaction,
+                                operation_index as u32,
+                                operation,
+                                proofs,
+                            )
+                            .map(|state| Some((state.data.name_id, AppliedOperationKind::Reveal))),
+                        V2Operation::Update { .. }
+                        | V2Operation::Renew { .. }
+                        | V2Operation::Release { .. } => self
+                            .apply_transition(
+                                block,
+                                transaction,
+                                operation_index as u32,
+                                operation,
+                                proofs,
+                            )
+                            .map(Some),
                     }
-                    V2Operation::Reveal { .. } => self
-                        .apply_reveal(
-                            block,
-                            transaction,
-                            operation_index as u32,
-                            operation,
-                            proofs,
-                            bonds,
-                        )
-                        .map(|state| Some((state.data.name_id, AppliedOperationKind::Reveal))),
-                    V2Operation::Update { .. }
-                    | V2Operation::Renew { .. }
-                    | V2Operation::Release { .. } => self
-                        .apply_transition(
-                            block,
-                            transaction,
-                            operation_index as u32,
-                            operation,
-                            proofs,
-                        )
-                        .map(Some),
                 };
                 let result = match outcome {
                     Ok(accepted) => AppliedOperationResult::Accepted(accepted),
@@ -289,6 +290,18 @@ impl V2StateMachine {
                     operation_index: operation_index as u32,
                     result,
                 });
+            }
+            for head in self.heads.values_mut() {
+                if head.abandoned_height.is_none()
+                    && head.data.status == StateStatus::Active
+                    && self.params.lifecycle(&head.data, block.height) != Lifecycle::Claimable
+                    && transaction
+                        .actions
+                        .iter()
+                        .any(|action| action.nullifier == head.state_ref.nullifier)
+                {
+                    head.abandon(block.height);
+                }
             }
         }
 
@@ -309,18 +322,16 @@ impl V2StateMachine {
         })
     }
 
-    fn apply_reveal<P, B>(
+    fn apply_reveal<P>(
         &mut self,
         block: &CanonicalBlock,
         transaction: &CanonicalTransaction,
         operation_index: u32,
         operation: &V2Operation,
         proofs: &P,
-        bonds: &B,
     ) -> Result<NameState, ApplyError>
     where
         P: V2StateProofVerifier,
-        B: BondProofVerifier,
     {
         let V2Operation::Reveal {
             intent,
@@ -328,8 +339,8 @@ impl V2StateMachine {
             replacement_predecessor,
             state,
             state_commitment,
+            state_nullifier,
             action_index,
-            bond,
             proof,
         } = operation
         else {
@@ -389,19 +400,10 @@ impl V2StateMachine {
         if !super::schedule::is_anchor_height(name_id, block.height, self.params) {
             return Err(ApplyError::RevealOutsideAnchor);
         }
-        if bond.bond_tag != intent.bond_tag || !bonds.verify(intent, bond) {
-            return Err(ApplyError::InvalidBondProof);
-        }
 
         if let Some(previous) = self.heads.get(&name_id) {
-            let claimable = self
-                .params
-                .claimable_from(
-                    previous.data.status,
-                    previous.data.lease_expiry,
-                    previous.data.terminal_height,
-                )
-                .ok_or(ApplyError::ArithmeticOverflow)?;
+            let claimable =
+                claimable_from_head(self.params, previous).ok_or(ApplyError::ArithmeticOverflow)?;
             if block.height < claimable {
                 return Err(ApplyError::NameUnavailable);
             }
@@ -430,9 +432,11 @@ impl V2StateMachine {
             *action_index,
             operation_index,
             *state_commitment,
+            *state_nullifier,
         );
         let name_state = NameState::new(state.clone(), *state_commitment, state_ref)?;
-        let statement = GenesisStatement::from_state(&name_state, action)?;
+        let statement =
+            GenesisStatement::from_state(&name_state, action, self.params.minimum_bond_zatoshis)?;
         if !proofs.verify_genesis(&statement, proof) {
             return Err(ApplyError::InvalidStateProof);
         }
@@ -473,7 +477,7 @@ impl V2StateMachine {
     where
         P: V2StateProofVerifier,
     {
-        let (kind, predecessor, state, state_commitment, action_index, proof) =
+        let (kind, predecessor, state, state_commitment, state_nullifier, action_index, proof) =
             transition_parts(operation)
                 .ok_or(ApplyError::InvalidState(StateError::InvalidField))?;
         let name_id = state.name_id;
@@ -483,6 +487,9 @@ impl V2StateMachine {
             .cloned()
             .ok_or(ApplyError::MissingPredecessor)?;
         if current.state_ref != *predecessor || current.commitment != predecessor.commitment {
+            return Err(ApplyError::StalePredecessor);
+        }
+        if current.abandoned_height.is_some() {
             return Err(ApplyError::StalePredecessor);
         }
         if current.data.status != StateStatus::Active || block.height >= current.data.lease_expiry {
@@ -546,6 +553,7 @@ impl V2StateMachine {
             action_index,
             operation_index,
             *state_commitment,
+            *state_nullifier,
         );
         let successor = NameState::new(state.clone(), *state_commitment, state_ref)?;
         let statement =
@@ -567,6 +575,16 @@ impl V2StateMachine {
         let Some(state) = self.heads.get(&name_id) else {
             return ResolutionStatus::Missing;
         };
+        if let Some(abandoned) = state.abandoned_height {
+            return if abandoned
+                .checked_add(self.params.reuse_delay_blocks)
+                .is_some_and(|claimable| height >= claimable)
+            {
+                ResolutionStatus::Expired
+            } else {
+                ResolutionStatus::Abandoned
+            };
+        }
         match self.params.lifecycle(&state.data, height) {
             Lifecycle::Active => ResolutionStatus::Active,
             Lifecycle::Stale => ResolutionStatus::Stale,
@@ -593,10 +611,26 @@ pub enum ResolutionStatus {
     Grace,
     /// An explicitly released state waiting for reuse.
     Released,
+    /// The authenticated current state note was spent without an accepted
+    /// Names successor and is waiting for the reuse delay.
+    Abandoned,
     /// The state exists but is no longer active/payable and is reclaimable.
     Expired,
     /// No state head is known.
     Missing,
+}
+
+fn claimable_from_head(params: V2Parameters, state: &NameState) -> Option<u32> {
+    state.abandoned_height.map_or_else(
+        || {
+            params.claimable_from(
+                state.data.status,
+                state.data.lease_expiry,
+                state.data.terminal_height,
+            )
+        },
+        |height| height.checked_add(params.reuse_delay_blocks),
+    )
 }
 
 fn validate_action_order(transaction: &CanonicalTransaction) -> Result<(), ApplyError> {
@@ -613,6 +647,7 @@ type TransitionParts<'a> = Option<(
     &'a StateRef,
     &'a StateData,
     &'a [u8; 32],
+    &'a [u8; 32],
     u32,
     &'a [u8],
 )>;
@@ -623,6 +658,7 @@ fn transition_parts(operation: &V2Operation) -> TransitionParts<'_> {
             predecessor,
             state,
             state_commitment,
+            state_nullifier,
             action_index,
             proof,
         } => Some((
@@ -630,6 +666,7 @@ fn transition_parts(operation: &V2Operation) -> TransitionParts<'_> {
             predecessor,
             state,
             state_commitment,
+            state_nullifier,
             *action_index,
             proof,
         )),
@@ -637,6 +674,7 @@ fn transition_parts(operation: &V2Operation) -> TransitionParts<'_> {
             predecessor,
             state,
             state_commitment,
+            state_nullifier,
             action_index,
             proof,
         } => Some((
@@ -644,6 +682,7 @@ fn transition_parts(operation: &V2Operation) -> TransitionParts<'_> {
             predecessor,
             state,
             state_commitment,
+            state_nullifier,
             *action_index,
             proof,
         )),
@@ -651,6 +690,7 @@ fn transition_parts(operation: &V2Operation) -> TransitionParts<'_> {
             predecessor,
             state,
             state_commitment,
+            state_nullifier,
             action_index,
             proof,
         } => Some((
@@ -658,6 +698,7 @@ fn transition_parts(operation: &V2Operation) -> TransitionParts<'_> {
             predecessor,
             state,
             state_commitment,
+            state_nullifier,
             *action_index,
             proof,
         )),
@@ -669,7 +710,7 @@ fn transition_parts(operation: &V2Operation) -> TransitionParts<'_> {
 mod tests {
     use super::super::{
         operation::{CanonicalTransaction, IronwoodActionRef},
-        registration::{BondEvidence, RegistrationIntent},
+        registration::RegistrationIntent,
         resolver::{FreshResolver, ResolveError},
         schedule,
         state::ProducerPosition,
@@ -692,14 +733,6 @@ mod tests {
         }
     }
 
-    struct AcceptingBond;
-
-    impl BondProofVerifier for AcceptingBond {
-        fn verify(&self, intent: &RegistrationIntent, evidence: &BondEvidence) -> bool {
-            evidence.bond_tag == intent.bond_tag
-        }
-    }
-
     fn owner(seed: u8) -> [u8; 32] {
         let key = SpendingKey::from_bytes([seed; 32]).unwrap();
         let ask = SpendAuthorizingKey::from(&key);
@@ -710,7 +743,6 @@ mod tests {
         RegistrationIntent {
             name: name.to_owned(),
             owner_pk: owner(seed),
-            bond_tag: [seed.wrapping_add(0x40); 32],
             record: record.to_vec(),
             secret: [seed.wrapping_add(0x80); 32],
         }
@@ -746,7 +778,7 @@ mod tests {
             prev_block_hash: tip.block_hash,
             transactions,
         };
-        let applied = machine.apply_block(&block, &AcceptingProofs, &AcceptingBond)?;
+        let applied = machine.apply_block(&block, &AcceptingProofs)?;
         source.insert(block.height, block);
         Ok(applied)
     }
@@ -769,7 +801,7 @@ mod tests {
         let name_id = super::super::state::name_id(name).unwrap();
         let fresh = FreshResolver::new(machine.params())
             .unwrap()
-            .resolve(name, source, &AcceptingProofs, &AcceptingBond)
+            .resolve(name, source, &AcceptingProofs)
             .unwrap();
         assert_eq!(
             fresh.status,
@@ -812,9 +844,7 @@ mod tests {
                 ],
             )],
         };
-        let applied = machine
-            .apply_block(&block, &AcceptingProofs, &AcceptingBond)
-            .unwrap();
+        let applied = machine.apply_block(&block, &AcceptingProofs).unwrap();
         assert!(matches!(
             applied.operations.as_slice(),
             [
@@ -864,14 +894,28 @@ mod tests {
             vec![transaction(
                 0,
                 34,
-                vec![IronwoodActionRef {
-                    action_index: 0,
-                    nullifier: field(3300),
-                    commitment: field(3301),
-                }],
+                vec![
+                    IronwoodActionRef {
+                        action_index: 0,
+                        nullifier: field(3300),
+                        commitment: field(3301),
+                    },
+                    IronwoodActionRef {
+                        action_index: 1,
+                        nullifier: field(3302),
+                        commitment: field(3303),
+                    },
+                ],
                 vec![
                     reveal_operation(&bogus_intent, commit_ref, state.clone(), field(3301), None),
-                    reveal_operation(&alice, commit_ref, state, field(3301), None),
+                    {
+                        let mut valid =
+                            reveal_operation(&alice, commit_ref, state, field(3303), None);
+                        if let V2Operation::Reveal { action_index, .. } = &mut valid {
+                            *action_index = 1;
+                        }
+                        valid
+                    },
                 ],
             )],
         )
@@ -890,6 +934,210 @@ mod tests {
             ] if *name == name_id
         ));
         assert_fresh_matches_replay(&machine, &source, "anchor-skip");
+    }
+
+    #[test]
+    fn invalid_first_action_claim_structurally_reserves_the_action() {
+        let params = V2Parameters::testing();
+        let mut machine = V2StateMachine::new(params).unwrap();
+        let mut source = BTreeMap::new();
+        let alice = intent(35, "action-reservation", b"record");
+        let commit_ref = commit(&mut machine, &mut source, &alice, 0, 37);
+        let name_id = alice.name_id().unwrap();
+        let reveal_height =
+            schedule::next_anchor_height(name_id, commit_ref.position.height + 1, params).unwrap();
+        advance_to(&mut machine, &mut source, reveal_height - 1);
+        let state = StateData {
+            name_id,
+            owner_pk: alice.owner_pk,
+            sequence: 0,
+            record: alice.record.clone(),
+            lease_expiry: params.lease_expiry(reveal_height).unwrap(),
+            status: StateStatus::Active,
+            terminal_height: 0,
+        };
+        let mut invalid = alice.clone();
+        invalid.secret[0] ^= 1;
+        let result = append(
+            &mut machine,
+            &mut source,
+            vec![transaction(
+                0,
+                38,
+                vec![IronwoodActionRef {
+                    action_index: 0,
+                    nullifier: field(3500),
+                    commitment: field(3501),
+                }],
+                vec![
+                    reveal_operation(&invalid, commit_ref, state.clone(), field(3501), None),
+                    reveal_operation(&alice, commit_ref, state, field(3501), None),
+                ],
+            )],
+        )
+        .unwrap();
+        assert!(matches!(
+            result.operations.as_slice(),
+            [
+                AppliedOperation {
+                    result: AppliedOperationResult::Rejected(ApplyError::CommitmentMismatch),
+                    ..
+                },
+                AppliedOperation {
+                    result: AppliedOperationResult::Rejected(ApplyError::ActionAlreadyClaimed),
+                    ..
+                },
+            ]
+        ));
+        assert!(machine.head(name_id).is_none());
+        assert_fresh_matches_replay(&machine, &source, "action-reservation");
+    }
+
+    #[test]
+    fn structural_action_claims_cover_reveal_and_transition_reordering() {
+        let params = V2Parameters::testing();
+        let alice = intent(37, "claim-family", b"record");
+        let name_id = alice.name_id().unwrap();
+        let commitment = field(3701);
+        let nullifier = field(3702);
+        let state = StateData {
+            name_id,
+            owner_pk: alice.owner_pk,
+            sequence: 0,
+            record: alice.record.clone(),
+            lease_expiry: params.lease_duration_blocks + 1,
+            status: StateStatus::Active,
+            terminal_height: 0,
+        };
+        let predecessor = StateRef::new(
+            ProducerPosition::new(1, 0, [1; 32]),
+            0,
+            0,
+            commitment,
+            nullifier,
+        );
+        let commit = CommitRef::new(
+            ProducerPosition::new(1, 0, [2; 32]),
+            0,
+            alice.commitment().unwrap(),
+        );
+        let reveal = reveal_operation(&alice, commit, state.clone(), commitment, None);
+        let update = transition_operation(
+            OperationKind::Update,
+            predecessor,
+            StateData {
+                sequence: 1,
+                record: b"updated".to_vec(),
+                ..state.clone()
+            },
+            commitment,
+            0,
+        );
+        let renew = transition_operation(
+            OperationKind::Renew,
+            predecessor,
+            StateData {
+                sequence: 1,
+                lease_expiry: state.lease_expiry + params.lease_duration_blocks,
+                ..state
+            },
+            commitment,
+            0,
+        );
+        for operations in [
+            vec![reveal.clone(), update.clone()],
+            vec![update.clone(), reveal],
+            vec![update, renew],
+        ] {
+            let transaction = transaction(
+                0,
+                43,
+                vec![IronwoodActionRef {
+                    action_index: 0,
+                    nullifier,
+                    commitment,
+                }],
+                operations,
+            );
+            assert!(transaction.is_first_action_claim(0));
+            assert!(!transaction.is_first_action_claim(1));
+        }
+    }
+
+    #[test]
+    fn ordinary_spend_abandons_current_state_without_a_names_transition() {
+        let params = V2Parameters::testing();
+        let mut machine = V2StateMachine::new(params).unwrap();
+        let mut source = BTreeMap::new();
+        let alice = intent(36, "ordinary-spend", b"record");
+        let (_, state0, _) = register(&mut machine, &mut source, &alice, 39);
+        let name_id = alice.name_id().unwrap();
+        let spend_height = machine.tip().height + 1;
+        append(
+            &mut machine,
+            &mut source,
+            vec![transaction(
+                0,
+                41,
+                vec![IronwoodActionRef {
+                    action_index: 0,
+                    nullifier: state0.state_ref.nullifier,
+                    commitment: field(3601),
+                }],
+                Vec::new(),
+            )],
+        )
+        .unwrap();
+        assert_eq!(
+            machine.head(name_id).unwrap().abandoned_height,
+            Some(spend_height)
+        );
+        assert_eq!(
+            machine.resolution_at(name_id, spend_height),
+            ResolutionStatus::Abandoned
+        );
+
+        let successor = state_after(
+            &state0,
+            b"should-not-apply",
+            1,
+            state0.data.lease_expiry,
+            StateStatus::Active,
+            0,
+        );
+        let rejected = append(
+            &mut machine,
+            &mut source,
+            vec![transaction(
+                0,
+                42,
+                vec![IronwoodActionRef {
+                    action_index: 0,
+                    nullifier: state0.state_ref.nullifier,
+                    commitment: field(3602),
+                }],
+                vec![transition_operation(
+                    OperationKind::Update,
+                    state0.state_ref,
+                    successor,
+                    field(3602),
+                    0,
+                )],
+            )],
+        )
+        .unwrap();
+        assert_rejected(&rejected, ApplyError::StalePredecessor);
+        assert_fresh_matches_replay(&machine, &source, "ordinary-spend");
+        advance_to(
+            &mut machine,
+            &mut source,
+            spend_height + params.reuse_delay_blocks,
+        );
+        assert_eq!(
+            machine.resolution_at(name_id, machine.tip().height),
+            ResolutionStatus::Expired
+        );
+        assert_fresh_matches_replay(&machine, &source, "ordinary-spend");
     }
 
     #[test]
@@ -1119,6 +1367,7 @@ mod tests {
                 0,
                 0,
                 charlie_commitment,
+                charlie_commitment,
             ),
         )
         .unwrap();
@@ -1165,6 +1414,7 @@ mod tests {
                 ProducerPosition::new(shadow_update_height, 0, [46; 32]),
                 0,
                 0,
+                shadow_update_commitment,
                 shadow_update_commitment,
             ),
         )
@@ -1299,14 +1549,8 @@ mod tests {
             replacement_predecessor,
             state,
             state_commitment: commitment,
+            state_nullifier: commitment,
             action_index: 0,
-            bond: BondEvidence {
-                proof: vec![1],
-                anchor: field(9),
-                bond_tag: intent.bond_tag,
-                position: 10,
-                position_floor: 0,
-            },
             proof: vec![1],
         }
     }
@@ -1383,6 +1627,7 @@ mod tests {
                 predecessor,
                 state,
                 state_commitment: commitment,
+                state_nullifier: commitment,
                 action_index,
                 proof: vec![1],
             },
@@ -1390,6 +1635,7 @@ mod tests {
                 predecessor,
                 state,
                 state_commitment: commitment,
+                state_nullifier: commitment,
                 action_index,
                 proof: vec![1],
             },
@@ -1397,6 +1643,7 @@ mod tests {
                 predecessor,
                 state,
                 state_commitment: commitment,
+                state_nullifier: commitment,
                 action_index,
                 proof: vec![1],
             },
@@ -1581,7 +1828,7 @@ mod tests {
         );
         let resolved = FreshResolver::new(params)
             .unwrap()
-            .resolve("alice", &source, &AcceptingProofs, &AcceptingBond)
+            .resolve("alice", &source, &AcceptingProofs)
             .unwrap();
         assert_eq!(resolved.status, ResolutionStatus::Released);
         assert_eq!(resolved.state.unwrap().data.sequence, 5);
@@ -1597,12 +1844,7 @@ mod tests {
             .collect::<BTreeMap<_, _>>();
         let first_lookup = FreshResolver::new(params)
             .unwrap()
-            .resolve(
-                "alice",
-                &before_first_renew,
-                &AcceptingProofs,
-                &AcceptingBond,
-            )
+            .resolve("alice", &before_first_renew, &AcceptingProofs)
             .unwrap();
         assert_eq!(first_lookup.status, ResolutionStatus::Active);
         assert_eq!(first_lookup.state.unwrap().data.sequence, 0);
@@ -1618,12 +1860,10 @@ mod tests {
                 });
             }
         }
-        let missing = FreshResolver::new(params).unwrap().resolve(
-            "alice",
-            &no_anchor,
-            &AcceptingProofs,
-            &AcceptingBond,
-        );
+        let missing =
+            FreshResolver::new(params)
+                .unwrap()
+                .resolve("alice", &no_anchor, &AcceptingProofs);
         assert_eq!(missing, Err(ResolveError::InvalidLineage));
 
         let mut reorged_anchor = source.clone();
@@ -1634,12 +1874,9 @@ mod tests {
             .clear();
         reorged_anchor.get_mut(&renew_height).unwrap().block_hash = [0xee; 32];
         assert_eq!(
-            FreshResolver::new(params).unwrap().resolve(
-                "alice",
-                &reorged_anchor,
-                &AcceptingProofs,
-                &AcceptingBond
-            ),
+            FreshResolver::new(params)
+                .unwrap()
+                .resolve("alice", &reorged_anchor, &AcceptingProofs),
             Err(ResolveError::InvalidLineage)
         );
 
@@ -1657,8 +1894,7 @@ mod tests {
             FreshResolver::new(params).unwrap().resolve(
                 "alice",
                 &reorged_predecessor,
-                &AcceptingProofs,
-                &AcceptingBond
+                &AcceptingProofs
             ),
             Err(ResolveError::InvalidLineage)
         );
@@ -1723,7 +1959,7 @@ mod tests {
         );
         let stale_lookup = FreshResolver::new(params)
             .unwrap()
-            .resolve("lease", &source, &AcceptingProofs, &AcceptingBond)
+            .resolve("lease", &source, &AcceptingProofs)
             .unwrap();
         assert_eq!(stale_lookup.status, ResolutionStatus::Expired);
         assert!(stale_lookup.state.is_some());
@@ -2138,63 +2374,6 @@ mod tests {
         )
         .unwrap();
         assert_rejected(&reclaim_result, ApplyError::CommitPredatesClaimability);
-
-        let mut bond_machine = V2StateMachine::new(params).unwrap();
-        let mut bond_source = BTreeMap::new();
-        let bond_owner = intent(14, "bond-owner", b"record");
-        register(&mut bond_machine, &mut bond_source, &bond_owner, 60);
-        let mut duplicate_bond = intent(15, "bond-other", b"record");
-        duplicate_bond.bond_tag = bond_owner.bond_tag;
-        let duplicate_commit = commit(&mut bond_machine, &mut bond_source, &duplicate_bond, 0, 61);
-        let duplicate_name = duplicate_bond.name_id().unwrap();
-        let duplicate_reveal_height = schedule::next_anchor_height(
-            duplicate_name,
-            duplicate_commit.position.height + 1,
-            params,
-        )
-        .unwrap();
-        advance_to(
-            &mut bond_machine,
-            &mut bond_source,
-            duplicate_reveal_height - 1,
-        );
-        let duplicate_state = StateData {
-            name_id: duplicate_name,
-            owner_pk: duplicate_bond.owner_pk,
-            sequence: 0,
-            record: duplicate_bond.record.clone(),
-            lease_expiry: params.lease_expiry(duplicate_reveal_height).unwrap(),
-            status: StateStatus::Active,
-            terminal_height: 0,
-        };
-        let duplicate_result = append(
-            &mut bond_machine,
-            &mut bond_source,
-            vec![transaction(
-                0,
-                62,
-                vec![IronwoodActionRef {
-                    action_index: 0,
-                    nullifier: field(1201),
-                    commitment: field(1200),
-                }],
-                vec![reveal_operation(
-                    &duplicate_bond,
-                    duplicate_commit,
-                    duplicate_state,
-                    field(1200),
-                    None,
-                )],
-            )],
-        )
-        .unwrap();
-        assert!(matches!(
-            duplicate_result.operations.last(),
-            Some(AppliedOperation {
-                result: AppliedOperationResult::Accepted(Some((name, AppliedOperationKind::Reveal))),
-                ..
-            }) if *name == duplicate_name
-        ));
     }
 
     #[test]

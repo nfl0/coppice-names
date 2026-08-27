@@ -23,6 +23,7 @@ rand_chacha = "0.3"
 rand_core = "0.6"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+postcard.workspace = true
 sha2 = "0.10"
 shardtree = "0.7"
 zcash_note_encryption = "0.4.1"

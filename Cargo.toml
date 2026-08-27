@@ -27,6 +27,7 @@ rand_core = "0.6"
 sapling = { package = "sapling-crypto", version = "0.7.0" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+postcard = { version = "1", features = ["alloc"] }
 sha2 = "0.10"
 shardtree = "0.7"
 zcash_note_encryption = "0.4.1"
@@ -41,7 +42,7 @@ zip32 = "0.2.1"
 [patch.crates-io]
 # The v2 experiment is pinned to its explicit post-v1 Orchard commit. The
 # frozen v1 release remains at its immutable tag and is not moved or rewritten.
-orchard = { git = "https://github.com/nfl0/orchard-coppice.git", rev = "3c1a1bef199f9ba4959a8c236051a4a9c18bde8b" }
+orchard = { git = "https://github.com/nfl0/orchard-coppice.git", rev = "bc7d644a93706923e5d6151301751aad6886f636" }
 zcash_primitives = { git = "https://github.com/zcash/librustzcash.git", rev = "6c07e5f3297febf469e5cc8d0b91321e0767cdd7" }
 zcash_protocol = { git = "https://github.com/zcash/librustzcash.git", rev = "6c07e5f3297febf469e5cc8d0b91321e0767cdd7" }
 zcash_transparent = { git = "https://github.com/zcash/librustzcash.git", rev = "6c07e5f3297febf469e5cc8d0b91321e0767cdd7" }

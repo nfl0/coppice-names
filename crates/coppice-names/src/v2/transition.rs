@@ -45,6 +45,8 @@ pub struct TransitionStatement {
     pub predecessor_nullifier: [u8; 32],
     /// Successor state-note commitment.
     pub successor_commitment: [u8; 32],
+    /// Future nullifier of the successor state note.
+    pub successor_nullifier: [u8; 32],
     /// UPDATE, RENEW, or RELEASE.
     pub operation: OperationKind,
     /// Predecessor canonical u64 sequence.
@@ -113,6 +115,7 @@ impl TransitionStatement {
             predecessor_commitment: predecessor.commitment,
             predecessor_nullifier: action.nullifier,
             successor_commitment: successor.commitment,
+            successor_nullifier: successor.state_ref.nullifier,
             operation,
             predecessor_sequence: predecessor.data.sequence,
             successor_sequence: successor.data.sequence,
@@ -140,6 +143,8 @@ impl TransitionStatement {
             canonical_field(self.predecessor_nullifier).map_err(StatementError::InvalidState)?;
         let successor_commitment =
             canonical_field(self.successor_commitment).map_err(StatementError::InvalidState)?;
+        let successor_nullifier =
+            canonical_field(self.successor_nullifier).map_err(StatementError::InvalidState)?;
         let predecessor_record = canonical_field(self.predecessor_record_digest)
             .map_err(StatementError::InvalidState)?;
         let successor_record =
@@ -181,6 +186,7 @@ impl TransitionStatement {
             successor_digest,
             predecessor_ref,
             binding,
+            successor_nullifier,
         ]))
     }
 }
@@ -206,6 +212,12 @@ pub struct GenesisStatement {
     pub terminal_height: u32,
     /// State digest committed by the genesis proof.
     pub state_digest: [u8; 32],
+    /// Future nullifier of the initial state note.
+    pub state_nullifier: [u8; 32],
+    /// Registration input nullifier from the same Ironwood action.
+    pub registration_nullifier: [u8; 32],
+    /// Experimental minimum state-note bond value in zatoshis.
+    pub minimum_bond_zatoshis: u64,
 }
 
 impl GenesisStatement {
@@ -213,6 +225,7 @@ impl GenesisStatement {
     pub fn from_state(
         state: &NameState,
         action: IronwoodActionRef,
+        minimum_bond_zatoshis: u64,
     ) -> Result<Self, StatementError> {
         if state.commitment != action.commitment {
             return Err(StatementError::InvalidField);
@@ -232,6 +245,9 @@ impl GenesisStatement {
             status: state.data.status.code(),
             terminal_height: state.data.terminal_height,
             state_digest,
+            state_nullifier: state.state_ref.nullifier,
+            registration_nullifier: action.nullifier,
+            minimum_bond_zatoshis,
         })
     }
 
@@ -242,6 +258,10 @@ impl GenesisStatement {
         let record = canonical_field(self.record_digest).map_err(StatementError::InvalidState)?;
         let state_digest =
             canonical_field(self.state_digest).map_err(StatementError::InvalidState)?;
+        let state_nullifier =
+            canonical_field(self.state_nullifier).map_err(StatementError::InvalidState)?;
+        let registration_nullifier =
+            canonical_field(self.registration_nullifier).map_err(StatementError::InvalidState)?;
         Ok(GenesisPublicInputs::from_fields([
             name_id_field(self.name_id),
             owner,
@@ -252,6 +272,9 @@ impl GenesisStatement {
             pallas::Base::from(u64::from(self.status)),
             pallas::Base::from(u64::from(self.terminal_height)),
             state_digest,
+            registration_nullifier,
+            state_nullifier,
+            pallas::Base::from(self.minimum_bond_zatoshis),
         ]))
     }
 }

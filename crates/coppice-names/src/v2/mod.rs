@@ -12,6 +12,7 @@ pub mod resolver;
 pub mod schedule;
 pub mod state;
 pub mod transition;
+pub mod wire;
 
 pub use lease::{LeaseParameterError, Lifecycle, V2Parameters};
 pub use machine::{
@@ -21,10 +22,7 @@ pub use operation::{
     ActionViewError, CanonicalBlock, CanonicalTransaction, ChainTip, IronwoodActionRef,
     OperationKind, V2Operation,
 };
-pub use registration::{
-    BondEvidence, BondProofVerifier, CommitRef, FrozenV1BondProofVerifier, RegistrationError,
-    RegistrationIntent,
-};
+pub use registration::{CommitRef, RegistrationError, RegistrationIntent};
 pub use resolver::{
     CanonicalSource, FreshResolver, ResolutionResult, ResolutionStats, ResolveError,
 };
@@ -34,4 +32,8 @@ pub use state::{
 pub use transition::{
     GenesisStatement, OrchardV2ProofVerifier, StatementError, TransitionStatement,
     V2StateProofVerifier,
+};
+pub use wire::{
+    WireError, decode_operation, decode_operations, encode_operation, encode_operations,
+    operation_footprint,
 };

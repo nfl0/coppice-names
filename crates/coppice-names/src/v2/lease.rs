@@ -18,6 +18,8 @@ pub enum LeaseParameterError {
     RefreshDeadlineTooShort,
     /// A grace or reuse interval of zero is not used by this experiment.
     ZeroTerminalInterval,
+    /// A zero-value state note cannot serve as a bond.
+    ZeroMinimumBond,
     /// A checked parameter sum overflowed u32.
     ArithmeticOverflow,
 }
@@ -48,6 +50,8 @@ pub struct V2Parameters {
     pub reuse_delay_blocks: u32,
     /// Maximum canonical record size used by the v2 state encoding.
     pub max_record_bytes: usize,
+    /// Experimental minimum value, in zatoshis, carried by every state note.
+    pub minimum_bond_zatoshis: u64,
 }
 
 impl V2Parameters {
@@ -62,6 +66,7 @@ impl V2Parameters {
             grace_period_blocks: 3,
             reuse_delay_blocks: 4,
             max_record_bytes: super::state::MAX_RECORD_BYTES,
+            minimum_bond_zatoshis: 1,
         }
     }
 
@@ -75,6 +80,9 @@ impl V2Parameters {
         }
         if self.grace_period_blocks == 0 || self.reuse_delay_blocks == 0 {
             return Err(LeaseParameterError::ZeroTerminalInterval);
+        }
+        if self.minimum_bond_zatoshis == 0 {
+            return Err(LeaseParameterError::ZeroMinimumBond);
         }
         if self.max_anchor_gap()? > self.commit_ttl_blocks {
             return Err(LeaseParameterError::CommitTtlTooShort);

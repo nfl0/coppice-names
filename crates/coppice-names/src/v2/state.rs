@@ -161,6 +161,8 @@ pub struct StateRef {
     pub producer_operation_index: u32,
     /// The state-note commitment created by that action.
     pub commitment: [u8; 32],
+    /// Authenticated future nullifier of that state note.
+    pub nullifier: [u8; 32],
 }
 
 impl StateRef {
@@ -170,6 +172,7 @@ impl StateRef {
         action_index: u32,
         operation_index: u32,
         commitment: [u8; 32],
+        nullifier: [u8; 32],
     ) -> Self {
         Self {
             producer_height: position.height,
@@ -178,6 +181,7 @@ impl StateRef {
             producer_action_index: action_index,
             producer_operation_index: operation_index,
             commitment,
+            nullifier,
         }
     }
 
@@ -192,13 +196,14 @@ impl StateRef {
 
     /// Returns the explicit v2 field binding used in a transition proof.
     pub fn digest(&self) -> [u8; 32] {
-        let mut bytes = Vec::with_capacity(4 + 4 + 32 + 4 + 4 + 32);
+        let mut bytes = Vec::with_capacity(4 + 4 + 32 + 4 + 4 + 32 + 32);
         bytes.extend_from_slice(&self.producer_height.to_be_bytes());
         bytes.extend_from_slice(&self.producer_tx_index.to_be_bytes());
         bytes.extend_from_slice(&self.producer_txid);
         bytes.extend_from_slice(&self.producer_action_index.to_be_bytes());
         bytes.extend_from_slice(&self.producer_operation_index.to_be_bytes());
         bytes.extend_from_slice(&self.commitment);
+        bytes.extend_from_slice(&self.nullifier);
         hash_to_field("CoppiceN2Ref", &bytes).to_repr()
     }
 }
@@ -214,6 +219,10 @@ pub struct NameState {
     pub state_ref: StateRef,
     /// Digest committed by the state-note proof.
     pub state_digest: [u8; 32],
+    /// Canonical height that spent this note without an accepted Names
+    /// successor transition. This is derived from ordinary nullifier effects,
+    /// not part of the proof-authenticated state payload.
+    pub abandoned_height: Option<u32>,
 }
 
 impl NameState {
@@ -228,18 +237,27 @@ impl NameState {
             return Err(StateError::ReferenceCommitmentMismatch);
         }
         canonical_field(commitment)?;
+        canonical_field(state_ref.nullifier)?;
         let state_digest = state_digest(&data, commitment);
         Ok(Self {
             data,
             commitment,
             state_ref,
             state_digest,
+            abandoned_height: None,
         })
     }
 
     /// Returns true only while this state is active and its lease is live.
     pub fn is_active_at(&self, height: u32) -> bool {
-        self.data.status == StateStatus::Active && height < self.data.lease_expiry
+        self.abandoned_height.is_none()
+            && self.data.status == StateStatus::Active
+            && height < self.data.lease_expiry
+    }
+
+    /// Marks the current note as ordinarily spent without a Names successor.
+    pub fn abandon(&mut self, height: u32) {
+        self.abandoned_height.get_or_insert(height);
     }
 }
 

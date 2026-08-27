@@ -1,9 +1,10 @@
 //! Canonical action views and operation envelopes for Names v2.
 
 use super::{
-    registration::{BondEvidence, CommitRef, RegistrationIntent, ReplacementRef},
+    registration::{CommitRef, RegistrationIntent, ReplacementRef},
     state::{NameId, ProducerPosition, StateData, StateRef},
 };
+use coppice::application::{ApplicationBlockContext, ApplicationTransactionContext};
 use coppice::replay::CoreTransactionContext;
 use serde::{Deserialize, Serialize};
 
@@ -111,10 +112,10 @@ pub enum V2Operation {
         state: StateData,
         /// Commitment created by the REVEAL Ironwood action.
         state_commitment: [u8; 32],
+        /// Future nullifier of the created state note.
+        state_nullifier: [u8; 32],
         /// Exact action whose commitment is `state_commitment`.
         action_index: u32,
-        /// Retained v1 BondProof evidence.
-        bond: BondEvidence,
         /// Experimental genesis state-note proof.
         proof: Vec<u8>,
     },
@@ -126,6 +127,8 @@ pub enum V2Operation {
         state: StateData,
         /// Commitment created by this action.
         state_commitment: [u8; 32],
+        /// Future nullifier of the created state note.
+        state_nullifier: [u8; 32],
         /// Exact action whose commitment is `state_commitment`.
         action_index: u32,
         /// Experimental transition proof.
@@ -139,6 +142,8 @@ pub enum V2Operation {
         state: StateData,
         /// Commitment created by this action.
         state_commitment: [u8; 32],
+        /// Future nullifier of the created state note.
+        state_nullifier: [u8; 32],
         /// Exact action whose commitment is `state_commitment`.
         action_index: u32,
         /// Experimental transition proof.
@@ -152,6 +157,8 @@ pub enum V2Operation {
         state: StateData,
         /// Commitment created by this action.
         state_commitment: [u8; 32],
+        /// Future nullifier of the created terminal state note.
+        state_nullifier: [u8; 32],
         /// Exact action whose commitment is `state_commitment`.
         action_index: u32,
         /// Experimental transition proof.
@@ -210,6 +217,25 @@ impl V2Operation {
             } => Some(*state_commitment),
         }
     }
+
+    /// Returns the authenticated future nullifier of the output state note.
+    pub const fn state_nullifier(&self) -> Option<[u8; 32]> {
+        match self {
+            Self::Commit { .. } => None,
+            Self::Reveal {
+                state_nullifier, ..
+            }
+            | Self::Update {
+                state_nullifier, ..
+            }
+            | Self::Renew {
+                state_nullifier, ..
+            }
+            | Self::Release {
+                state_nullifier, ..
+            } => Some(*state_nullifier),
+        }
+    }
 }
 
 /// Canonical transaction data required by the v2 application.
@@ -226,6 +252,24 @@ pub struct CanonicalTransaction {
 }
 
 impl CanonicalTransaction {
+    /// Adapts the ordinary application-scoped Core context into the v2 replay
+    /// view. Malformed v2 payloads contribute no typed messages; their
+    /// canonical Ironwood effects remain visible for current-note spend
+    /// detection.
+    pub fn from_application_context(
+        transaction: &ApplicationTransactionContext,
+    ) -> Result<Self, ActionViewError> {
+        let core = transaction.core();
+        Ok(Self {
+            tx_index: core.tx_index(),
+            txid: core.txid(),
+            actions: IronwoodActionRef::from_core_transaction(core)?,
+            operations: transaction
+                .payload()
+                .and_then(|payload| super::wire::decode_operations(payload).ok())
+                .unwrap_or_default(),
+        })
+    }
     /// Returns this transaction’s canonical producer position at a height.
     pub const fn position(&self, height: u32) -> ProducerPosition {
         ProducerPosition::new(height, self.tx_index, self.txid)
@@ -241,6 +285,26 @@ impl CanonicalTransaction {
         self.operations
             .windows(2)
             .all(|pair| operation_order_key(&pair[0]) <= operation_order_key(&pair[1]))
+    }
+
+    /// Returns true when `operation_index` is the first carrier message in
+    /// this transaction that claims its selected Ironwood action.
+    ///
+    /// Action ownership is deliberately structural: an earlier malformed or
+    /// proof-invalid state operation still reserves the action for the rest
+    /// of its transaction. This keeps acceptance locally decidable from the
+    /// transaction itself and avoids replaying unrelated names.
+    pub fn is_first_action_claim(&self, operation_index: usize) -> bool {
+        let Some(action_index) = self
+            .operations
+            .get(operation_index)
+            .and_then(V2Operation::action_index)
+        else {
+            return true;
+        };
+        !self.operations[..operation_index]
+            .iter()
+            .any(|operation| operation.action_index() == Some(action_index))
     }
 }
 
@@ -271,6 +335,27 @@ impl CanonicalBlock {
             height: self.height,
             block_hash: self.block_hash,
         }
+    }
+
+    /// Adapts one ordinary application-scoped canonical block without a
+    /// Names-specific RPC or provider index.
+    pub fn from_application_context(
+        block: &ApplicationBlockContext,
+    ) -> Result<Option<Self>, ActionViewError> {
+        let Some(core) = block.core() else {
+            return Ok(None);
+        };
+        let transactions = block
+            .transactions()
+            .iter()
+            .map(CanonicalTransaction::from_application_context)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Some(Self {
+            height: core.height(),
+            block_hash: core.block_hash(),
+            prev_block_hash: core.prev_block_hash(),
+            transactions,
+        }))
     }
 }
 

@@ -16,7 +16,8 @@ pub mod wire;
 
 pub use lease::{LeaseParameterError, Lifecycle, V2Parameters};
 pub use machine::{
-    AppliedBlock, AppliedOperationKind, ApplyError, ResolutionStatus, V2StateMachine,
+    AppliedBlock, AppliedOperation, AppliedOperationKind, AppliedOperationResult, ApplyError,
+    ResolutionStatus, V2StateMachine,
 };
 pub use operation::{
     ActionViewError, CanonicalBlock, CanonicalTransaction, ChainTip, IronwoodActionRef,

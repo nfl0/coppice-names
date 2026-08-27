@@ -149,12 +149,31 @@ pub struct V2StateMachine {
 
 impl V2StateMachine {
     /// Creates an empty v2 state machine at the block before activation.
+    ///
+    /// The all-zero predecessor is retained for deterministic synthetic
+    /// chains used by the existing unit tests. Real canonical replay should
+    /// use [`Self::from_activation_parent`] with the activation block's
+    /// authenticated predecessor hash.
     pub fn new(params: V2Parameters) -> Result<Self, super::lease::LeaseParameterError> {
+        Self::from_activation_parent(params, [0; 32])
+    }
+
+    /// Creates an empty v2 state machine immediately before activation using
+    /// the canonical hash of the activation block's predecessor.
+    ///
+    /// This does not weaken block continuity: the first block passed to
+    /// [`Self::apply_block`] must still have this hash in its
+    /// `prev_block_hash` field, and all later blocks must chain from the
+    /// authenticated tip in the usual way.
+    pub fn from_activation_parent(
+        params: V2Parameters,
+        parent_block_hash: [u8; 32],
+    ) -> Result<Self, super::lease::LeaseParameterError> {
         params.validate()?;
         Ok(Self {
             tip: ChainTip {
                 height: params.activation_height - 1,
-                block_hash: [0; 32],
+                block_hash: parent_block_hash,
             },
             params,
             pending: BTreeMap::new(),
@@ -827,6 +846,56 @@ mod tests {
             fresh.state.as_ref().map(|state| state.state_ref),
             machine.head(name_id).map(|state| state.state_ref)
         );
+    }
+
+    #[test]
+    fn activation_parent_bootstrap_accepts_first_block_and_preserves_continuity() {
+        let params = V2Parameters::testing();
+        let activation_parent = [0xa5; 32];
+        let activation_hash = [0xb6; 32];
+        let next_hash = [0xc7; 32];
+        let mut machine =
+            V2StateMachine::from_activation_parent(params, activation_parent).unwrap();
+
+        let activation = CanonicalBlock {
+            height: params.activation_height,
+            block_hash: activation_hash,
+            prev_block_hash: activation_parent,
+            transactions: Vec::new(),
+        };
+        let applied = machine.apply_block(&activation, &AcceptingProofs).unwrap();
+        assert_eq!(applied.tip, activation.tip());
+
+        let next = CanonicalBlock {
+            height: params.activation_height + 1,
+            block_hash: next_hash,
+            prev_block_hash: activation_hash,
+            transactions: Vec::new(),
+        };
+        let applied = machine.apply_block(&next, &AcceptingProofs).unwrap();
+        assert_eq!(applied.tip, next.tip());
+        assert_eq!(machine.tip(), next.tip());
+    }
+
+    #[test]
+    fn activation_parent_bootstrap_rejects_wrong_first_predecessor() {
+        let params = V2Parameters::testing();
+        let activation_parent = [0xa5; 32];
+        let mut machine =
+            V2StateMachine::from_activation_parent(params, activation_parent).unwrap();
+        let activation = CanonicalBlock {
+            height: params.activation_height,
+            block_hash: [0xb6; 32],
+            prev_block_hash: [0xc7; 32],
+            transactions: Vec::new(),
+        };
+
+        assert_eq!(
+            machine.apply_block(&activation, &AcceptingProofs),
+            Err(ApplyError::PredecessorMismatch)
+        );
+        assert_eq!(machine.tip().height, params.activation_height - 1);
+        assert_eq!(machine.tip().block_hash, activation_parent);
     }
 
     #[test]

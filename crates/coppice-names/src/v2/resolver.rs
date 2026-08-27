@@ -4,7 +4,7 @@ use super::{
     lease::{Lifecycle, V2Parameters},
     machine::ResolutionStatus,
     operation::{CanonicalBlock, CanonicalTransaction, ChainTip, OperationKind, V2Operation},
-    registration::{BondProofVerifier, RegistrationIntent},
+    registration::{BondProofVerifier, CommitRef, RegistrationIntent},
     schedule,
     state::{NameId, NameState, StateData, StateRef, StateStatus},
     transition::{GenesisStatement, TransitionStatement, V2StateProofVerifier},
@@ -171,6 +171,13 @@ struct NameWindowReplay {
     anchor: Option<StateRef>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct MessagePosition {
+    height: u32,
+    tx_index: u32,
+    operation_index: u32,
+}
+
 struct Authenticator<'a, S, P, B> {
     params: V2Parameters,
     source: &'a S,
@@ -197,9 +204,26 @@ where
         start_height: u32,
         tip_height: u32,
     ) -> Result<NameWindowReplay, ResolveError> {
+        self.replay_name_range(
+            name_id,
+            start_height,
+            MessagePosition {
+                height: tip_height,
+                tx_index: u32::MAX,
+                operation_index: u32::MAX,
+            },
+        )
+    }
+
+    fn replay_name_range(
+        &mut self,
+        name_id: NameId,
+        start_height: u32,
+        end: MessagePosition,
+    ) -> Result<NameWindowReplay, ResolveError> {
         let mut replay = NameWindowReplay::default();
         let mut previous_hash = None;
-        for height in start_height..=tip_height {
+        for height in start_height..=end.height {
             let block = self
                 .source
                 .block(height)
@@ -237,7 +261,15 @@ where
                     .ok_or(ResolveError::ArithmeticOverflow)?;
             }
             for transaction in &block.transactions {
-                for operation in &transaction.operations {
+                for (operation_index, operation) in transaction.operations.iter().enumerate() {
+                    let position = MessagePosition {
+                        height,
+                        tx_index: transaction.tx_index,
+                        operation_index: operation_index as u32,
+                    };
+                    if position > end {
+                        continue;
+                    }
                     if operation.name_id() != Some(name_id) {
                         continue;
                     }
@@ -252,8 +284,12 @@ where
                             self.authenticate_transition(&block, transaction, operation)
                         }
                     };
-                    let Ok(successor) = candidate else {
-                        continue;
+                    let successor = match candidate {
+                        Ok(successor) => successor,
+                        Err(ResolveError::InvalidOperation | ResolveError::InvalidName) => {
+                            continue;
+                        }
+                        Err(error) => return Err(error),
                     };
                     let accepted = match operation {
                         V2Operation::Reveal {
@@ -278,11 +314,14 @@ where
                         },
                         V2Operation::Update { predecessor, .. }
                         | V2Operation::Renew { predecessor, .. }
-                        | V2Operation::Release { predecessor, .. } => replay
-                            .state
-                            .as_ref()
-                            .map(|current| current.state_ref == *predecessor)
-                            .unwrap_or(true),
+                        | V2Operation::Release { predecessor, .. } => match replay.state.as_ref() {
+                            Some(current) => current.state_ref == *predecessor,
+                            // `authenticate_transition` has already established that this
+                            // predecessor is an accepted Names producer. This bounded replay
+                            // may start after that producer, but must never bootstrap from a
+                            // merely proof-valid Ironwood note.
+                            None => true,
+                        },
                         V2Operation::Commit { .. } => false,
                     };
                     if !accepted {
@@ -301,7 +340,13 @@ where
         Ok(replay)
     }
 
-    fn authenticate_state_ref(&mut self, reference: StateRef) -> Result<NameState, ResolveError> {
+    /// Authenticates a producer as an accepted Names state head at its exact
+    /// canonical carrier-message position. Proof validity alone is never a
+    /// substitute for this replay check.
+    fn authenticate_accepted_state_ref(
+        &mut self,
+        reference: StateRef,
+    ) -> Result<NameState, ResolveError> {
         if let Some(state) = self.cache.get(&reference) {
             return Ok(state.clone());
         }
@@ -329,32 +374,49 @@ where
             }
             let operation = transaction
                 .operations
-                .iter()
-                .find(|operation| {
-                    operation.action_index() == Some(reference.producer_action_index)
-                        && operation.state_commitment() == Some(reference.commitment)
-                })
+                .get(reference.producer_operation_index as usize)
                 .ok_or(ResolveError::InvalidLineage)?;
-            match operation {
-                V2Operation::Reveal { .. } => {
-                    self.authenticate_reveal(&block, transaction, operation)
-                }
-                V2Operation::Update { .. }
-                | V2Operation::Renew { .. }
-                | V2Operation::Release { .. } => {
-                    self.authenticate_transition(&block, transaction, operation)
-                }
-                V2Operation::Commit { .. } => Err(ResolveError::InvalidLineage),
+            if operation.action_index() != Some(reference.producer_action_index)
+                || operation.state_commitment() != Some(reference.commitment)
+                || operation.name_id().is_none()
+            {
+                return Err(ResolveError::InvalidLineage);
             }
+            let name_id = operation.name_id().ok_or(ResolveError::InvalidLineage)?;
+            let state = self.replay_name_through(
+                name_id,
+                MessagePosition {
+                    height: reference.producer_height,
+                    tx_index: reference.producer_tx_index,
+                    operation_index: reference.producer_operation_index,
+                },
+            )?;
+            state.ok_or(ResolveError::InvalidOperation)
         })();
         self.visiting.remove(&reference);
         if let Ok(state) = &result {
             if state.state_ref != reference {
-                return Err(ResolveError::InvalidLineage);
+                return Err(ResolveError::InvalidOperation);
             }
             self.cache.insert(reference, state.clone());
         }
         result
+    }
+
+    fn replay_name_through(
+        &mut self,
+        name_id: NameId,
+        end: MessagePosition,
+    ) -> Result<Option<NameState>, ResolveError> {
+        let lower = end
+            .height
+            .saturating_sub(
+                self.params
+                    .reset_horizon()
+                    .map_err(|_| ResolveError::InvalidParameters)?,
+            )
+            .max(self.params.activation_height);
+        Ok(self.replay_name_range(name_id, lower, end)?.state)
     }
 
     fn authenticate_reveal(
@@ -402,21 +464,7 @@ where
         {
             return Err(ResolveError::InvalidOperation);
         }
-        let commit_block = self
-            .source
-            .block(commit.position.height)
-            .ok_or(ResolveError::InvalidLineage)?;
-        let commit_transaction = exact_transaction(
-            &commit_block,
-            commit.position.tx_index,
-            commit.position.txid,
-        )
-        .ok_or(ResolveError::InvalidLineage)?;
-        if !commit_transaction.operations.iter().any(|candidate| {
-            matches!(candidate, V2Operation::Commit { commitment } if *commitment == commit.commitment)
-        }) {
-            return Err(ResolveError::InvalidLineage);
-        }
+        self.authenticate_accepted_commit(*commit)?;
         let maturity = commit
             .position
             .height
@@ -440,7 +488,7 @@ where
             return Err(ResolveError::InvalidOperation);
         }
         if let Some(previous_ref) = replacement_predecessor {
-            let previous = self.authenticate_state_ref(*previous_ref)?;
+            let previous = self.authenticate_accepted_state_ref(*previous_ref)?;
             let claimable = self
                 .params
                 .claimable_from(
@@ -467,6 +515,7 @@ where
         let state_ref = StateRef::new(
             transaction.position(block.height),
             *action_index,
+            operation_index(transaction, operation)?,
             *state_commitment,
         );
         let name_state = NameState::new(state.clone(), *state_commitment, state_ref)
@@ -477,6 +526,120 @@ where
             return Err(ResolveError::InvalidOperation);
         }
         Ok(name_state)
+    }
+
+    /// Verifies that `commit` names the exact message which was admitted to
+    /// the finite pending-COMMIT set. Seeing the same bytes elsewhere in the
+    /// transaction is deliberately insufficient.
+    fn authenticate_accepted_commit(&mut self, commit: CommitRef) -> Result<(), ResolveError> {
+        let exact_block = self
+            .source
+            .block(commit.position.height)
+            .ok_or(ResolveError::InvalidLineage)?;
+        let exact_transaction =
+            exact_transaction(&exact_block, commit.position.tx_index, commit.position.txid)
+                .ok_or(ResolveError::InvalidLineage)?;
+        if !matches!(
+            exact_transaction.operations.get(commit.operation_index as usize),
+            Some(V2Operation::Commit { commitment }) if *commitment == commit.commitment
+        ) {
+            return Err(ResolveError::InvalidLineage);
+        }
+        let lower = commit
+            .position
+            .height
+            .saturating_sub(self.params.commit_ttl_blocks)
+            .max(self.params.activation_height);
+        let mut pending = BTreeMap::<[u8; 32], CommitRef>::new();
+        for height in lower..=commit.position.height {
+            let block = self
+                .source
+                .block(height)
+                .ok_or(ResolveError::InvalidLineage)?;
+            validate_block_shape(&block, height)?;
+            for transaction in &block.transactions {
+                for (operation_index, operation) in transaction.operations.iter().enumerate() {
+                    let position = MessagePosition {
+                        height,
+                        tx_index: transaction.tx_index,
+                        operation_index: operation_index as u32,
+                    };
+                    let target = position
+                        == MessagePosition {
+                            height: commit.position.height,
+                            tx_index: commit.position.tx_index,
+                            operation_index: commit.operation_index,
+                        };
+                    match operation {
+                        V2Operation::Commit { commitment } => {
+                            let candidate = CommitRef::new(
+                                transaction.position(height),
+                                operation_index as u32,
+                                *commitment,
+                            );
+                            let accepted = !pending.contains_key(commitment);
+                            if accepted {
+                                pending.insert(*commitment, candidate);
+                            }
+                            if target {
+                                return if candidate == commit && accepted {
+                                    Ok(())
+                                } else {
+                                    Err(ResolveError::InvalidOperation)
+                                };
+                            }
+                        }
+                        V2Operation::Reveal {
+                            commit: consumed, ..
+                        } if pending.contains_key(&consumed.commitment) => {
+                            if self.state_operation_is_accepted(&block, transaction, operation)? {
+                                pending.remove(&consumed.commitment);
+                            }
+                        }
+                        _ => {
+                            if target {
+                                return Err(ResolveError::InvalidLineage);
+                            }
+                        }
+                    }
+                }
+            }
+            pending.retain(|_, pending_commit| {
+                pending_commit
+                    .position
+                    .height
+                    .checked_add(self.params.commit_ttl_blocks)
+                    .is_some_and(|expiry| expiry > height)
+            });
+        }
+        Err(ResolveError::InvalidLineage)
+    }
+
+    fn state_operation_is_accepted(
+        &mut self,
+        block: &CanonicalBlock,
+        transaction: &CanonicalTransaction,
+        operation: &V2Operation,
+    ) -> Result<bool, ResolveError> {
+        let Some(action_index) = operation.action_index() else {
+            return Ok(false);
+        };
+        let Some(commitment) = operation.state_commitment() else {
+            return Ok(false);
+        };
+        let Ok(index) = operation_index(transaction, operation) else {
+            return Err(ResolveError::InvalidLineage);
+        };
+        match self.authenticate_accepted_state_ref(StateRef::new(
+            transaction.position(block.height),
+            action_index,
+            index,
+            commitment,
+        )) {
+            Ok(_) => Ok(true),
+            Err(ResolveError::InvalidOperation | ResolveError::InvalidName) => Ok(false),
+            Err(error) => Err(error),
+        }
     }
 
     /// Authenticates the bounded no-predecessor COMMIT rule at the COMMIT
@@ -521,15 +684,7 @@ where
                     {
                         continue;
                     }
-                    let valid = match operation {
-                        V2Operation::Reveal { .. } => self
-                            .authenticate_reveal(&block, transaction, operation)
-                            .is_ok(),
-                        V2Operation::Renew { .. } => self
-                            .authenticate_transition(&block, transaction, operation)
-                            .is_ok(),
-                        _ => false,
-                    };
+                    let valid = self.state_operation_is_accepted(&block, transaction, operation)?;
                     if valid {
                         return Ok(false);
                     }
@@ -555,7 +710,7 @@ where
         else {
             return Err(ResolveError::InvalidOperation);
         };
-        let predecessor = self.authenticate_state_ref(*predecessor_ref)?;
+        let predecessor = self.authenticate_accepted_state_ref(*predecessor_ref)?;
         if predecessor.data.name_id != state.name_id
             || predecessor.data.owner_pk != state.owner_pk
             || predecessor.state_ref != *predecessor_ref
@@ -619,6 +774,7 @@ where
         let state_ref = StateRef::new(
             transaction.position(block.height),
             action_index,
+            operation_index(transaction, operation)?,
             *state_commitment,
         );
         let successor = NameState::new(state.clone(), *state_commitment, state_ref)
@@ -649,6 +805,39 @@ fn exact_transaction(
         .transactions
         .iter()
         .find(|transaction| transaction.tx_index == tx_index && transaction.txid == txid)
+}
+
+fn validate_block_shape(block: &CanonicalBlock, expected_height: u32) -> Result<(), ResolveError> {
+    if block.height != expected_height
+        || block
+            .transactions
+            .windows(2)
+            .any(|pair| pair[0].tx_index >= pair[1].tx_index)
+        || block.transactions.iter().any(|transaction| {
+            transaction
+                .actions
+                .iter()
+                .enumerate()
+                .any(|(index, action)| action.action_index != index as u32)
+                || !transaction.has_canonical_operation_order()
+        })
+    {
+        Err(ResolveError::InvalidLineage)
+    } else {
+        Ok(())
+    }
+}
+
+fn operation_index(
+    transaction: &CanonicalTransaction,
+    operation: &V2Operation,
+) -> Result<u32, ResolveError> {
+    transaction
+        .operations
+        .iter()
+        .position(|candidate| core::ptr::eq(candidate, operation))
+        .and_then(|index| u32::try_from(index).ok())
+        .ok_or(ResolveError::InvalidLineage)
 }
 
 type TransitionParts<'a> = Option<(

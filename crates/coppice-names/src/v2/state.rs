@@ -157,18 +157,26 @@ pub struct StateRef {
     pub producer_txid: [u8; 32],
     /// Ironwood action index whose commitment is this state note.
     pub producer_action_index: u32,
+    /// Exact v2 carrier-message index that declared this state note.
+    pub producer_operation_index: u32,
     /// The state-note commitment created by that action.
     pub commitment: [u8; 32],
 }
 
 impl StateRef {
     /// Constructs a state reference from a transaction position and action.
-    pub const fn new(position: ProducerPosition, action_index: u32, commitment: [u8; 32]) -> Self {
+    pub const fn new(
+        position: ProducerPosition,
+        action_index: u32,
+        operation_index: u32,
+        commitment: [u8; 32],
+    ) -> Self {
         Self {
             producer_height: position.height,
             producer_tx_index: position.tx_index,
             producer_txid: position.txid,
             producer_action_index: action_index,
+            producer_operation_index: operation_index,
             commitment,
         }
     }
@@ -184,11 +192,12 @@ impl StateRef {
 
     /// Returns the explicit v2 field binding used in a transition proof.
     pub fn digest(&self) -> [u8; 32] {
-        let mut bytes = Vec::with_capacity(4 + 4 + 32 + 4 + 32);
+        let mut bytes = Vec::with_capacity(4 + 4 + 32 + 4 + 4 + 32);
         bytes.extend_from_slice(&self.producer_height.to_be_bytes());
         bytes.extend_from_slice(&self.producer_tx_index.to_be_bytes());
         bytes.extend_from_slice(&self.producer_txid);
         bytes.extend_from_slice(&self.producer_action_index.to_be_bytes());
+        bytes.extend_from_slice(&self.producer_operation_index.to_be_bytes());
         bytes.extend_from_slice(&self.commitment);
         hash_to_field("CoppiceN2Ref", &bytes).to_repr()
     }

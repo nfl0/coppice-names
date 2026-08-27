@@ -79,15 +79,22 @@ impl RegistrationIntent {
 pub struct CommitRef {
     /// The canonical transaction containing COMMIT.
     pub position: ProducerPosition,
+    /// Exact carrier-message index of the accepted COMMIT in that transaction.
+    pub operation_index: u32,
     /// The commitment payload.
     pub commitment: [u8; 32],
 }
 
 impl CommitRef {
     /// Constructs a commitment reference.
-    pub const fn new(position: ProducerPosition, commitment: [u8; 32]) -> Self {
+    pub const fn new(
+        position: ProducerPosition,
+        operation_index: u32,
+        commitment: [u8; 32],
+    ) -> Self {
         Self {
             position,
+            operation_index,
             commitment,
         }
     }

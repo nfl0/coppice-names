@@ -244,7 +244,7 @@ impl V2StateMachine {
                 let outcome = match operation {
                     V2Operation::Commit { commitment } => {
                         let position = transaction.position(block.height);
-                        let commit = CommitRef::new(position, *commitment);
+                        let commit = CommitRef::new(position, operation_index as u32, *commitment);
                         if self.pending.contains_key(commitment) {
                             Err(ApplyError::DuplicateCommitment)
                         } else {
@@ -253,12 +253,25 @@ impl V2StateMachine {
                         }
                     }
                     V2Operation::Reveal { .. } => self
-                        .apply_reveal(block, transaction, operation, proofs, bonds)
+                        .apply_reveal(
+                            block,
+                            transaction,
+                            operation_index as u32,
+                            operation,
+                            proofs,
+                            bonds,
+                        )
                         .map(|state| Some((state.data.name_id, AppliedOperationKind::Reveal))),
                     V2Operation::Update { .. }
                     | V2Operation::Renew { .. }
                     | V2Operation::Release { .. } => self
-                        .apply_transition(block, transaction, operation, proofs)
+                        .apply_transition(
+                            block,
+                            transaction,
+                            operation_index as u32,
+                            operation,
+                            proofs,
+                        )
                         .map(Some),
                 };
                 let result = match outcome {
@@ -300,6 +313,7 @@ impl V2StateMachine {
         &mut self,
         block: &CanonicalBlock,
         transaction: &CanonicalTransaction,
+        operation_index: u32,
         operation: &V2Operation,
         proofs: &P,
         bonds: &B,
@@ -414,6 +428,7 @@ impl V2StateMachine {
         let state_ref = StateRef::new(
             transaction.position(block.height),
             *action_index,
+            operation_index,
             *state_commitment,
         );
         let name_state = NameState::new(state.clone(), *state_commitment, state_ref)?;
@@ -451,6 +466,7 @@ impl V2StateMachine {
         &mut self,
         block: &CanonicalBlock,
         transaction: &CanonicalTransaction,
+        operation_index: u32,
         operation: &V2Operation,
         proofs: &P,
     ) -> Result<(NameId, AppliedOperationKind), ApplyError>
@@ -528,6 +544,7 @@ impl V2StateMachine {
         let state_ref = StateRef::new(
             transaction.position(block.height),
             action_index,
+            operation_index,
             *state_commitment,
         );
         let successor = NameState::new(state.clone(), *state_commitment, state_ref)?;
@@ -875,6 +892,366 @@ mod tests {
         assert_fresh_matches_replay(&machine, &source, "anchor-skip");
     }
 
+    #[test]
+    fn reveal_cannot_reference_a_rejected_duplicate_commit_message() {
+        let params = V2Parameters::testing();
+        let mut machine = V2StateMachine::new(params).unwrap();
+        let mut source = BTreeMap::new();
+        let alice = intent(34, "duplicate-commit", b"record");
+        let commitment = alice.commitment().unwrap();
+        let commit_position = ProducerPosition::new(1, 0, [35; 32]);
+        let rejected_duplicate = CommitRef::new(commit_position, 1, commitment);
+        let commits = append(
+            &mut machine,
+            &mut source,
+            vec![transaction(
+                0,
+                35,
+                Vec::new(),
+                vec![
+                    V2Operation::Commit { commitment },
+                    V2Operation::Commit { commitment },
+                ],
+            )],
+        )
+        .unwrap();
+        assert_rejected(&commits, ApplyError::DuplicateCommitment);
+        let name_id = alice.name_id().unwrap();
+        let reveal_height = schedule::next_anchor_height(name_id, 2, params).unwrap();
+        advance_to(&mut machine, &mut source, reveal_height - 1);
+        let state = StateData {
+            name_id,
+            owner_pk: alice.owner_pk,
+            sequence: 0,
+            record: alice.record.clone(),
+            lease_expiry: params.lease_expiry(reveal_height).unwrap(),
+            status: StateStatus::Active,
+            terminal_height: 0,
+        };
+        let reveal = append(
+            &mut machine,
+            &mut source,
+            vec![transaction(
+                0,
+                36,
+                vec![IronwoodActionRef {
+                    action_index: 0,
+                    nullifier: field(3400),
+                    commitment: field(3401),
+                }],
+                vec![reveal_operation(
+                    &alice,
+                    rejected_duplicate,
+                    state,
+                    field(3401),
+                    None,
+                )],
+            )],
+        )
+        .unwrap();
+        assert_rejected(&reveal, ApplyError::CommitmentMismatch);
+        assert_fresh_matches_replay(&machine, &source, "duplicate-commit");
+    }
+
+    #[test]
+    fn fresh_resolution_rejects_cryptographically_valid_shadow_reveal_lineage() {
+        let params = V2Parameters::testing();
+        let mut machine = V2StateMachine::new(params).unwrap();
+        let mut source = BTreeMap::new();
+        let original = intent(40, "shadow", b"old-record");
+        let (_, state0, _) = register(&mut machine, &mut source, &original, 40);
+        let release_height = machine.tip().height + 1;
+        let released = state_after(
+            &state0,
+            b"old-record",
+            1,
+            state0.data.lease_expiry,
+            StateStatus::Released,
+            release_height,
+        );
+        let release_commitment = field(4001);
+        append(
+            &mut machine,
+            &mut source,
+            vec![transaction(
+                0,
+                41,
+                vec![IronwoodActionRef {
+                    action_index: 0,
+                    nullifier: field(4002),
+                    commitment: release_commitment,
+                }],
+                vec![transition_operation(
+                    OperationKind::Release,
+                    state0.state_ref,
+                    released,
+                    release_commitment,
+                    0,
+                )],
+            )],
+        )
+        .unwrap();
+        let terminal = machine.head(original.name_id().unwrap()).unwrap().clone();
+        let claimable = release_height + params.reuse_delay_blocks;
+        advance_to(&mut machine, &mut source, claimable);
+
+        let bob = intent(41, "shadow", b"bob-record");
+        let charlie = intent(42, "shadow", b"charlie-record");
+        let commit_height = machine.tip().height + 1;
+        let bob_commit = CommitRef::new(
+            ProducerPosition::new(commit_height, 0, [42; 32]),
+            0,
+            bob.commitment().unwrap(),
+        );
+        let charlie_commit = CommitRef::new(
+            ProducerPosition::new(commit_height, 1, [43; 32]),
+            0,
+            charlie.commitment().unwrap(),
+        );
+        append(
+            &mut machine,
+            &mut source,
+            vec![
+                transaction(
+                    0,
+                    42,
+                    Vec::new(),
+                    vec![V2Operation::Commit {
+                        commitment: bob_commit.commitment,
+                    }],
+                ),
+                transaction(
+                    1,
+                    43,
+                    Vec::new(),
+                    vec![V2Operation::Commit {
+                        commitment: charlie_commit.commitment,
+                    }],
+                ),
+            ],
+        )
+        .unwrap();
+        let name_id = bob.name_id().unwrap();
+        let reveal_height =
+            schedule::next_anchor_height(name_id, commit_height + 1, params).unwrap();
+        advance_to(&mut machine, &mut source, reveal_height - 1);
+        let bob_commitment = field(4003);
+        let charlie_commitment = field(4004);
+        let bob_state = StateData {
+            name_id,
+            owner_pk: bob.owner_pk,
+            sequence: 0,
+            record: bob.record.clone(),
+            lease_expiry: params.lease_expiry(reveal_height).unwrap(),
+            status: StateStatus::Active,
+            terminal_height: 0,
+        };
+        let charlie_state = StateData {
+            name_id,
+            owner_pk: charlie.owner_pk,
+            sequence: 0,
+            record: charlie.record.clone(),
+            lease_expiry: params.lease_expiry(reveal_height).unwrap(),
+            status: StateStatus::Active,
+            terminal_height: 0,
+        };
+        let reveals = append(
+            &mut machine,
+            &mut source,
+            vec![
+                transaction(
+                    0,
+                    44,
+                    vec![IronwoodActionRef {
+                        action_index: 0,
+                        nullifier: field(4005),
+                        commitment: bob_commitment,
+                    }],
+                    vec![reveal_operation(
+                        &bob,
+                        bob_commit,
+                        bob_state,
+                        bob_commitment,
+                        Some(terminal.state_ref),
+                    )],
+                ),
+                transaction(
+                    1,
+                    45,
+                    vec![IronwoodActionRef {
+                        action_index: 0,
+                        nullifier: field(4006),
+                        commitment: charlie_commitment,
+                    }],
+                    vec![reveal_operation(
+                        &charlie,
+                        charlie_commit,
+                        charlie_state.clone(),
+                        charlie_commitment,
+                        Some(terminal.state_ref),
+                    )],
+                ),
+            ],
+        )
+        .unwrap();
+        assert!(matches!(
+            reveals.operations.as_slice(),
+            [
+                AppliedOperation {
+                    result: AppliedOperationResult::Accepted(Some((
+                        _,
+                        AppliedOperationKind::Reveal
+                    ))),
+                    ..
+                },
+                AppliedOperation {
+                    result: AppliedOperationResult::Rejected(ApplyError::NameUnavailable),
+                    ..
+                },
+            ]
+        ));
+        let bob_head = machine.head(name_id).unwrap().clone();
+        let shadow0 = NameState::new(
+            charlie_state,
+            charlie_commitment,
+            StateRef::new(
+                ProducerPosition::new(reveal_height, 1, [45; 32]),
+                0,
+                0,
+                charlie_commitment,
+            ),
+        )
+        .unwrap();
+        let shadow_update_state = state_after(
+            &shadow0,
+            b"charlie-update",
+            1,
+            shadow0.data.lease_expiry,
+            StateStatus::Active,
+            0,
+        );
+        let shadow_update_commitment = field(4007);
+        let shadow_update_height = machine.tip().height + 1;
+        let update = append(
+            &mut machine,
+            &mut source,
+            vec![transaction(
+                0,
+                46,
+                vec![IronwoodActionRef {
+                    action_index: 0,
+                    nullifier: field(4008),
+                    commitment: shadow_update_commitment,
+                }],
+                vec![transition_operation(
+                    OperationKind::Update,
+                    shadow0.state_ref,
+                    shadow_update_state.clone(),
+                    shadow_update_commitment,
+                    0,
+                )],
+            )],
+        )
+        .unwrap();
+        assert_rejected(&update, ApplyError::StalePredecessor);
+
+        let renew_height =
+            schedule::next_anchor_height(name_id, machine.tip().height + 1, params).unwrap();
+        advance_to(&mut machine, &mut source, renew_height - 1);
+        let shadow_update = NameState::new(
+            shadow_update_state,
+            shadow_update_commitment,
+            StateRef::new(
+                ProducerPosition::new(shadow_update_height, 0, [46; 32]),
+                0,
+                0,
+                shadow_update_commitment,
+            ),
+        )
+        .unwrap();
+        let shadow_renew = state_after(
+            &shadow_update,
+            b"charlie-update",
+            2,
+            params.lease_expiry(renew_height).unwrap(),
+            StateStatus::Active,
+            0,
+        );
+        let renew = append(
+            &mut machine,
+            &mut source,
+            vec![transaction(
+                0,
+                47,
+                vec![IronwoodActionRef {
+                    action_index: 0,
+                    nullifier: field(4009),
+                    commitment: field(4010),
+                }],
+                vec![transition_operation(
+                    OperationKind::Renew,
+                    shadow_update.state_ref,
+                    shadow_renew,
+                    field(4010),
+                    0,
+                )],
+            )],
+        )
+        .unwrap();
+        assert_rejected(&renew, ApplyError::StalePredecessor);
+        assert_eq!(machine.head(name_id).unwrap().state_ref, bob_head.state_ref);
+
+        // Bob's accepted anchor is now beyond the reset horizon, while the
+        // rejected Charlie renewal is recent. It must not block a
+        // no-predecessor reset registration.
+        let reset_commit_height = reveal_height + params.reset_horizon().unwrap();
+        advance_to(&mut machine, &mut source, reset_commit_height - 1);
+        let dana = intent(43, "shadow", b"dana-record");
+        let dana_commit = commit(&mut machine, &mut source, &dana, 0, 48);
+        assert_eq!(dana_commit.position.height, reset_commit_height);
+        let dana_reveal_height =
+            schedule::next_anchor_height(name_id, reset_commit_height + 1, params).unwrap();
+        advance_to(&mut machine, &mut source, dana_reveal_height - 1);
+        let dana_state = StateData {
+            name_id,
+            owner_pk: dana.owner_pk,
+            sequence: 0,
+            record: dana.record.clone(),
+            lease_expiry: params.lease_expiry(dana_reveal_height).unwrap(),
+            status: StateStatus::Active,
+            terminal_height: 0,
+        };
+        let reset = append(
+            &mut machine,
+            &mut source,
+            vec![transaction(
+                0,
+                49,
+                vec![IronwoodActionRef {
+                    action_index: 0,
+                    nullifier: field(4011),
+                    commitment: field(4012),
+                }],
+                vec![reveal_operation(
+                    &dana,
+                    dana_commit,
+                    dana_state,
+                    field(4012),
+                    None,
+                )],
+            )],
+        )
+        .unwrap();
+        assert!(matches!(
+            reset.operations.last(),
+            Some(AppliedOperation {
+                result: AppliedOperationResult::Accepted(Some((name, AppliedOperationKind::Reveal))),
+                ..
+            }) if *name == name_id
+        ));
+        assert_fresh_matches_replay(&machine, &source, "shadow");
+    }
+
     fn advance_to(
         machine: &mut V2StateMachine,
         source: &mut BTreeMap<u32, CanonicalBlock>,
@@ -906,7 +1283,7 @@ mod tests {
             )],
         )
         .unwrap();
-        CommitRef::new(position, commitment)
+        CommitRef::new(position, 0, commitment)
     }
 
     fn reveal_operation(
@@ -1241,11 +1618,13 @@ mod tests {
                 });
             }
         }
-        let missing = FreshResolver::new(params)
-            .unwrap()
-            .resolve("alice", &no_anchor, &AcceptingProofs, &AcceptingBond)
-            .unwrap();
-        assert_eq!(missing.status, ResolutionStatus::Missing);
+        let missing = FreshResolver::new(params).unwrap().resolve(
+            "alice",
+            &no_anchor,
+            &AcceptingProofs,
+            &AcceptingBond,
+        );
+        assert_eq!(missing, Err(ResolveError::InvalidLineage));
 
         let mut reorged_anchor = source.clone();
         reorged_anchor
@@ -1456,7 +1835,7 @@ mod tests {
         };
         let same_block = reveal_operation(
             &alice,
-            CommitRef::new(same_block_position, commitment),
+            CommitRef::new(same_block_position, 0, commitment),
             same_block_state,
             field(500),
             None,

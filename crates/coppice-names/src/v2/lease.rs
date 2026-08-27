@@ -108,12 +108,13 @@ impl V2Parameters {
             .ok_or(LeaseParameterError::ArithmeticOverflow)
     }
 
-    /// The largest delay from an anchor through the following two scheduled
-    /// opportunities. A lease longer than this gives a missed refresh one
-    /// recovery opportunity before ownership is lost.
+    /// The largest distance from one anchor to the second following scheduled
+    /// opportunity. For `s_e = eE + o_e`, this is
+    /// `s_(e+2) - s_e <= 3E - 1`.
     pub fn max_two_slot_gap(self) -> Result<u32, LeaseParameterError> {
-        self.max_anchor_gap()?
-            .checked_mul(2)
+        self.epoch_size
+            .checked_mul(3)
+            .and_then(|value| value.checked_sub(1))
             .ok_or(LeaseParameterError::ArithmeticOverflow)
     }
 
@@ -264,7 +265,7 @@ mod tests {
         let params = V2Parameters::testing();
         assert_eq!(params.max_anchor_gap().unwrap(), 15);
         assert_eq!(params.max_anchor_age().unwrap(), 15);
-        assert_eq!(params.max_two_slot_gap().unwrap(), 30);
+        assert_eq!(params.max_two_slot_gap().unwrap(), 23);
         assert!(params.lease_duration_blocks > params.max_two_slot_gap().unwrap());
     }
 }

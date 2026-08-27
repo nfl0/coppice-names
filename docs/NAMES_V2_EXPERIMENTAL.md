@@ -25,7 +25,7 @@ is no single `REGISTER` operation and no `TRANSFER` operation in this slice.
 
 1. Every accepted name has one current state-note commitment and one exact
    producer position. The position contains height, transaction index,
-   transaction ID, action index, and commitment.
+   transaction ID, action index, carrier-message index, and commitment.
 2. `REVEAL` is the only genesis of a lineage. Its state-note commitment must
    equal the commitment of the selected canonical Ironwood action, and its
    genesis proof must authenticate the state data and note-control relation.
@@ -49,6 +49,12 @@ is no single `REGISTER` operation and no `TRANSFER` operation in this slice.
 8. No state transition consumes an application-wide root. Alice and Bob are
    independent except for ordinary canonical Zcash action ordering and
    one-time nullifier validity.
+
+Cryptographic validity is not Names acceptance. A valid Zcash action and a
+valid Names proof can create a physical note for a REVEAL that the canonical
+Names replay rejects because another same-name lineage became current first.
+Such a shadow note is never an accepted Names producer and cannot seed a
+fresh-resolution lineage.
 
 ## Registration and lease invariants
 
@@ -84,7 +90,7 @@ slot(name_id, epoch) = epoch * E + H_slot(name_id || epoch) mod E
 
 `H_slot` uses a v2-only domain. A `REVEAL` or `RENEW` is valid only at that
 exact height. The experiment requires `commit_ttl >= 2E - 1`,
-`refresh_deadline >= 2E - 1`, and `lease_duration > 2(2E - 1)`. The last
+`refresh_deadline >= 2E - 1`, and `lease_duration > 3E - 1`. The last
 relation gives an owner that misses one slot a further scheduled renewal
 opportunity before lease loss.
 
@@ -100,6 +106,15 @@ are exactly those in that window. The resolver replays only this name's
 visible operations in canonical block/transaction/message order across that
 bounded tail. Invalid Names messages are deterministic rejections; missing or
 structurally inconsistent canonical blocks remain fatal acquisition errors.
+
+For the second following opportunity:
+
+```text
+s_(e+2) - s_e = 2E + offset_(e+2) - offset_e <= 3E - 1
+```
+
+`3E - 1` is the tight recovery bound; the earlier `2(2E - 1)` expression was
+safe but unnecessarily conservative.
 
 ## Bounded reset for hidden COMMITs
 
@@ -124,14 +139,29 @@ inside the horizon can require an unaware caller to wait for reset. A caller
 with the authenticated terminal reference retains exact claimability timing.
 Reset probes only scheduled anchor blocks and authenticates encountered
 per-name predecessor chains; it never needs a global nonmembership index.
+Only canonically accepted anchors count. Proof-valid shadow REVEALs or RENEWs
+descending from them do not block reset eligibility.
 
 ## Authenticated predecessor-position chain
 
 The state note does not contain its own producer transaction ID. After a
 transaction becomes canonical, its `(height, tx index, txid, action index,
-commitment)` becomes the `StateRef` carried by the next operation. Resolver
-lineage verification follows those references through ordinary canonical block
-and transaction acquisition until it reaches a validated `REVEAL` and its
-validated `COMMIT`. A replacement producer on a reorg is therefore absent or
-has a different action commitment, making the old reference invalid on the new
-canonical branch.
+carrier-message index, commitment)` becomes the `StateRef` carried by the next
+operation. Resolver lineage verification follows those references through
+ordinary canonical block and transaction acquisition until it reaches an
+**accepted** REVEAL and its **accepted** COMMIT.
+
+For a referenced transition, the resolver first authenticates the accepted
+predecessor producer, validates the transition, and applies it at its exact
+canonical message position. Zcash's one-time nullifier rule excludes competing
+canonical descendants of that accepted predecessor. REVEAL needs extra work:
+independent replacements do not share a state-note nullifier. The resolver
+therefore replays the bounded same-name window ending at the exact REVEAL
+message and accepts it only against the name state immediately before it.
+
+COMMIT references also include their exact carrier-message index. Fresh
+verification reconstructs the finite pending-commitment set across the TTL
+window, including accepted consumes, so a REVEAL cannot cite a rejected
+duplicate COMMIT merely because identical bytes occur elsewhere. A replacement
+producer on a reorg is absent, has different canonical position data, or fails
+this accepted-producer replay on the new branch.

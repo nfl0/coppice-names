@@ -162,4 +162,19 @@ mod tests {
             params
         ));
     }
+
+    #[test]
+    fn second_following_opportunity_has_tight_three_epoch_bound() {
+        for epoch_size in 1..64u32 {
+            let mut maximum = 0;
+            for first_offset in 0..epoch_size {
+                for second_offset in 0..epoch_size {
+                    let gap = 2 * epoch_size + second_offset - first_offset;
+                    maximum = maximum.max(gap);
+                    assert!(gap <= 3 * epoch_size - 1);
+                }
+            }
+            assert_eq!(maximum, 3 * epoch_size - 1);
+        }
+    }
 }

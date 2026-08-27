@@ -45,6 +45,8 @@ pub enum ApplyError {
     InvalidRegistration,
     /// The v1 BondProof evidence was not accepted.
     InvalidBondProof,
+    /// A bond identity is already attached to another active name.
+    BondAlreadyInUse,
     /// A name is not claimable at REVEAL.
     NameUnavailable,
     /// A replacement COMMIT predates the claimability boundary.
@@ -125,6 +127,10 @@ pub struct V2StateMachine {
     tip: ChainTip,
     pending: BTreeMap<[u8; 32], CommitRef>,
     heads: BTreeMap<NameId, NameState>,
+    /// Derived v1-compatible active bond ownership. This is not a consensus
+    /// root or a Core index; it is rebuilt while replaying accepted v2
+    /// registrations and is independent for names using different bonds.
+    active_bonds: BTreeMap<[u8; 32], NameId>,
     spent_state_nullifiers: BTreeSet<[u8; 32]>,
 }
 
@@ -140,6 +146,7 @@ impl V2StateMachine {
             params,
             pending: BTreeMap::new(),
             heads: BTreeMap::new(),
+            active_bonds: BTreeMap::new(),
             spent_state_nullifiers: BTreeSet::new(),
         })
     }
@@ -358,6 +365,12 @@ impl V2StateMachine {
             return Err(ApplyError::InvalidBondProof);
         }
 
+        if let Some(indexed_name) = self.active_bonds.get(&bond.bond_tag)
+            && *indexed_name != name_id
+        {
+            return Err(ApplyError::BondAlreadyInUse);
+        }
+
         if let Some(previous) = self.heads.get(&name_id) {
             let claimable = self
                 .params
@@ -395,6 +408,9 @@ impl V2StateMachine {
             return Err(ApplyError::InvalidStateProof);
         }
         self.pending.remove(&commit.commitment);
+        self.active_bonds
+            .retain(|_, indexed_name| *indexed_name != name_id);
+        self.active_bonds.insert(bond.bond_tag, name_id);
         self.heads.insert(name_id, name_state.clone());
         Ok(name_state)
     }
@@ -494,7 +510,11 @@ impl V2StateMachine {
         let applied_kind = match kind {
             OperationKind::Update => AppliedOperationKind::Update,
             OperationKind::Renew => AppliedOperationKind::Renew,
-            OperationKind::Release => AppliedOperationKind::Release,
+            OperationKind::Release => {
+                self.active_bonds
+                    .retain(|_, indexed_name| *indexed_name != name_id);
+                AppliedOperationKind::Release
+            }
         };
         Ok((name_id, applied_kind))
     }
@@ -1575,6 +1595,57 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(reclaim_error, ApplyError::CommitPredatesClaimability);
+
+        let mut bond_machine = V2StateMachine::new(params).unwrap();
+        let mut bond_source = BTreeMap::new();
+        let bond_owner = intent(14, "bond-owner", b"record");
+        register(&mut bond_machine, &mut bond_source, &bond_owner, 60);
+        let mut duplicate_bond = intent(15, "bond-other", b"record");
+        duplicate_bond.bond_tag = bond_owner.bond_tag;
+        let duplicate_commit = commit(&mut bond_machine, &mut bond_source, &duplicate_bond, 0, 61);
+        let duplicate_name = duplicate_bond.name_id().unwrap();
+        let duplicate_reveal_height = schedule::next_anchor_height(
+            duplicate_name,
+            duplicate_commit.position.height + 1,
+            params,
+        )
+        .unwrap();
+        advance_to(
+            &mut bond_machine,
+            &mut bond_source,
+            duplicate_reveal_height - 1,
+        );
+        let duplicate_state = StateData {
+            name_id: duplicate_name,
+            owner_pk: duplicate_bond.owner_pk,
+            sequence: 0,
+            record: duplicate_bond.record.clone(),
+            lease_expiry: params.lease_expiry(duplicate_reveal_height).unwrap(),
+            status: StateStatus::Active,
+            terminal_height: 0,
+        };
+        let duplicate_error = append(
+            &mut bond_machine,
+            &mut bond_source,
+            vec![transaction(
+                0,
+                62,
+                vec![IronwoodActionRef {
+                    action_index: 0,
+                    nullifier: field(1201),
+                    commitment: field(1200),
+                }],
+                vec![reveal_operation(
+                    &duplicate_bond,
+                    duplicate_commit,
+                    duplicate_state,
+                    field(1200),
+                    None,
+                )],
+            )],
+        )
+        .unwrap_err();
+        assert_eq!(duplicate_error, ApplyError::BondAlreadyInUse);
     }
 
     #[test]

@@ -60,6 +60,8 @@ is no single `REGISTER` operation and no `TRANSFER` operation in this slice.
    `FrozenV1BondProofVerifier` additionally requires `record` to be a
    canonical v1 Unified Address; an alternate experimental bond verifier may
    define a different record encoding without changing the state-note proof.
+   The replay state also keeps the v1-style active-bond uniqueness guard; it
+   is a derived application index, not a Core index or transaction root.
 3. A replacement commitment must be mined no earlier than the height at which
    the old name became claimable. This preserves the v1 anti-precommit rule.
 4. Active state is payable only while `height < lease_expiry`. Missed renewal

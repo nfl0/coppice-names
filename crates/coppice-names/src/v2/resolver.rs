@@ -497,8 +497,9 @@ where
             self.params,
             horizon,
         );
+        let harmless_at_or_before = commit_height.saturating_sub(horizon);
         for height in candidates {
-            if height < self.params.activation_height {
+            if height < self.params.activation_height || height <= harmless_at_or_before {
                 continue;
             }
             self.stats.candidate_block_probes = self

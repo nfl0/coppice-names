@@ -120,3 +120,55 @@ vectors. That means the qualified implementation is the reference path for
 development and integration. It does not mean that Coppice is publicly
 deployed, audited, or ready for an operational rollout without future network,
 packaging, and deployment decisions.
+
+## Names v2 release qualification: 2026-08-28
+
+The full Names v2 lifecycle was qualified live on a fresh disposable
+Zakura -> patched Zaino -> `zcash-devtool` stack through the production
+construction layer (`zcash-devtool::names_v2_operation` over the
+designated-pair builder), not copied qualification code. The run used the
+disposable qualification mnemonic, activation heights 1/2, and the
+`live-qualification.sh --phase 9` procedure (extended in this release to drive
+the complete lifecycle and the claimability boundary).
+
+Live canonical sequence (all verified by independent full replay and
+FreshResolver with `NAMES_FULL_FRESH_MATCH=yes`):
+
+- COMMIT `8f2dcc625f0b60bd30fd1384593b0be9ef8158639bf0be424ebdd72edeec80c9`
+  mined at height 15 (maturity distance 8 to its scheduled REVEAL anchor);
+- REVEAL `4591bd8bcaccee66f25fa27e41dbefe0ad35038912cfc33733b7936d4bed08a0`
+  mined at the scheduled anchor height 23; registration resolved `Active`;
+- UPDATE `e73bdd5dffbcf14c2aca928e179f3e3c6d0f48c39d1874096e2e6d100484c9dc`
+  mined at height 24 and canonically accepted;
+- RENEW `16827d5b754c2d3c3c84ccd5ac029e14fb5177ac705aa3f53c6573243da808b8`
+  mined at the next scheduled anchor height 27 and canonically accepted;
+- RELEASE `22839d5cf22202ad300b4e2aadf867326c8869c10c1f59f6802a73e7685bb500`
+  mined at height 28 and canonically accepted;
+- claimability boundary: the terminal release resolved `Released` at the last
+  blocked height 31 and `Expired` exactly at the claimability height 32
+  (`terminal_height 28 + reuse_delay 4`), with replay and FreshResolver in
+  agreement at both boundaries.
+
+Measured live costs: Names genesis/transition proofs 3,667-3,886 ms and
+4,640-byte proofs; Ironwood consensus proofs 41,326-44,987 ms per
+transaction; CNV2 envelopes 5,054 (REVEAL) and 4,947 (UPDATE/RENEW/RELEASE)
+bytes at 11/10/10/10 CPV1 frames respectively.
+
+Frozen release identities recorded by this qualification: the Names v2 wire
+vector set `0c9bfdd7b0a26fb5c645b356f418d97fb48c7d910e2d1ce0e8d18c3e7f2cb7d5`
+(`test-vectors/names_v2_wire.json`), the state-note circuit verifying-key
+identities (transition
+`676e9883651309ad75e73ff937d3f046cfe966c18079371f80d3f91ded4baf17`, genesis
+`a9cfe4bf4c9ff3abeebb41c348e4189f5ec5649f16296c04f573f3d97de952fc`), and the
+pinned stack: `coppice-names` at the release head, `orchard-coppice` at its
+hardened fork head, `zcash-devtool` at the release head, Zakura
+`f892b9074002a04a678ef2365ec7658795796572`, Zaino
+`b819583a1a6663a01cb7681ac5b5fc2a174596a0`, Zallet
+`f904040613d6b2c3f24ab58cfef1b555bf68e918` (external, unmodified).
+
+Explicit-replacement, no-predecessor reset, abandonment, competing-transition
+reorg, and FreshResolver/full-replay parity behaviors remain covered by the
+previously retained live v2 qualification evidence and the deterministic
+regression suites; this release qualification demonstrates the production
+construction path end to end rather than regenerating every historical live
+transaction.

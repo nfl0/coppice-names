@@ -2519,6 +2519,64 @@ mod tests {
     }
 
     #[test]
+    fn no_predecessor_replacement_is_rejected_before_reset_horizon() {
+        let params = V2Parameters::testing();
+        let mut machine = V2StateMachine::new(params).unwrap();
+        let mut source = BTreeMap::new();
+        let original = intent(14, "early-reset", b"record");
+        let (_, previous, _) = register(&mut machine, &mut source, &original, 60);
+        let replacement = intent(15, "early-reset", b"replacement");
+        let replacement_commit = commit(&mut machine, &mut source, &replacement, 0, 61);
+        let name_id = replacement.name_id().unwrap();
+        let claimable = params
+            .claimable_from(
+                previous.data.status,
+                previous.data.lease_expiry,
+                previous.data.terminal_height,
+            )
+            .unwrap();
+        assert!(replacement_commit.position.height < claimable);
+        let reveal_height =
+            schedule::next_anchor_height(name_id, replacement_commit.position.height + 1, params)
+                .unwrap();
+        assert!(reveal_height < claimable);
+        advance_to(&mut machine, &mut source, reveal_height - 1);
+        let state = StateData {
+            name_id,
+            owner_pk: replacement.owner_pk,
+            sequence: 0,
+            record: replacement.record.clone(),
+            lease_expiry: params.lease_expiry(reveal_height).unwrap(),
+            status: StateStatus::Active,
+            terminal_height: 0,
+        };
+        let result = append(
+            &mut machine,
+            &mut source,
+            vec![transaction(
+                0,
+                62,
+                vec![IronwoodActionRef {
+                    action_index: 0,
+                    nullifier: field(1401),
+                    commitment: field(1402),
+                }],
+                vec![reveal_operation(
+                    &replacement,
+                    replacement_commit,
+                    state,
+                    field(1402),
+                    None,
+                )],
+            )],
+        )
+        .unwrap();
+        assert_rejected(&result, ApplyError::NameUnavailable);
+        assert_eq!(machine.head(name_id).unwrap().state_ref, previous.state_ref);
+        assert_fresh_matches_replay(&machine, &source, "early-reset");
+    }
+
+    #[test]
     fn lineage_and_same_action_binding_reject_stale_and_cross_action_inputs() {
         let params = V2Parameters::testing();
         let mut machine = V2StateMachine::new(params).unwrap();

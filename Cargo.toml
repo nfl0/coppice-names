@@ -40,9 +40,13 @@ zip321 = { git = "https://github.com/zcash/librustzcash.git", rev = "6c07e5f3297
 zip32 = "0.2.1"
 
 [patch.crates-io]
-# The v2 experiment is pinned to the audited orchard-coppice fork head, which
-# carries the hardened designated Ironwood action pairing. The frozen v1
-# release remains at its immutable tag and is not moved or rewritten.
+# The production code path pins the audited hardened builder head
+# deea5a3b499c9f4e9e30ff4d9ffca4e0f51234ca, which it qualified against. The
+# orchard-coppice repository later advanced to
+# bf689decb9fce94a7de01b8bdc55a1e42e1695bb for documentation and
+# VK-freeze-test additions only; do not repin without a concrete functional
+# reason. The frozen v1 release remains at its immutable tag and is not moved
+# or rewritten.
 orchard = { git = "https://github.com/nfl0/orchard-coppice.git", rev = "deea5a3b499c9f4e9e30ff4d9ffca4e0f51234ca" }
 zcash_primitives = { git = "https://github.com/zcash/librustzcash.git", rev = "6c07e5f3297febf469e5cc8d0b91321e0767cdd7" }
 zcash_protocol = { git = "https://github.com/zcash/librustzcash.git", rev = "6c07e5f3297febf469e5cc8d0b91321e0767cdd7" }

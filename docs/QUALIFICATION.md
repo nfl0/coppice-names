@@ -160,8 +160,11 @@ vector set `0c9bfdd7b0a26fb5c645b356f418d97fb48c7d910e2d1ce0e8d18c3e7f2cb7d5`
 identities (transition
 `676e9883651309ad75e73ff937d3f046cfe966c18079371f80d3f91ded4baf17`, genesis
 `a9cfe4bf4c9ff3abeebb41c348e4189f5ec5649f16296c04f573f3d97de952fc`), and the
-pinned stack: `coppice-names` at the release head, `orchard-coppice` at its
-hardened fork head, `zcash-devtool` at the release head, Zakura
+pinned stack: `coppice-names` at the release head, `orchard-coppice`
+production pin `deea5a3b499c9f4e9e30ff4d9ffca4e0f51234ca` (the fork
+repository later advanced to `bf689decb9fce94a7de01b8bdc55a1e42e1695bb` for
+documentation and VK-freeze-test additions only), `zcash-devtool` at the
+release head, Zakura
 `f892b9074002a04a678ef2365ec7658795796572`, Zaino
 `b819583a1a6663a01cb7681ac5b5fc2a174596a0`, Zallet
 `f904040613d6b2c3f24ab58cfef1b555bf68e918` (external, unmodified).

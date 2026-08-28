@@ -127,21 +127,34 @@ balance; Names does not duplicate full transaction conservation.
 
 ## Experimental proof statements
 
+The responsibility split is: Zcash consensus proves Ironwood Action validity,
+canonical ordering, and fork choice; the Names proofs prove complete local
+Names transition validity under authenticated canonical inputs; replay and
+fresh resolution own canonical applicability and history. Ironwood spend
+authority is inherited from the ordinary Zcash proof, never re-derived by
+Names.
+
 The genesis proof public inputs are: `name_id`, owner `ak`, successor
 commitment, sequence, record digest, lease expiry, status, terminal height,
-state digest, registration-input nullifier, successor future nullifier, and
-`minimum_bond_zatoshis`. Private witnesses are the real registration note
-opening, its FVK/scope and spend-authorizing scalar, the successor note
-opening, and the non-negative `registration_value - minimum_bond` delta.
+state digest, registration-input nullifier, successor future nullifier,
+`minimum_bond_zatoshis`, the disclosed intent's `name_id`, owner `ak`, and
+record digest, the actual REVEAL height, the protocol lease duration, and the
+canonically derived schedule predicate. Private witnesses are the real
+registration note opening with its FVK/scope, the successor note opening, and
+the non-negative `registration_value - minimum_bond` delta.
 
 The transition proof public inputs are: name and owner, predecessor commitment
 and action nullifier, successor commitment, operation code, both sequences,
 record digests, lease expiries, statuses, terminal heights, operation height,
-both state digests, predecessor `StateRef` digest, transition binding, and the
-successor future nullifier. Private witnesses are both real note openings, the
-predecessor FVK/scope and spend-authorizing scalar. The circuit proves the
-successor recipient uses the same authority, `rho_successor = NF_predecessor`,
-and exact private value preservation.
+both state digests, predecessor `StateRef` digest, transition binding, the
+successor future nullifier, the successor name id and owner key, the protocol
+lease duration, the schedule predicate, and the accepted head's
+proof-authenticated future nullifier. Private witnesses are both real note
+openings and the predecessor FVK/scope; no spend-authorizing scalar is used.
+The circuit proves the successor recipient uses the same authority,
+`rho_successor = NF_predecessor`, action nullifier = stored future nullifier,
+UPDATE/RENEW/RELEASE branch legality, name/owner continuity, and exact private
+bond-value preservation from the retained predecessor opening.
 
 ## Discovery schedule
 

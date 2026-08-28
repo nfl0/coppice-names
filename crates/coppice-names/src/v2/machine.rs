@@ -36,8 +36,6 @@ pub enum ApplyError {
     CommitmentMismatch,
     /// A commitment was made in the same block as its REVEAL.
     SameBlockCommitReveal,
-    /// REVEAL was not at the name-derived anchor slot.
-    RevealOutsideAnchor,
     /// The disclosed registration intent is malformed.
     InvalidRegistration,
     /// A name is not claimable at REVEAL.
@@ -65,16 +63,6 @@ pub enum ApplyError {
     StalePredecessor,
     /// No current head exists for a non-genesis operation.
     MissingPredecessor,
-    /// The current note is not active at this height.
-    InactiveLease,
-    /// The next sequence is not exactly the current sequence plus one.
-    InvalidSequence,
-    /// UPDATE changed a field outside its policy or failed to change its record.
-    InvalidUpdate,
-    /// RENEW did not use the deterministic slot/lease rule.
-    InvalidRenewal,
-    /// RELEASE did not create the exact terminal state.
-    InvalidRelease,
     /// A height arithmetic operation overflowed.
     ArithmeticOverflow,
 }
@@ -1301,11 +1289,127 @@ mod tests {
             machine.head(alice.name_id().unwrap()).unwrap().state_ref,
             current.state_ref
         );
-        assert!(machine
-            .head(alice.name_id().unwrap())
-            .unwrap()
-            .abandoned_height
-            .is_none());
+        assert!(
+            machine
+                .head(alice.name_id().unwrap())
+                .unwrap()
+                .abandoned_height
+                .is_none()
+        );
+        source.insert(block.height, block);
+        assert_fresh_matches_replay(&machine, &source, "nf-binding");
+    }
+
+    #[test]
+    fn fresh_resolution_matches_replay_across_adversarial_spends() {
+        let params = V2Parameters::testing();
+        let mut machine = V2StateMachine::new(params).unwrap();
+        let mut source = BTreeMap::new();
+        let alice = intent(39, "parity", b"record");
+        let (_, current, _) = register(&mut machine, &mut source, &alice, 45);
+        let name_id = alice.name_id().unwrap();
+
+        // A canonical spend of the accepted head note with an invalid Names
+        // successor abandons the head in replay and fresh resolution alike.
+        let tip = machine.tip();
+        let invalid_successor = state_after(
+            &current,
+            b"record",
+            1,
+            current.data.lease_expiry,
+            StateStatus::Active,
+            0,
+        );
+        let commitment = field(4_401);
+        let invalid_successor_block = CanonicalBlock {
+            height: tip.height + 1,
+            block_hash: [0x51; 32],
+            prev_block_hash: tip.block_hash,
+            transactions: vec![transaction(
+                0,
+                46,
+                vec![IronwoodActionRef {
+                    action_index: 0,
+                    nullifier: current.state_ref.nullifier,
+                    commitment,
+                }],
+                vec![transition_operation(
+                    OperationKind::Update,
+                    current.state_ref,
+                    invalid_successor,
+                    commitment,
+                    0,
+                )],
+            )],
+        };
+        let applied = machine
+            .apply_block(&invalid_successor_block, &AcceptingProofs)
+            .unwrap();
+        assert_rejected(&applied, ApplyError::InvalidStateProof);
+        let abandoned = machine.head(name_id).unwrap().clone();
+        assert_eq!(
+            abandoned.abandoned_height,
+            Some(invalid_successor_block.height)
+        );
+        source.insert(invalid_successor_block.height, invalid_successor_block);
+        assert_fresh_matches_replay(&machine, &source, "parity");
+        assert_eq!(
+            machine.resolution_at(name_id, machine.tip().height),
+            ResolutionStatus::Abandoned
+        );
+
+        // A later transition from the abandoned head is stale in both views,
+        // and the abandoned head is not silently restored.
+        let tip = machine.tip();
+        let stale_successor = state_after(
+            &abandoned,
+            b"changed",
+            1,
+            abandoned.data.lease_expiry,
+            StateStatus::Active,
+            0,
+        );
+        let stale_commitment = field(4_402);
+        let stale_block = CanonicalBlock {
+            height: tip.height + 1,
+            block_hash: [0x52; 32],
+            prev_block_hash: tip.block_hash,
+            transactions: vec![transaction(
+                0,
+                47,
+                vec![IronwoodActionRef {
+                    action_index: 0,
+                    nullifier: abandoned.state_ref.nullifier,
+                    commitment: stale_commitment,
+                }],
+                vec![transition_operation(
+                    OperationKind::Update,
+                    abandoned.state_ref,
+                    stale_successor,
+                    stale_commitment,
+                    0,
+                )],
+            )],
+        };
+        let applied = machine.apply_block(&stale_block, &AcceptingProofs).unwrap();
+        assert_rejected(&applied, ApplyError::StalePredecessor);
+        source.insert(stale_block.height, stale_block);
+        assert_fresh_matches_replay(&machine, &source, "parity");
+        assert_eq!(
+            machine.resolution_at(name_id, machine.tip().height),
+            ResolutionStatus::Abandoned
+        );
+
+        // Once the reuse delay passes, both views resolve the name expired.
+        let claimable = params
+            .head_claimable_from(&abandoned.data, abandoned.abandoned_height)
+            .unwrap();
+        advance_to(&mut machine, &mut source, claimable);
+        assert_eq!(
+            machine.resolution_at(name_id, machine.tip().height),
+            ResolutionStatus::Expired
+        );
+        assert_fresh_matches_replay(&machine, &source, "parity");
     }
 
     #[test]
@@ -2070,11 +2174,16 @@ mod tests {
                 });
             }
         }
-        let missing =
-            FreshResolver::new(params)
-                .unwrap()
-                .resolve("alice", &no_anchor, &AcceptingProofs);
-        assert_eq!(missing, Err(ResolveError::InvalidLineage));
+        // A source whose lineage was stripped resolves to the same outcome
+        // replay would produce: no accepted producer, hence no state head.
+        // Unaccepted lineage claims are skipped, never hard errors.
+        let missing = FreshResolver::new(params)
+            .unwrap()
+            .resolve("alice", &no_anchor, &AcceptingProofs)
+            .unwrap();
+        assert_eq!(missing.status, ResolutionStatus::Missing);
+        assert!(missing.state.is_none());
+        assert!(missing.anchor.is_none());
 
         let mut reorged_anchor = source.clone();
         reorged_anchor
@@ -2886,6 +2995,7 @@ mod tests {
         )
         .unwrap();
         assert_rejected(&stale_again_result, ApplyError::StalePredecessor);
+        assert_fresh_matches_replay(&machine, &source, "alice");
     }
 
     #[test]

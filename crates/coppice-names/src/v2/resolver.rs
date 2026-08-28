@@ -494,7 +494,12 @@ where
             return Err(ResolveError::InvalidOperation);
         }
         if let Some(previous_ref) = replacement_predecessor {
-            let mut previous = self.authenticate_accepted_state_ref(*previous_ref)?;
+            let mut previous = self
+                .authenticate_accepted_state_ref(*previous_ref)
+                .map_err(|error| match error {
+                    ResolveError::InvalidLineage => ResolveError::InvalidOperation,
+                    other => other,
+                })?;
             if let Some(height) = self.find_nullifier_spend_height(
                 previous.state_ref.nullifier,
                 previous.state_ref.producer_height,
@@ -758,7 +763,15 @@ where
         else {
             return Err(ResolveError::InvalidOperation);
         };
-        let predecessor = self.authenticate_accepted_state_ref(*predecessor_ref)?;
+        // A predecessor claim that does not authenticate to an accepted Names
+        // producer makes this operation unaccepted, exactly as replay treats
+        // it; it never poisons resolution of the name itself.
+        let predecessor = self
+            .authenticate_accepted_state_ref(*predecessor_ref)
+            .map_err(|error| match error {
+                ResolveError::InvalidLineage => ResolveError::InvalidOperation,
+                other => other,
+            })?;
         if predecessor.state_ref != *predecessor_ref || predecessor.abandoned_height.is_some() {
             return Err(ResolveError::InvalidOperation);
         }
@@ -769,12 +782,12 @@ where
             .map_err(|_| ResolveError::InvalidOperation)?;
         let action = transaction
             .action(action_index)
-            .ok_or(ResolveError::InvalidLineage)?;
+            .ok_or(ResolveError::InvalidOperation)?;
         if action.nullifier != predecessor.state_ref.nullifier {
-            return Err(ResolveError::InvalidLineage);
+            return Err(ResolveError::InvalidOperation);
         }
         if action.commitment != *state_commitment {
-            return Err(ResolveError::InvalidLineage);
+            return Err(ResolveError::InvalidOperation);
         }
         let state_ref = StateRef::new(
             transaction.position(block.height),

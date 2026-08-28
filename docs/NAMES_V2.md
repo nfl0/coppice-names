@@ -76,7 +76,11 @@ per frame, 16,093-byte maximum payload.
   expired claimability at `lease_expiry + grace`; released claimability at
   `terminal_height + reuse_delay`; abandoned claimability at
   `min(spend_height + reuse_delay, lease_expiry + grace)`; reset horizon
-  `H = max(D + G, D - 1 + R)` evaluated at the COMMIT's own height.
+  `H = max(D + G, D - 1 + R)` evaluated at the COMMIT's own height. The
+  local rules (anchor-restricted REVEAL/RENEW and lease extension) are
+  enforced by the proofs; the runtime derives the anchor and lease parameters
+  deterministically and enforces only history/applicability (claimability,
+  reset, abandonment).
 
 Frozen vector-set identity (SHA-256 over the length-prefixed canonical
 envelopes in family order):
@@ -84,29 +88,49 @@ envelopes in family order):
 
 ## 3. Proof boundaries and circuit freeze
 
+The responsibility split is: Zcash consensus proves Ironwood Action validity,
+canonical ordering, and fork choice; Names ZK proves complete local Names
+transition validity under authenticated canonical inputs; the Names
+runtime/replay owns canonical applicability and history only (current head,
+accepted predecessor, COMMIT history, claimability/replacement, abandonment,
+competing spends, reorgs). "Proof-valid" therefore means a valid local Names
+transition from the stated predecessor under correctly derived canonical
+public inputs — never that the predecessor is currently canonical, and never a
+re-derivation of Ironwood spend authority, which the ordinary Zcash proof
+already establishes.
+
 The genesis public inputs are: name id, owner `ak`, successor commitment,
 sequence, record digest, lease expiry, status, terminal height, state digest,
-registration-input nullifier, successor future nullifier, and minimum bond.
-The transition public inputs are: name and owner, predecessor commitment and
-action nullifier, successor commitment, operation code, both sequences, both
-record digests, both lease expiries, both statuses, both terminal heights,
-operation height, both state digests, the predecessor `StateRef` digest, the
-transition binding, and the successor future nullifier. Both circuits prove
-the successor recipient derives from the predecessor's full-viewing-key
-authority and `rho_successor = nullifier_predecessor`; the transition circuit
-additionally proves exact value preservation. The actual Ironwood spend
-authority remains the ordinary Zcash proof.
+registration-input nullifier, successor future nullifier, minimum bond, the
+disclosed intent's name id, owner `ak`, and record digest, the actual REVEAL
+height, the protocol lease duration, and the canonically derived schedule
+predicate. The transition public inputs are: name and owner, predecessor
+commitment and action nullifier, successor commitment, operation code, both
+sequences, both record digests, both lease expiries, both statuses, both
+terminal heights, operation height, both state digests, the predecessor
+`StateRef` digest, the transition binding, the successor future nullifier, the
+successor name id and owner key, the protocol lease duration, the schedule
+predicate, and the predecessor head's proof-authenticated future nullifier.
+
+Both circuits prove the successor recipient derives from the predecessor's
+full-viewing-key authority and `rho_successor = nullifier_predecessor`; the
+transition circuit additionally proves exact hidden bond-value preservation
+from the predecessor note opening, which is retained in the witness solely for
+that relation. UPDATE/RENEW/RELEASE local legality, REVEAL/genesis formation,
+name/owner continuity, sequence increments, and the schedule predicate are
+enforced by the circuits, not by runtime validation. The runtime authenticates
+the canonical action facts before proof verification (exact accepted
+predecessor, successor commitment, and action nullifier equal to the head's
+proof-authenticated future nullifier); a canonical spend whose Names successor
+fails verification becomes abandonment. The schedule predicate and lease
+duration are canonical deterministic statement preprocessing derived by the
+runtime from `name_id`, the operation height, and the protocol parameters.
 
 The circuits live in `orchard-coppice` under the `experimental-state-note`
 feature and are derived deterministically from the pinned params (`K = 11`)
-and pinned Halo2 `0.3.2`. Verifying-key identities are frozen and asserted by
-the fork's own test:
-
-- transition VK ID: `676e9883651309ad75e73ff937d3f046cfe966c18079371f80d3f91ded4baf17`
-- genesis VK ID: `a9cfe4bf4c9ff3abeebb41c348e4189f5ec5649f16296c04f573f3d97de952fc`
-
-Any change to the circuits, their public-input layout, or the pinned Halo2
-version changes these IDs and requires an explicit protocol-version bump.
+and pinned Halo2 `0.3.2`. Final verifying-key identities are deliberately not
+frozen yet: the fork's freeze test is ignored until the corrected architecture
+is accepted, after which freezing requires an explicit protocol-version bump.
 Proving keys are derived at runtime from the same pinned derivation; no
 trusted parameter distribution exists or is needed.
 

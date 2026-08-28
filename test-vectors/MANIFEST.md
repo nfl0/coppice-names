@@ -90,3 +90,17 @@ The frozen `coppice_bond_v1.json` freeze gate F-001 includes:
 
 The conformance harness MUST consume these files without regenerating expected
 values during the test run.
+
+## Names v2 wire vectors
+
+`names_v2_wire.json` freezes the experimental Names v2 CNV2 canonical
+encodings for the full operation family: `commit`,
+`reveal_first_registration`, `reveal_explicit_replacement`,
+`reveal_no_predecessor_reset_shaped` (byte-identical to the first
+registration encoding by construction), `update`, `renew`, and `release`.
+The frozen inputs, per-vector envelope bytes, and the SHA-256 vector-set
+identity are recorded in the file. The conformance harness is
+`crates/coppice-names/tests/names_v2_wire_vectors.rs`; it only asserts. The
+ignored `generate_names_v2_wire_vectors` test in the same file is the sole
+regeneration path for a future protocol-version bump and must never silently
+replace the frozen file.

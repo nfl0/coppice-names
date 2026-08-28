@@ -42,9 +42,14 @@ pub enum ResolveError {
     InvalidName,
     /// The experimental parameters are invalid.
     InvalidParameters,
-    /// A canonical block or transaction referenced by an operation is absent or mismatched.
+    /// A canonical block or transaction required by resolution is absent,
+    /// malformed, or internally inconsistent. This is fatal source/history
+    /// corruption, never an untrusted-claim rejection.
     InvalidLineage,
-    /// A producer operation does not satisfy its deterministic state policy.
+    /// A producer operation does not satisfy its deterministic state policy,
+    /// including an operation-provided predecessor/replacement reference that
+    /// does not authenticate to an accepted Names producer. Only the
+    /// containing operation is unaccepted.
     InvalidOperation,
     /// A checked height relation overflowed.
     ArithmeticOverflow,
@@ -194,6 +199,19 @@ struct Authenticator<'a, S, P> {
     stats: ResolutionStats,
     cache: BTreeMap<StateRef, NameState>,
     visiting: BTreeSet<StateRef>,
+}
+
+/// Outcome of authenticating an operation-provided predecessor or
+/// replacement `StateRef` claim.
+///
+/// The distinction keeps untrusted-claim failures nonfatal: they make only
+/// the containing operation unaccepted. Canonical source/history integrity
+/// failures reached while authenticating remain fatal `ResolveError`s.
+enum ReferenceAuthentication {
+    /// The claim authenticates to the accepted Names producer it identifies.
+    Accepted(Box<NameState>),
+    /// The claim does not authenticate to an accepted Names producer.
+    Unauthenticated,
 }
 
 impl<'a, S, P> Authenticator<'a, S, P>
@@ -363,50 +381,74 @@ where
     /// Authenticates a producer as an accepted Names state head at its exact
     /// canonical carrier-message position. Proof validity alone is never a
     /// substitute for this replay check.
+    ///
+    /// Failures attributable to the untrusted claim itself are reported as
+    /// [`ReferenceAuthentication::Unauthenticated`]. Canonical source/history
+    /// integrity failures reached while authenticating — absent blocks inside
+    /// the required canonical range, malformed shapes, or broken chain
+    /// linkage encountered during the recursive replay — propagate as fatal
+    /// `ResolveError`s.
     fn authenticate_accepted_state_ref(
         &mut self,
         reference: StateRef,
-    ) -> Result<NameState, ResolveError> {
+    ) -> Result<ReferenceAuthentication, ResolveError> {
         if let Some(state) = self.cache.get(&reference) {
-            return Ok(state.clone());
+            return Ok(ReferenceAuthentication::Accepted(Box::new(state.clone())));
         }
         if !self.visiting.insert(reference) {
-            return Err(ResolveError::InvalidLineage);
+            // Circular ancestry is constructible only by the untrusted claims
+            // themselves; canonical acceptance never depends on a later
+            // producer.
+            return Ok(ReferenceAuthentication::Unauthenticated);
         }
         self.stats.lineage_block_probes = self
             .stats
             .lineage_block_probes
             .checked_add(1)
             .ok_or(ResolveError::ArithmeticOverflow)?;
-        let result = (|| {
+        let result = (|| -> Result<ReferenceAuthentication, ResolveError> {
+            let tip = self.source.tip();
+            if reference.producer_height < self.params.activation_height
+                || reference.producer_height > tip.height
+            {
+                // No accepted Names producer can exist outside the canonical
+                // source range, so the claim fails on its face.
+                return Ok(ReferenceAuthentication::Unauthenticated);
+            }
+            // Inside the canonical range a complete source must carry every
+            // block; a missing block is source corruption, not a claim
+            // failure.
             let block = self
                 .source
                 .block(reference.producer_height)
                 .ok_or(ResolveError::InvalidLineage)?;
-            let transaction =
+            let Some(transaction) =
                 exact_transaction(&block, reference.producer_tx_index, reference.producer_txid)
-                    .ok_or(ResolveError::InvalidLineage)?;
-            let action = transaction
-                .action(reference.producer_action_index)
-                .ok_or(ResolveError::InvalidLineage)?;
+            else {
+                return Ok(ReferenceAuthentication::Unauthenticated);
+            };
+            let Some(action) = transaction.action(reference.producer_action_index) else {
+                return Ok(ReferenceAuthentication::Unauthenticated);
+            };
             if action.commitment != reference.commitment {
-                return Err(ResolveError::InvalidLineage);
+                return Ok(ReferenceAuthentication::Unauthenticated);
             }
-            let operation = transaction
+            let Some(operation) = transaction
                 .operations
                 .get(reference.producer_operation_index as usize)
-                .ok_or(ResolveError::InvalidLineage)?;
-            if !transaction.is_first_action_claim(reference.producer_operation_index as usize) {
-                return Err(ResolveError::InvalidOperation);
-            }
-            if operation.action_index() != Some(reference.producer_action_index)
+            else {
+                return Ok(ReferenceAuthentication::Unauthenticated);
+            };
+            if !transaction.is_first_action_claim(reference.producer_operation_index as usize)
+                || operation.action_index() != Some(reference.producer_action_index)
                 || operation.state_commitment() != Some(reference.commitment)
                 || operation.state_nullifier() != Some(reference.nullifier)
-                || operation.name_id().is_none()
             {
-                return Err(ResolveError::InvalidLineage);
+                return Ok(ReferenceAuthentication::Unauthenticated);
             }
-            let name_id = operation.name_id().ok_or(ResolveError::InvalidLineage)?;
+            let Some(name_id) = operation.name_id() else {
+                return Ok(ReferenceAuthentication::Unauthenticated);
+            };
             let state = self.replay_name_through(
                 name_id,
                 MessagePosition {
@@ -415,14 +457,16 @@ where
                     operation_index: reference.producer_operation_index,
                 },
             )?;
-            state.ok_or(ResolveError::InvalidOperation)
+            match state {
+                Some(state) if state.state_ref == reference => {
+                    Ok(ReferenceAuthentication::Accepted(Box::new(state)))
+                }
+                _ => Ok(ReferenceAuthentication::Unauthenticated),
+            }
         })();
         self.visiting.remove(&reference);
-        if let Ok(state) = &result {
-            if state.state_ref != reference {
-                return Err(ResolveError::InvalidOperation);
-            }
-            self.cache.insert(reference, state.clone());
+        if let Ok(ReferenceAuthentication::Accepted(state)) = &result {
+            self.cache.insert(reference, state.as_ref().clone());
         }
         result
     }
@@ -494,12 +538,12 @@ where
             return Err(ResolveError::InvalidOperation);
         }
         if let Some(previous_ref) = replacement_predecessor {
-            let mut previous = self
-                .authenticate_accepted_state_ref(*previous_ref)
-                .map_err(|error| match error {
-                    ResolveError::InvalidLineage => ResolveError::InvalidOperation,
-                    other => other,
-                })?;
+            let mut previous = match self.authenticate_accepted_state_ref(*previous_ref)? {
+                ReferenceAuthentication::Accepted(previous) => previous,
+                ReferenceAuthentication::Unauthenticated => {
+                    return Err(ResolveError::InvalidOperation);
+                }
+            };
             if let Some(height) = self.find_nullifier_spend_height(
                 previous.state_ref.nullifier,
                 previous.state_ref.producer_height,
@@ -681,10 +725,9 @@ where
             index,
             commitment,
             nullifier,
-        )) {
-            Ok(_) => Ok(true),
-            Err(ResolveError::InvalidOperation | ResolveError::InvalidName) => Ok(false),
-            Err(error) => Err(error),
+        ))? {
+            ReferenceAuthentication::Accepted(_) => Ok(true),
+            ReferenceAuthentication::Unauthenticated => Ok(false),
         }
     }
 
@@ -765,13 +808,12 @@ where
         };
         // A predecessor claim that does not authenticate to an accepted Names
         // producer makes this operation unaccepted, exactly as replay treats
-        // it; it never poisons resolution of the name itself.
-        let predecessor = self
-            .authenticate_accepted_state_ref(*predecessor_ref)
-            .map_err(|error| match error {
-                ResolveError::InvalidLineage => ResolveError::InvalidOperation,
-                other => other,
-            })?;
+        // it; it never poisons resolution of the name itself. Structural
+        // source/history failures propagate and remain fatal.
+        let predecessor = match self.authenticate_accepted_state_ref(*predecessor_ref)? {
+            ReferenceAuthentication::Accepted(predecessor) => predecessor,
+            ReferenceAuthentication::Unauthenticated => return Err(ResolveError::InvalidOperation),
+        };
         if predecessor.state_ref != *predecessor_ref || predecessor.abandoned_height.is_some() {
             return Err(ResolveError::InvalidOperation);
         }

@@ -1413,6 +1413,259 @@ mod tests {
     }
 
     #[test]
+    fn unauthenticated_predecessor_claims_are_skipped_without_poisoning_resolution() {
+        let params = V2Parameters::testing();
+        let mut machine = V2StateMachine::new(params).unwrap();
+        let mut source = BTreeMap::new();
+        let alice = intent(43, "claim-skip", b"record");
+        let (_, current, _) = register(&mut machine, &mut source, &alice, 43);
+        let name_id = alice.name_id().unwrap();
+
+        // An UPDATE whose predecessor claim points inside canonical history
+        // but not at an accepted Names producer is unaccepted in replay and
+        // skipped by fresh resolution; it must not poison the name. The same
+        // block also carries a claim pointing beyond the canonical tip.
+        let tip = machine.tip();
+        let forged_successor = state_after(
+            &current,
+            b"changed",
+            1,
+            current.data.lease_expiry,
+            StateStatus::Active,
+            0,
+        );
+        let forged_commitment = field(4_601);
+        let forged_claim = StateRef::new(
+            ProducerPosition::new(current.state_ref.producer_height, 0, [0xff; 32]),
+            0,
+            0,
+            forged_commitment,
+            field(4_602),
+        );
+        let beyond_tip_claim = StateRef::new(
+            ProducerPosition::new(tip.height + 50, 0, [0xfe; 32]),
+            0,
+            0,
+            forged_commitment,
+            field(4_602),
+        );
+        let forged_block = CanonicalBlock {
+            height: tip.height + 1,
+            block_hash: [0x61; 32],
+            prev_block_hash: tip.block_hash,
+            transactions: vec![
+                transaction(
+                    0,
+                    45,
+                    vec![IronwoodActionRef {
+                        action_index: 0,
+                        nullifier: forged_claim.nullifier,
+                        commitment: forged_commitment,
+                    }],
+                    vec![transition_operation(
+                        OperationKind::Update,
+                        forged_claim,
+                        forged_successor.clone(),
+                        forged_commitment,
+                        0,
+                    )],
+                ),
+                transaction(
+                    1,
+                    46,
+                    vec![IronwoodActionRef {
+                        action_index: 0,
+                        nullifier: beyond_tip_claim.nullifier,
+                        commitment: forged_commitment,
+                    }],
+                    vec![transition_operation(
+                        OperationKind::Update,
+                        beyond_tip_claim,
+                        forged_successor,
+                        forged_commitment,
+                        0,
+                    )],
+                ),
+            ],
+        };
+        let applied = machine
+            .apply_block(&forged_block, &AcceptingProofs)
+            .unwrap();
+        assert!(matches!(
+            applied.operations.as_slice(),
+            [
+                AppliedOperation {
+                    result: AppliedOperationResult::Rejected(ApplyError::StalePredecessor),
+                    ..
+                },
+                AppliedOperation {
+                    result: AppliedOperationResult::Rejected(ApplyError::StalePredecessor),
+                    ..
+                },
+            ]
+        ));
+        source.insert(forged_block.height, forged_block);
+        assert_fresh_matches_replay(&machine, &source, "claim-skip");
+
+        // The accepted head still updates normally afterwards.
+        let successor = state_after(
+            &current,
+            b"changed",
+            1,
+            current.data.lease_expiry,
+            StateStatus::Active,
+            0,
+        );
+        let commitment = field(4_603);
+        append(
+            &mut machine,
+            &mut source,
+            vec![transaction(
+                0,
+                46,
+                vec![IronwoodActionRef {
+                    action_index: 0,
+                    nullifier: current.state_ref.nullifier,
+                    commitment,
+                }],
+                vec![transition_operation(
+                    OperationKind::Update,
+                    current.state_ref,
+                    successor,
+                    commitment,
+                    0,
+                )],
+            )],
+        )
+        .unwrap();
+        assert_fresh_matches_replay(&machine, &source, "claim-skip");
+
+        // A reclaiming REVEAL with an equally forged replacement predecessor
+        // fails on the same authenticate_accepted_state_ref boundary in fresh
+        // resolution and is rejected in replay: skipped, never fatal, and the
+        // accepted head is untouched.
+        let bob = intent(46, "claim-skip", b"bob-record");
+        let bob_commit = commit(&mut machine, &mut source, &bob, 0, 47);
+        let reveal_height =
+            schedule::next_anchor_height(name_id, machine.tip().height + 1, params).unwrap();
+        advance_to(&mut machine, &mut source, reveal_height - 1);
+        let bob_commitment = field(4_604);
+        let bob_state = StateData {
+            name_id,
+            owner_pk: bob.owner_pk,
+            sequence: 0,
+            record: bob.record.clone(),
+            lease_expiry: params.lease_expiry(reveal_height).unwrap(),
+            status: StateStatus::Active,
+            terminal_height: 0,
+        };
+        let hostile_reveal_block = CanonicalBlock {
+            height: reveal_height,
+            block_hash: [0x62; 32],
+            prev_block_hash: machine.tip().block_hash,
+            transactions: vec![transaction(
+                0,
+                48,
+                vec![IronwoodActionRef {
+                    action_index: 0,
+                    nullifier: field(4_605),
+                    commitment: bob_commitment,
+                }],
+                vec![reveal_operation(
+                    &bob,
+                    bob_commit,
+                    bob_state,
+                    bob_commitment,
+                    Some(forged_claim),
+                )],
+            )],
+        };
+        let applied = machine
+            .apply_block(&hostile_reveal_block, &AcceptingProofs)
+            .unwrap();
+        assert_rejected(&applied, ApplyError::NameUnavailable);
+        source.insert(hostile_reveal_block.height, hostile_reveal_block);
+        assert_fresh_matches_replay(&machine, &source, "claim-skip");
+    }
+
+    #[test]
+    fn structural_source_failure_while_authenticating_predecessor_remains_fatal() {
+        let params = V2Parameters::testing();
+        let mut machine = V2StateMachine::new(params).unwrap();
+        let mut source = BTreeMap::new();
+        // Register late enough that the COMMIT carrier's pending-scan window
+        // stays above activation history, so the only path from the claimed
+        // producer down to the activation-era block is the recursive lineage
+        // replay inside authenticate_accepted_state_ref.
+        advance_to(&mut machine, &mut source, 19);
+        let alice = intent(47, "fatal-source", b"record");
+        let (reveal_height, current, _) = register(&mut machine, &mut source, &alice, 49);
+        let name_id = alice.name_id().unwrap();
+
+        // Update from the accepted head, then extend the tip so that the
+        // activation-era history lies below the fresh window and the fallback
+        // reset window alike. Only the recursive lineage replay inside
+        // authenticate_accepted_state_ref still reaches it.
+        let update_height = reveal_height + params.max_anchor_age().unwrap() + 1;
+        advance_to(&mut machine, &mut source, update_height - 1);
+        let successor = state_after(
+            &current,
+            b"changed",
+            1,
+            current.data.lease_expiry,
+            StateStatus::Active,
+            0,
+        );
+        let commitment = field(4_701);
+        append(
+            &mut machine,
+            &mut source,
+            vec![transaction(
+                0,
+                50,
+                vec![IronwoodActionRef {
+                    action_index: 0,
+                    nullifier: current.state_ref.nullifier,
+                    commitment,
+                }],
+                vec![transition_operation(
+                    OperationKind::Update,
+                    current.state_ref,
+                    successor,
+                    commitment,
+                    0,
+                )],
+            )],
+        )
+        .unwrap();
+        let tip_height = reveal_height + 30;
+        advance_to(&mut machine, &mut source, tip_height);
+
+        // Control: with complete history the bounded replay bootstraps from
+        // the authenticated claim and matches replay exactly.
+        assert_fresh_matches_replay(&machine, &source, "fatal-source");
+
+        // Removing one canonical block below every window sweep breaks the
+        // recursive authentication of the claimed predecessor. That is
+        // source/history corruption: it must surface as the fatal lineage
+        // error, never as a normal Missing/Abandoned resolution outcome, and
+        // it must not be downgraded to an unaccepted operation.
+        let gap_height = params.activation_height;
+        let gap_block = source.remove(&gap_height).unwrap();
+        assert_eq!(
+            FreshResolver::new(params)
+                .unwrap()
+                .resolve("fatal-source", &source, &AcceptingProofs,),
+            Err(ResolveError::InvalidLineage)
+        );
+
+        // Restoring the canonical source restores normal resolution.
+        source.insert(gap_height, gap_block);
+        assert_fresh_matches_replay(&machine, &source, "fatal-source");
+        assert_eq!(machine.head(name_id).unwrap().data.sequence, 1);
+    }
+
+    #[test]
     fn last_grace_spend_cannot_extend_reset_claimability() {
         let params = V2Parameters::testing();
         let mut machine = V2StateMachine::new(params).unwrap();

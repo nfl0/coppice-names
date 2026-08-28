@@ -1,5 +1,12 @@
 # Coppice Names v2 experimental vertical slice
 
+> Design history. This document describes the design-time v2 slice. The
+> production-authoritative v2 reference is [`NAMES_V2.md`](NAMES_V2.md);
+> normative bytes are frozen in `test-vectors/names_v2_wire.json`. Where this
+> document and the implementation disagree, the implementation and the frozen
+> vectors win. Nothing below changed the frozen v1 protocol, wire format,
+> identities, vectors, or BondProof.
+
 This document describes the implementation-quality experimental slice. It is
 not a deployment specification and does not change the frozen Names v1
 protocol, wire format, identities, vectors, or BondProof.

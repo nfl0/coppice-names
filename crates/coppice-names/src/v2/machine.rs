@@ -2519,7 +2519,7 @@ mod tests {
     }
 
     #[test]
-    fn no_predecessor_replacement_is_rejected_before_reset_horizon() {
+    fn no_predecessor_replacement_is_rejected_before_claimability() {
         let params = V2Parameters::testing();
         let mut machine = V2StateMachine::new(params).unwrap();
         let mut source = BTreeMap::new();
@@ -2574,6 +2574,120 @@ mod tests {
         assert_rejected(&result, ApplyError::NameUnavailable);
         assert_eq!(machine.head(name_id).unwrap().state_ref, previous.state_ref);
         assert_fresh_matches_replay(&machine, &source, "early-reset");
+    }
+
+    #[test]
+    fn no_predecessor_replacement_is_rejected_after_claimability_before_reset_boundary() {
+        let params = V2Parameters::testing();
+        let mut machine = V2StateMachine::new(params).unwrap();
+        let mut source = BTreeMap::new();
+        let original = intent(16, "bounded-reset", b"record");
+        let (_, state0, _) = register(&mut machine, &mut source, &original, 63);
+        let name_id = original.name_id().unwrap();
+        let release_height = machine.tip().height + 1;
+        let released = state_after(
+            &state0,
+            &state0.data.record,
+            1,
+            state0.data.lease_expiry,
+            StateStatus::Released,
+            release_height,
+        );
+        let release_commitment = field(1601);
+        append(
+            &mut machine,
+            &mut source,
+            vec![transaction(
+                0,
+                64,
+                vec![IronwoodActionRef {
+                    action_index: 0,
+                    nullifier: field(1602),
+                    commitment: release_commitment,
+                }],
+                vec![transition_operation(
+                    OperationKind::Release,
+                    state0.state_ref,
+                    released,
+                    release_commitment,
+                    0,
+                )],
+            )],
+        )
+        .unwrap();
+        let previous = machine.head(name_id).unwrap().clone();
+        let claimable = params
+            .claimable_from(
+                previous.data.status,
+                previous.data.lease_expiry,
+                previous.data.terminal_height,
+            )
+            .unwrap();
+        let anchor = params
+            .anchor_height(previous.data.lease_expiry)
+            .expect("released state has an anchor");
+        let reset_boundary = anchor
+            .checked_add(params.reset_horizon().unwrap())
+            .expect("reset boundary does not overflow");
+        assert!(claimable < reset_boundary);
+
+        advance_to(&mut machine, &mut source, claimable - 1);
+        let replacement = intent(17, "bounded-reset", b"replacement");
+        let replacement_commit = commit(&mut machine, &mut source, &replacement, 0, 65);
+        let commit_height = replacement_commit.position.height;
+        assert!(commit_height >= claimable);
+        assert!(commit_height < reset_boundary);
+        assert_eq!(commit_height, claimable);
+
+        let reveal_height = schedule::next_anchor_height(
+            name_id,
+            commit_height
+                .checked_add(1)
+                .expect("maturity height overflow"),
+            params,
+        )
+        .expect("replacement has a scheduled reveal slot");
+        let commit_expiry = commit_height
+            .checked_add(params.commit_ttl_blocks)
+            .expect("commit expiry does not overflow");
+        assert!(reveal_height > commit_height);
+        assert!(reveal_height >= claimable);
+        assert!(reveal_height <= commit_expiry);
+        assert!(schedule::is_anchor_height(name_id, reveal_height, params));
+        advance_to(&mut machine, &mut source, reveal_height - 1);
+        let state = StateData {
+            name_id,
+            owner_pk: replacement.owner_pk,
+            sequence: 0,
+            record: replacement.record.clone(),
+            lease_expiry: params.lease_expiry(reveal_height).unwrap(),
+            status: StateStatus::Active,
+            terminal_height: 0,
+        };
+        let result = append(
+            &mut machine,
+            &mut source,
+            vec![transaction(
+                0,
+                66,
+                vec![IronwoodActionRef {
+                    action_index: 0,
+                    nullifier: field(1603),
+                    commitment: field(1604),
+                }],
+                vec![reveal_operation(
+                    &replacement,
+                    replacement_commit,
+                    state,
+                    field(1604),
+                    None,
+                )],
+            )],
+        )
+        .unwrap();
+        assert_rejected(&result, ApplyError::InvalidReplacementReference);
+        assert_eq!(machine.head(name_id).unwrap().state_ref, previous.state_ref);
+        assert_fresh_matches_replay(&machine, &source, "bounded-reset");
     }
 
     #[test]

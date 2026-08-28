@@ -1,7 +1,10 @@
 //! Public v2 transition statements and the Orchard proof-verifier adapter.
 
 use super::{
+    lease::V2Parameters,
     operation::{IronwoodActionRef, OperationKind},
+    registration::RegistrationIntent,
+    schedule,
     state::{
         NameId, NameState, OwnerKey, StateError, canonical_field, name_id_field, owner_key_field,
         record_digest_field,
@@ -20,10 +23,6 @@ use rand_core::RngCore;
 pub enum StatementError {
     /// A state value failed representation validation.
     InvalidState(StateError),
-    /// The predecessor and successor carry different names.
-    NameMismatch,
-    /// The owner changes, which is outside this milestone.
-    OwnerMismatch,
     /// A statement field is not a canonical Pallas encoding.
     InvalidField,
 }
@@ -41,10 +40,16 @@ pub struct TransitionStatement {
     pub name_id: NameId,
     /// Canonical Ironwood `ak`/RedPallas owner key.
     pub owner_pk: OwnerKey,
+    /// Canonical successor name identifier, constrained to the predecessor.
+    pub successor_name_id: NameId,
+    /// Canonical successor owner key, constrained to the predecessor.
+    pub successor_owner_pk: OwnerKey,
     /// Current state-note commitment.
     pub predecessor_commitment: [u8; 32],
     /// Nullifier at the exact predecessor action.
     pub predecessor_nullifier: [u8; 32],
+    /// Proof-authenticated future nullifier stored in the accepted predecessor head.
+    pub predecessor_future_nullifier: [u8; 32],
     /// Successor state-note commitment.
     pub successor_commitment: [u8; 32],
     /// Future nullifier of the successor state note.
@@ -73,6 +78,10 @@ pub struct TransitionStatement {
     pub successor_terminal_height: u32,
     /// Canonical block height of this operation.
     pub operation_height: u32,
+    /// Canonical lease duration used by the RENEW branch.
+    pub lease_duration_blocks: u32,
+    /// Canonically-derived name schedule predicate at `operation_height`.
+    pub scheduled: bool,
     /// Digest of the exact predecessor producer position.
     pub predecessor_state_digest: [u8; 32],
     /// Digest of the exact successor state.
@@ -89,15 +98,10 @@ impl TransitionStatement {
         action: IronwoodActionRef,
         operation: OperationKind,
         operation_height: u32,
+        params: V2Parameters,
     ) -> Result<Self, StatementError> {
         predecessor.data.validate()?;
         successor.data.validate()?;
-        if predecessor.data.name_id != successor.data.name_id {
-            return Err(StatementError::NameMismatch);
-        }
-        if predecessor.data.owner_pk != successor.data.owner_pk {
-            return Err(StatementError::OwnerMismatch);
-        }
         if predecessor.state_ref.commitment != predecessor.commitment
             || successor.state_ref.commitment != successor.commitment
         {
@@ -114,8 +118,11 @@ impl TransitionStatement {
         Ok(Self {
             name_id: predecessor.data.name_id,
             owner_pk: predecessor.data.owner_pk,
+            successor_name_id: successor.data.name_id,
+            successor_owner_pk: successor.data.owner_pk,
             predecessor_commitment: predecessor.commitment,
             predecessor_nullifier: action.nullifier,
+            predecessor_future_nullifier: predecessor.state_ref.nullifier,
             successor_commitment: successor.commitment,
             successor_nullifier: successor.state_ref.nullifier,
             operation,
@@ -130,6 +137,12 @@ impl TransitionStatement {
             predecessor_terminal_height: predecessor.data.terminal_height,
             successor_terminal_height: successor.data.terminal_height,
             operation_height,
+            lease_duration_blocks: params.lease_duration_blocks,
+            scheduled: schedule::is_anchor_height(
+                predecessor.data.name_id,
+                operation_height,
+                params,
+            ),
             predecessor_state_digest: predecessor_digest,
             successor_state_digest: successor_digest,
             predecessor_ref_digest: predecessor.state_ref.digest(),
@@ -139,10 +152,14 @@ impl TransitionStatement {
     /// Converts this statement to the fixed Orchard public-input order.
     pub fn orchard_inputs(&self) -> Result<TransitionPublicInputs, StatementError> {
         let owner = owner_key_field(self.owner_pk).map_err(StatementError::InvalidState)?;
+        let successor_owner =
+            owner_key_field(self.successor_owner_pk).map_err(StatementError::InvalidState)?;
         let predecessor_commitment =
             canonical_field(self.predecessor_commitment).map_err(StatementError::InvalidState)?;
         let predecessor_nullifier =
             canonical_field(self.predecessor_nullifier).map_err(StatementError::InvalidState)?;
+        let predecessor_future_nullifier = canonical_field(self.predecessor_future_nullifier)
+            .map_err(StatementError::InvalidState)?;
         let successor_commitment =
             canonical_field(self.successor_commitment).map_err(StatementError::InvalidState)?;
         let successor_nullifier =
@@ -189,6 +206,11 @@ impl TransitionStatement {
             predecessor_ref,
             binding,
             successor_nullifier,
+            name_id_field(self.successor_name_id),
+            successor_owner,
+            pallas::Base::from(u64::from(self.lease_duration_blocks)),
+            pallas::Base::from(u64::from(self.scheduled)),
+            predecessor_future_nullifier,
         ]))
     }
 }
@@ -220,14 +242,28 @@ pub struct GenesisStatement {
     pub registration_nullifier: [u8; 32],
     /// Experimental minimum state-note bond value in zatoshis.
     pub minimum_bond_zatoshis: u64,
+    /// Canonical name disclosed by the REVEAL intent.
+    pub intent_name_id: NameId,
+    /// Canonical owner disclosed by the REVEAL intent.
+    pub intent_owner_pk: OwnerKey,
+    /// Canonical record digest disclosed by the REVEAL intent.
+    pub intent_record_digest: [u8; 32],
+    /// Actual canonical height of the REVEAL.
+    pub operation_height: u32,
+    /// Canonical lease duration used to form the initial state.
+    pub lease_duration_blocks: u32,
+    /// Canonically-derived name schedule predicate at `operation_height`.
+    pub scheduled: bool,
 }
 
 impl GenesisStatement {
     /// Builds a genesis statement from the initial state and its output action.
-    pub fn from_state(
+    pub fn from_reveal(
+        intent: &RegistrationIntent,
         state: &NameState,
         action: IronwoodActionRef,
-        minimum_bond_zatoshis: u64,
+        operation_height: u32,
+        params: V2Parameters,
     ) -> Result<Self, StatementError> {
         if state.commitment != action.commitment {
             return Err(StatementError::InvalidField);
@@ -237,6 +273,7 @@ impl GenesisStatement {
         if state.state_digest != state_digest {
             return Err(StatementError::InvalidField);
         }
+        let intent_name_id = intent.name_id().map_err(|_| StatementError::InvalidField)?;
         Ok(Self {
             name_id: state.data.name_id,
             owner_pk: state.data.owner_pk,
@@ -249,7 +286,13 @@ impl GenesisStatement {
             state_digest,
             state_nullifier: state.state_ref.nullifier,
             registration_nullifier: action.nullifier,
-            minimum_bond_zatoshis,
+            minimum_bond_zatoshis: params.minimum_bond_zatoshis,
+            intent_name_id,
+            intent_owner_pk: intent.owner_pk,
+            intent_record_digest: record_digest_field(&intent.record).to_repr(),
+            operation_height,
+            lease_duration_blocks: params.lease_duration_blocks,
+            scheduled: schedule::is_anchor_height(intent_name_id, operation_height, params),
         })
     }
 
@@ -264,6 +307,10 @@ impl GenesisStatement {
             canonical_field(self.state_nullifier).map_err(StatementError::InvalidState)?;
         let registration_nullifier =
             canonical_field(self.registration_nullifier).map_err(StatementError::InvalidState)?;
+        let intent_owner =
+            owner_key_field(self.intent_owner_pk).map_err(StatementError::InvalidState)?;
+        let intent_record =
+            canonical_field(self.intent_record_digest).map_err(StatementError::InvalidState)?;
         Ok(GenesisPublicInputs::from_fields([
             name_id_field(self.name_id),
             owner,
@@ -277,6 +324,12 @@ impl GenesisStatement {
             registration_nullifier,
             state_nullifier,
             pallas::Base::from(self.minimum_bond_zatoshis),
+            name_id_field(self.intent_name_id),
+            intent_owner,
+            intent_record,
+            pallas::Base::from(u64::from(self.operation_height)),
+            pallas::Base::from(u64::from(self.lease_duration_blocks)),
+            pallas::Base::from(u64::from(self.scheduled)),
         ]))
     }
 }

@@ -1130,7 +1130,7 @@ checksum = "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381"
 [[package]]
 name = "orchard"
 version = "0.15.3"
-source = "git+https://github.com/nfl0/orchard-coppice.git?rev=deea5a3b499c9f4e9e30ff4d9ffca4e0f51234ca#deea5a3b499c9f4e9e30ff4d9ffca4e0f51234ca"
+source = "git+https://github.com/nfl0/orchard-coppice.git?rev=c33aa79bcdd08c916c73d2268d610b8a1818308c#c33aa79bcdd08c916c73d2268d610b8a1818308c"
 dependencies = [
  "aes",
  "bitvec",

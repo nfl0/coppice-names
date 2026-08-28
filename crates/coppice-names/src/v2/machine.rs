@@ -59,6 +59,8 @@ pub enum ApplyError {
     InvalidStateProof,
     /// The selected action commitment is not the declared successor commitment.
     ActionCommitmentMismatch,
+    /// The selected action does not spend the accepted head's authenticated future nullifier.
+    ActionNullifierMismatch,
     /// The predecessor reference does not identify the current head.
     StalePredecessor,
     /// No current head exists for a non-genesis operation.
@@ -373,20 +375,8 @@ impl V2StateMachine {
         let name_id = intent
             .name_id()
             .map_err(|_| ApplyError::InvalidRegistration)?;
-        if state.name_id != name_id
-            || state.owner_pk != intent.owner_pk
-            || state.record != intent.record
-            || state.sequence != 0
-            || state.status != StateStatus::Active
-            || state.terminal_height != 0
-            || state.lease_expiry
-                != self
-                    .params
-                    .lease_expiry(block.height)
-                    .ok_or(ApplyError::ArithmeticOverflow)?
-        {
-            return Err(ApplyError::InvalidState(StateError::InvalidField));
-        }
+        // Representation and configured record bounds are canonical statement
+        // preprocessing. Genesis formation itself is enforced by the proof.
         self.params.validate_state(state)?;
         let expected_commitment = intent
             .commitment()
@@ -421,10 +411,6 @@ impl V2StateMachine {
         if block.height > expiry_height {
             return Err(ApplyError::CommitmentExpired);
         }
-        if !super::schedule::is_anchor_height(name_id, block.height, self.params) {
-            return Err(ApplyError::RevealOutsideAnchor);
-        }
-
         if let Some(previous) = self.heads.get(&name_id) {
             let claimable =
                 claimable_from_head(self.params, previous).ok_or(ApplyError::ArithmeticOverflow)?;
@@ -460,7 +446,7 @@ impl V2StateMachine {
         );
         let name_state = NameState::new(state.clone(), *state_commitment, state_ref)?;
         let statement =
-            GenesisStatement::from_state(&name_state, action, self.params.minimum_bond_zatoshis)?;
+            GenesisStatement::from_reveal(intent, &name_state, action, block.height, self.params)?;
         if !proofs.verify_genesis(&statement, proof) {
             return Err(ApplyError::InvalidStateProof);
         }
@@ -516,61 +502,17 @@ impl V2StateMachine {
         if current.abandoned_height.is_some() {
             return Err(ApplyError::StalePredecessor);
         }
-        if current.data.status != StateStatus::Active || block.height >= current.data.lease_expiry {
-            return Err(ApplyError::InactiveLease);
-        }
+        // Representation and configured record bounds are canonical statement
+        // preprocessing. Local transition legality is enforced by the proof.
         self.params.validate_state(state)?;
-        if state.owner_pk != current.data.owner_pk || state.name_id != current.data.name_id {
-            return Err(ApplyError::InvalidState(StateError::InvalidField));
-        }
-        let expected_sequence = current
-            .data
-            .sequence
-            .checked_add(1)
-            .ok_or(ApplyError::InvalidSequence)?;
-        if state.sequence != expected_sequence {
-            return Err(ApplyError::InvalidSequence);
-        }
-        match kind {
-            OperationKind::Update => {
-                if state.status != StateStatus::Active
-                    || state.terminal_height != 0
-                    || state.lease_expiry != current.data.lease_expiry
-                    || state.record == current.data.record
-                {
-                    return Err(ApplyError::InvalidUpdate);
-                }
-            }
-            OperationKind::Renew => {
-                let expected_expiry = self
-                    .params
-                    .lease_expiry(block.height)
-                    .ok_or(ApplyError::ArithmeticOverflow)?;
-                if state.status != StateStatus::Active
-                    || state.terminal_height != 0
-                    || state.record != current.data.record
-                    || !super::schedule::is_anchor_height(name_id, block.height, self.params)
-                    || state.lease_expiry != expected_expiry
-                    || state.lease_expiry <= current.data.lease_expiry
-                {
-                    return Err(ApplyError::InvalidRenewal);
-                }
-            }
-            OperationKind::Release => {
-                if state.status != StateStatus::Released
-                    || state.terminal_height != block.height
-                    || state.record != current.data.record
-                    || state.lease_expiry != current.data.lease_expiry
-                {
-                    return Err(ApplyError::InvalidRelease);
-                }
-            }
-        }
         let action = transaction
             .action(action_index)
             .ok_or(ApplyError::ActionCommitmentMismatch)?;
         if action.commitment != *state_commitment {
             return Err(ApplyError::ActionCommitmentMismatch);
+        }
+        if action.nullifier != current.state_ref.nullifier {
+            return Err(ApplyError::ActionNullifierMismatch);
         }
         let state_ref = StateRef::new(
             transaction.position(block.height),
@@ -580,8 +522,14 @@ impl V2StateMachine {
             *state_nullifier,
         );
         let successor = NameState::new(state.clone(), *state_commitment, state_ref)?;
-        let statement =
-            TransitionStatement::from_states(&current, &successor, action, kind, block.height)?;
+        let statement = TransitionStatement::from_states(
+            &current,
+            &successor,
+            action,
+            kind,
+            block.height,
+            self.params,
+        )?;
         if !proofs.verify_transition(&statement, proof) {
             return Err(ApplyError::InvalidStateProof);
         }
@@ -759,12 +707,57 @@ mod tests {
     struct AcceptingProofs;
 
     impl V2StateProofVerifier for AcceptingProofs {
-        fn verify_genesis(&self, _: &GenesisStatement, _: &[u8]) -> bool {
-            true
+        fn verify_genesis(&self, statement: &GenesisStatement, _: &[u8]) -> bool {
+            statement.name_id == statement.intent_name_id
+                && statement.owner_pk == statement.intent_owner_pk
+                && statement.record_digest == statement.intent_record_digest
+                && statement.sequence == 0
+                && statement.status == StateStatus::Active.code()
+                && statement.terminal_height == 0
+                && statement.scheduled
+                && statement
+                    .operation_height
+                    .checked_add(statement.lease_duration_blocks)
+                    == Some(statement.lease_expiry)
         }
 
-        fn verify_transition(&self, _: &TransitionStatement, _: &[u8]) -> bool {
-            true
+        fn verify_transition(&self, statement: &TransitionStatement, _: &[u8]) -> bool {
+            let common = statement.name_id == statement.successor_name_id
+                && statement.owner_pk == statement.successor_owner_pk
+                && statement.predecessor_nullifier == statement.predecessor_future_nullifier
+                && statement.predecessor_status == StateStatus::Active.code()
+                && statement.predecessor_terminal_height == 0
+                && statement.operation_height < statement.predecessor_lease_expiry
+                && statement.predecessor_sequence.checked_add(1)
+                    == Some(statement.successor_sequence);
+            common
+                && match statement.operation {
+                    OperationKind::Update => {
+                        statement.successor_record_digest != statement.predecessor_record_digest
+                            && statement.successor_lease_expiry
+                                == statement.predecessor_lease_expiry
+                            && statement.successor_status == StateStatus::Active.code()
+                            && statement.successor_terminal_height == 0
+                    }
+                    OperationKind::Renew => {
+                        statement.successor_record_digest == statement.predecessor_record_digest
+                            && statement.scheduled
+                            && statement
+                                .operation_height
+                                .checked_add(statement.lease_duration_blocks)
+                                == Some(statement.successor_lease_expiry)
+                            && statement.successor_lease_expiry > statement.predecessor_lease_expiry
+                            && statement.successor_status == StateStatus::Active.code()
+                            && statement.successor_terminal_height == 0
+                    }
+                    OperationKind::Release => {
+                        statement.successor_record_digest == statement.predecessor_record_digest
+                            && statement.successor_lease_expiry
+                                == statement.predecessor_lease_expiry
+                            && statement.successor_status == StateStatus::Released.code()
+                            && statement.successor_terminal_height == statement.operation_height
+                    }
+                }
         }
     }
 
@@ -804,8 +797,34 @@ mod tests {
     fn append(
         machine: &mut V2StateMachine,
         source: &mut BTreeMap<u32, CanonicalBlock>,
-        transactions: Vec<CanonicalTransaction>,
+        mut transactions: Vec<CanonicalTransaction>,
     ) -> Result<AppliedBlock, ApplyError> {
+        // Ordinary fixtures model the required same-action predecessor spend
+        // only when both the exact current reference and successor commitment
+        // are coherent. Adversarial stale/cross-action fixtures retain their
+        // deliberately mismatched action facts.
+        for transaction in &mut transactions {
+            for operation in &transaction.operations {
+                let Some((_, predecessor, state, commitment, _, action_index, _)) =
+                    transition_parts(operation)
+                else {
+                    continue;
+                };
+                if machine
+                    .head(state.name_id)
+                    .is_some_and(|head| head.state_ref == *predecessor)
+                    && transaction.actions.iter().any(|action| {
+                        action.action_index == action_index && action.commitment == *commitment
+                    })
+                    && let Some(action) = transaction
+                        .actions
+                        .iter_mut()
+                        .find(|action| action.action_index == action_index)
+                {
+                    action.nullifier = predecessor.nullifier;
+                }
+            }
+        }
         let tip = machine.tip();
         let block = CanonicalBlock {
             height: tip.height + 1,
@@ -819,13 +838,11 @@ mod tests {
     }
 
     fn assert_rejected(applied: &AppliedBlock, expected: ApplyError) {
-        assert!(matches!(
-            applied.operations.last(),
-            Some(AppliedOperation {
-                result: AppliedOperationResult::Rejected(actual),
-                ..
-            }) if *actual == expected
-        ));
+        let actual = applied
+            .operations
+            .last()
+            .map(|operation| operation.result.clone());
+        assert_eq!(actual, Some(AppliedOperationResult::Rejected(expected)));
     }
 
     fn assert_fresh_matches_replay(
@@ -1187,7 +1204,7 @@ mod tests {
             )],
         )
         .unwrap();
-        assert_rejected(&unmatched, ApplyError::InvalidUpdate);
+        assert_rejected(&unmatched, ApplyError::InvalidStateProof);
         assert_eq!(
             machine.head(name_id).unwrap().abandoned_height,
             Some(spend_height)
@@ -1238,6 +1255,57 @@ mod tests {
             ResolutionStatus::Expired
         );
         assert_fresh_matches_replay(&machine, &source, "ordinary-spend");
+    }
+
+    #[test]
+    fn transition_requires_action_nullifier_to_match_authenticated_head() {
+        let params = V2Parameters::testing();
+        let mut machine = V2StateMachine::new(params).unwrap();
+        let mut source = BTreeMap::new();
+        let alice = intent(38, "nf-binding", b"record");
+        let (_, current, _) = register(&mut machine, &mut source, &alice, 45);
+        let commitment = field(3_801);
+        let successor = state_after(
+            &current,
+            b"changed",
+            1,
+            current.data.lease_expiry,
+            StateStatus::Active,
+            0,
+        );
+        let tip = machine.tip();
+        let block = CanonicalBlock {
+            height: tip.height + 1,
+            block_hash: [0x38; 32],
+            prev_block_hash: tip.block_hash,
+            transactions: vec![transaction(
+                0,
+                46,
+                vec![IronwoodActionRef {
+                    action_index: 0,
+                    nullifier: field(3_802),
+                    commitment,
+                }],
+                vec![transition_operation(
+                    OperationKind::Update,
+                    current.state_ref,
+                    successor,
+                    commitment,
+                    0,
+                )],
+            )],
+        };
+        let applied = machine.apply_block(&block, &AcceptingProofs).unwrap();
+        assert_rejected(&applied, ApplyError::ActionNullifierMismatch);
+        assert_eq!(
+            machine.head(alice.name_id().unwrap()).unwrap().state_ref,
+            current.state_ref
+        );
+        assert!(machine
+            .head(alice.name_id().unwrap())
+            .unwrap()
+            .abandoned_height
+            .is_none());
     }
 
     #[test]
@@ -2079,16 +2147,20 @@ mod tests {
             )],
         )
         .unwrap();
-        assert_rejected(&invalid_renewal_result, ApplyError::InvalidRenewal);
+        assert_rejected(&invalid_renewal_result, ApplyError::InvalidStateProof);
+        assert_eq!(
+            machine.resolution_at(name_id, renewal_height),
+            ResolutionStatus::Abandoned
+        );
 
         advance_to(&mut machine, &mut source, expiry);
         assert_eq!(
             machine.resolution_at(name_id, expiry),
-            ResolutionStatus::Grace
+            ResolutionStatus::Expired
         );
         assert_eq!(
             machine.resolution_at(name_id, expiry + params.grace_period_blocks - 1),
-            ResolutionStatus::Grace
+            ResolutionStatus::Expired
         );
         advance_to(
             &mut machine,
@@ -2136,7 +2208,7 @@ mod tests {
             )],
         )
         .unwrap();
-        assert_rejected(&update_result, ApplyError::InactiveLease);
+        assert_rejected(&update_result, ApplyError::StalePredecessor);
 
         let mut release_machine = V2StateMachine::new(params).unwrap();
         let mut release_source = BTreeMap::new();
@@ -2322,7 +2394,7 @@ mod tests {
             )],
         )
         .unwrap();
-        assert_rejected(&outside_result, ApplyError::RevealOutsideAnchor);
+        assert_rejected(&outside_result, ApplyError::InvalidStateProof);
 
         let mut unavailable_machine = V2StateMachine::new(params).unwrap();
         let mut unavailable_source = BTreeMap::new();

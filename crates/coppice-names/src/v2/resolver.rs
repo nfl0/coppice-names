@@ -464,20 +464,8 @@ where
         };
         validate_intent(intent)?;
         let name_id = intent.name_id().map_err(|_| ResolveError::InvalidName)?;
-        if state.name_id != name_id
-            || state.owner_pk != intent.owner_pk
-            || state.record != intent.record
-            || state.sequence != 0
-            || state.status != StateStatus::Active
-            || state.terminal_height != 0
-            || state.lease_expiry
-                != self
-                    .params
-                    .lease_expiry(block.height)
-                    .ok_or(ResolveError::ArithmeticOverflow)?
-        {
-            return Err(ResolveError::InvalidOperation);
-        }
+        // Representation and configured record bounds are canonical statement
+        // preprocessing. Genesis formation itself is enforced by the proof.
         self.params
             .validate_state(state)
             .map_err(|_| ResolveError::InvalidOperation)?;
@@ -503,9 +491,6 @@ where
             return Err(ResolveError::InvalidOperation);
         }
         if block.height < maturity || block.height > expiry {
-            return Err(ResolveError::InvalidOperation);
-        }
-        if !schedule::is_anchor_height(name_id, block.height, self.params) {
             return Err(ResolveError::InvalidOperation);
         }
         if let Some(previous_ref) = replacement_predecessor {
@@ -548,7 +533,7 @@ where
         let name_state = NameState::new(state.clone(), *state_commitment, state_ref)
             .map_err(|_| ResolveError::InvalidOperation)?;
         let statement =
-            GenesisStatement::from_state(&name_state, action, self.params.minimum_bond_zatoshis)
+            GenesisStatement::from_reveal(intent, &name_state, action, block.height, self.params)
                 .map_err(|_| ResolveError::InvalidOperation)?;
         if !self.proofs.verify_genesis(&statement, proof) {
             return Err(ResolveError::InvalidOperation);
@@ -774,64 +759,20 @@ where
             return Err(ResolveError::InvalidOperation);
         };
         let predecessor = self.authenticate_accepted_state_ref(*predecessor_ref)?;
-        if predecessor.data.name_id != state.name_id
-            || predecessor.data.owner_pk != state.owner_pk
-            || predecessor.state_ref != *predecessor_ref
-            || predecessor.data.status != StateStatus::Active
-            || block.height >= predecessor.data.lease_expiry
-            || predecessor.abandoned_height.is_some()
-        {
+        if predecessor.state_ref != *predecessor_ref || predecessor.abandoned_height.is_some() {
             return Err(ResolveError::InvalidOperation);
         }
-        let expected_sequence = predecessor
-            .data
-            .sequence
-            .checked_add(1)
-            .ok_or(ResolveError::InvalidOperation)?;
-        if state.sequence != expected_sequence {
-            return Err(ResolveError::InvalidOperation);
-        }
-        match kind {
-            OperationKind::Update => {
-                if state.status != StateStatus::Active
-                    || state.terminal_height != 0
-                    || state.lease_expiry != predecessor.data.lease_expiry
-                    || state.record == predecessor.data.record
-                {
-                    return Err(ResolveError::InvalidOperation);
-                }
-            }
-            OperationKind::Renew => {
-                let expected_expiry = self
-                    .params
-                    .lease_expiry(block.height)
-                    .ok_or(ResolveError::ArithmeticOverflow)?;
-                if state.status != StateStatus::Active
-                    || state.terminal_height != 0
-                    || state.record != predecessor.data.record
-                    || !schedule::is_anchor_height(state.name_id, block.height, self.params)
-                    || state.lease_expiry != expected_expiry
-                    || state.lease_expiry <= predecessor.data.lease_expiry
-                {
-                    return Err(ResolveError::InvalidOperation);
-                }
-            }
-            OperationKind::Release => {
-                if state.status != StateStatus::Released
-                    || state.terminal_height != block.height
-                    || state.record != predecessor.data.record
-                    || state.lease_expiry != predecessor.data.lease_expiry
-                {
-                    return Err(ResolveError::InvalidOperation);
-                }
-            }
-        }
+        // Representation and configured record bounds are canonical statement
+        // preprocessing. Local transition legality is enforced by the proof.
         self.params
             .validate_state(state)
             .map_err(|_| ResolveError::InvalidOperation)?;
         let action = transaction
             .action(action_index)
             .ok_or(ResolveError::InvalidLineage)?;
+        if action.nullifier != predecessor.state_ref.nullifier {
+            return Err(ResolveError::InvalidLineage);
+        }
         if action.commitment != *state_commitment {
             return Err(ResolveError::InvalidLineage);
         }
@@ -844,9 +785,15 @@ where
         );
         let successor = NameState::new(state.clone(), *state_commitment, state_ref)
             .map_err(|_| ResolveError::InvalidOperation)?;
-        let statement =
-            TransitionStatement::from_states(&predecessor, &successor, action, kind, block.height)
-                .map_err(|_| ResolveError::InvalidOperation)?;
+        let statement = TransitionStatement::from_states(
+            &predecessor,
+            &successor,
+            action,
+            kind,
+            block.height,
+            self.params,
+        )
+        .map_err(|_| ResolveError::InvalidOperation)?;
         if !self.proofs.verify_transition(&statement, proof) {
             return Err(ResolveError::InvalidOperation);
         }

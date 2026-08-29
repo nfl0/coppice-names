@@ -125,7 +125,7 @@ mod tests {
     use pasta_curves::{group::ff::PrimeField, pallas};
 
     #[test]
-    fn commit_encoding_is_canonical_and_v1_ambiguous_prefixes_are_rejected() {
+    fn commit_encoding_is_canonical_and_superseded_prefixes_are_rejected() {
         let operation = V2Operation::Commit {
             commitment: [7; 32],
         };

@@ -172,7 +172,7 @@ impl V2StateMachine {
         })
     }
 
-    /// Returns the immutable experimental parameters.
+    /// Returns the immutable Names v2 parameters.
     pub const fn params(&self) -> V2Parameters {
         self.params
     }

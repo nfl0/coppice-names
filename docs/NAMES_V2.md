@@ -1,12 +1,9 @@
-# Coppice Names v2 production reference
+# Coppice Names production reference
 
-This document describes the implemented, qualified, and frozen Names v2
-production path from the actual code. It supersedes the design-time notes in
-[`NAMES_V2_EXPERIMENTAL.md`](NAMES_V2_EXPERIMENTAL.md) where they disagree
-with the implementation; that document remains as design history. Normative
-bytes are frozen in [`../test-vectors/names_v2_wire.json`](../test-vectors/names_v2_wire.json)
-and asserted by `crates/coppice-names/tests/names_v2_wire_vectors.rs`. The
-frozen v1 protocol, its vectors, and its BondProof identity are unchanged.
+This document describes the implemented, qualified, and frozen Names
+production path from the actual code. Normative bytes are frozen in
+[`../test-vectors/names_v2_wire.json`](../test-vectors/names_v2_wire.json) and
+asserted by `crates/coppice-names/tests/names_v2_wire_vectors.rs`.
 
 Status: this code path is qualified locally against the pinned Zakura/Zaino
 stack. It is not a public deployment and has no independent security audit.
@@ -37,9 +34,9 @@ reassigned by any later builder stage.
 ## 2. Frozen protocol surfaces
 
 The v2 operation family is exactly `COMMIT`, `REVEAL`, `UPDATE`, `RENEW`,
-`RELEASE`. The corrected release wire encoding is `CNV2 || 0x02 || canonical
+`RELEASE`. The release wire encoding is `CNV2 || 0x02 || canonical
 postcard` of one operation; the decoder re-encodes and compares bytes,
-rejecting every non-canonical encoding, and the prefix is disjoint from frozen v1. CPV1
+rejecting every non-canonical encoding. CPV1
 framing is the unchanged generic transport: one distinct rendezvous output
 per frame, 16,093-byte maximum payload.
 
@@ -188,7 +185,8 @@ opening of the created state note. The wallet host must persist it (or be
 able to recover it from the outgoing ciphertext via its OVK) together with
 its scope, the predecessor relation, and the canonical `StateRef` once mined.
 No parallel secret store is created; the ordinary wallet database represents
-this information, exactly as the qualified v1 adapter retains bond notes.
+this information together with the state-note opening and its canonical
+producer reference.
 
 ## 5. Resolution
 
@@ -214,7 +212,7 @@ snapshot/rewind machinery (independently validated Core/application layers,
 retention-horizon rewind, rebuild-from-activation beyond retention), which is
 owned by Core and the composed runtime and never trusts stale cached state.
 Restart behavior, reorg rewind, and beyond-retention rebuild are covered by
-the qualified runtime facilities and the deterministic Phase 6 companion.
+the qualified runtime facilities and ordinary canonical replay.
 
 ## 7. Zallet integration boundary
 
@@ -254,8 +252,7 @@ coverage including the zero-funding failure case.
 ## 9. Performance notes
 
 Measured on the development machine used for qualification: the routine
-(cheap) test suites run in seconds; the full coppice-names suite including
-heavy v1 proof tests completes in a few minutes. The corrected Names v2
+(cheap) test suites run in seconds. The corrected Names implementation
 genesis and transition proofs measured during the 2026-08-29 live run produce
 4,704-byte proofs; the resulting CNV2 envelopes are 5,118 bytes for REVEAL
 and 5,011 bytes for UPDATE, RENEW, and RELEASE (11 CPV1 frames each).
@@ -282,18 +279,16 @@ hidden assumption. No speculative NU7 behavior exists in the code.
 
 Routine CI runs only cheap deterministic tests: construction, wire vectors
 (conformance only), funding/accounting, machine/resolver semantics with
-synthetic blocks, and the existing v1 suites. Heavy work is opt-in:
+synthetic blocks and wire conformance. Heavy work is opt-in:
 
 - `cargo test -- --ignored` runs the proof-generating unit tests (real
   Names genesis proof and real Ironwood consensus proof fixtures).
 - `scripts/live-qualification.sh` drives the real Zakura → Zaino →
   zcash-devtool stack; its disposable v2 phases build and mine live
-  operations and verify canonical acceptance. Phase 6 reorgan coverage is
-  deterministic and does not launch the stack.
+  operations and verify canonical acceptance.
 
-The qualified v1 tooling and the `names-v2-live` harness are retained as
-release-regression tooling; construction logic is not duplicated between
-them and the library.
+The `names-v2-live` harness is retained as release-regression tooling;
+construction logic is not duplicated between it and the library.
 
 ## 12. Release qualification
 

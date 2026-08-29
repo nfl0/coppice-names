@@ -1,8 +1,21 @@
-//! Coppice Names v2 protocol implementation.
+//! Coppice Names protocol implementation.
 //!
-//! This namespace is additive. The v1 envelope, registration, BondProof,
-//! runtime identities, and serialized state remain owned by their existing
-//! modules and are not decoded here.
+//! The module owns the complete local Names state transition and its
+//! canonical resolver. Coppice Core remains responsible for generic
+//! transport and canonical acquisition; Zcash consensus remains the sole
+//! transaction and fork-choice authority.
+
+use coppice::application::{ApplicationId, derive_application_id};
+
+/// Exact application-family identity used by Names operations on the generic
+/// Coppice transport. The operation version is encoded by CNV2 itself.
+pub const NAMES_CANONICAL_APPLICATION_IDENTITY: &[u8] = b"coppice.names";
+
+/// Returns the canonical Names application family identifier.
+pub fn names_application_id() -> ApplicationId {
+    derive_application_id(NAMES_CANONICAL_APPLICATION_IDENTITY)
+        .expect("the Names application identity is nonempty")
+}
 
 pub mod lease;
 pub mod machine;

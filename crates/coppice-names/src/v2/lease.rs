@@ -2,7 +2,7 @@
 
 use super::{state::StateData, state::StateError, state::StateStatus};
 
-/// Errors from experimental v2 protocol-parameter validation.
+/// Errors from Names v2 protocol-parameter validation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LeaseParameterError {
     /// The schedule would have no slots.
@@ -16,7 +16,7 @@ pub enum LeaseParameterError {
     /// A payable state could outlive the window in which a fresh resolver
     /// probes its deterministic anchors.
     RefreshDeadlineTooShort,
-    /// A grace or reuse interval of zero is not used by this experiment.
+    /// A grace or reuse interval of zero is not used by Names v2.
     ZeroTerminalInterval,
     /// A zero-value state note cannot serve as a bond.
     ZeroMinimumBond,
@@ -26,8 +26,8 @@ pub enum LeaseParameterError {
 
 /// The v2 constants that affect schedule, registration, and lease semantics.
 ///
-/// These values are experimental and are intentionally not a deployment
-/// identity or a replacement for the frozen v1 `DeploymentParameters`.
+/// These values are explicit protocol parameters and are intentionally kept
+/// separate from generic Coppice runtime configuration.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct V2Parameters {
     /// First height at which v2 operations may be accepted.
@@ -50,7 +50,7 @@ pub struct V2Parameters {
     pub reuse_delay_blocks: u32,
     /// Maximum canonical record size used by the v2 state encoding.
     pub max_record_bytes: usize,
-    /// Experimental minimum value, in zatoshis, carried by every state note.
+    /// Minimum value, in zatoshis, carried by every state note.
     pub minimum_bond_zatoshis: u64,
 }
 

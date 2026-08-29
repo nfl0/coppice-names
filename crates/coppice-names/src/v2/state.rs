@@ -1,20 +1,22 @@
-//! Canonical values for the experimental Names v2 state-note lineage.
+//! Canonical values for the Names state-note lineage.
 //!
 //! The v2 state is deliberately a value object. It has no application root
 //! and no implicit transaction identity; the producer position is carried by
 //! [`StateRef`] and is authenticated by the resolver when it follows a
 //! lineage.
 
-use crate::crypto;
 use orchard::circuit::state_note_binding::{
     STATUS_ACTIVE, STATUS_RELEASED, StateMetadata as OrchardStateMetadata, native_state_digest,
 };
+use orchard::primitives::redpallas::{SpendAuth, VerificationKey};
 use pasta_curves::group::ff::{FromUniformBytes, PrimeField};
 use pasta_curves::pallas;
 use serde::{Deserialize, Serialize};
 
-/// Maximum experimental v2 destination/record size.
+/// Maximum destination/record size.
 pub const MAX_RECORD_BYTES: usize = 1024;
+/// Maximum canonical bare-name length.
+pub const MAX_NAME_LEN: usize = 63;
 
 /// The canonical 32-byte name identifier used by v2.
 pub type NameId = [u8; 32];
@@ -25,11 +27,13 @@ pub type OwnerKey = [u8; 32];
 /// Errors from canonical v2 state construction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StateError {
+    /// The name is not a canonical bare label.
+    InvalidName,
     /// The owner key is not a non-identity canonical Ironwood `ak` key.
     InvalidOwner,
     /// A state commitment or digest is not a canonical Pallas field encoding.
     InvalidField,
-    /// The destination/record exceeds the experimental bound.
+    /// The destination/record exceeds the Names v2 bound.
     RecordTooLarge,
     /// Active states cannot carry a terminal height.
     ActiveTerminalHeight,
@@ -261,10 +265,27 @@ impl NameState {
     }
 }
 
-/// Computes the v2 deterministic name identifier after canonical name validation.
-pub fn name_id(name: &str) -> Result<NameId, crate::envelope::Error> {
-    let canonical = crate::envelope::normalize_name(name)?;
+/// Computes the deterministic name identifier after canonical name validation.
+pub fn name_id(name: &str) -> Result<NameId, StateError> {
+    let canonical = normalize_name(name)?;
     Ok(hash_bytes("CoppiceN2Name", canonical.as_bytes()))
+}
+
+/// Normalizes a presented name to its canonical bare-label form.
+fn normalize_name(name: &str) -> Result<String, StateError> {
+    let bare = name.strip_suffix(".zec").unwrap_or(name);
+    if bare.is_empty()
+        || bare.len() > MAX_NAME_LEN
+        || !bare.is_ascii()
+        || bare
+            .bytes()
+            .any(|byte| !(byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-'))
+        || bare.starts_with('-')
+        || bare.ends_with('-')
+    {
+        return Err(StateError::InvalidName);
+    }
+    Ok(bare.to_owned())
 }
 
 /// Computes the explicit v2 record digest field.
@@ -280,7 +301,11 @@ pub fn owner_key_field(owner_pk: OwnerKey) -> Result<pallas::Base, StateError> {
     // `ak` is serialized as a RedPallas SpendAuth verification key. Checking
     // only that its bytes fit in the Pallas base field would admit arbitrary
     // field values that do not encode a valid spend-authorizing authority.
-    crate::owner::parse_v1_owner_key(owner_pk).map_err(|_| StateError::InvalidOwner)?;
+    let key =
+        VerificationKey::<SpendAuth>::try_from(owner_pk).map_err(|_| StateError::InvalidOwner)?;
+    if key.is_identity() {
+        return Err(StateError::InvalidOwner);
+    }
     let field = canonical_field(owner_pk)?;
     if field == pallas::Base::zero() {
         return Err(StateError::InvalidOwner);
@@ -293,7 +318,7 @@ pub fn canonical_field(bytes: [u8; 32]) -> Result<pallas::Base, StateError> {
     Option::<pallas::Base>::from(pallas::Base::from_repr(bytes)).ok_or(StateError::InvalidField)
 }
 
-/// Computes the state digest used by the experimental Orchard circuit.
+/// Computes the state digest used by the Orchard state-note circuit.
 pub fn state_digest(data: &StateData, commitment: [u8; 32]) -> [u8; 32] {
     let name_field = name_id_field(data.name_id);
     let owner_field = owner_key_field(data.owner_pk).expect("validated state owner");
@@ -308,13 +333,17 @@ pub fn name_id_field(name_id: NameId) -> pallas::Base {
 
 /// Hashes bytes under an explicit v2 domain.
 pub(crate) fn hash_bytes(label: &str, bytes: &[u8]) -> [u8; 32] {
-    crypto::hash(label, bytes).expect("v2 hash labels are fixed and <= 16 bytes")
+    let personal = personalization(label);
+    let digest = blake2b_simd::Params::new()
+        .hash_length(32)
+        .personal(&personal)
+        .hash(bytes);
+    digest.as_bytes().try_into().expect("fixed 32-byte hash")
 }
 
 /// Hashes bytes into the Pallas base field using 512 bits of input material.
 pub(crate) fn hash_to_field(label: &str, bytes: &[u8]) -> pallas::Base {
-    let personal =
-        crypto::personalization(label).expect("v2 hash labels are fixed and <= 16 bytes");
+    let personal = personalization(label);
     let digest = blake2b_simd::Params::new()
         .hash_length(64)
         .personal(&personal)
@@ -324,6 +353,17 @@ pub(crate) fn hash_to_field(label: &str, bytes: &[u8]) -> pallas::Base {
         .try_into()
         .expect("fixed 64-byte field hash");
     pallas::Base::from_uniform_bytes(&wide)
+}
+
+fn personalization(label: &str) -> [u8; 16] {
+    let bytes = label.as_bytes();
+    assert!(
+        bytes.len() <= 16,
+        "v2 hash labels are fixed and <= 16 bytes"
+    );
+    let mut personal = [0u8; 16];
+    personal[..bytes.len()].copy_from_slice(bytes);
+    personal
 }
 
 #[cfg(test)]
@@ -340,7 +380,7 @@ mod tests {
         assert_eq!(owner_key_field([0; 32]), Err(StateError::InvalidOwner));
         let invalid_curve_encoding = (1..10_000u64)
             .map(|value| pallas::Base::from(value).to_repr())
-            .find(|bytes| crate::owner::parse_v1_owner_key(*bytes).is_err())
+            .find(|bytes| VerificationKey::<SpendAuth>::try_from(*bytes).is_err())
             .expect("a small canonical field search finds a non-key encoding");
         assert_eq!(
             owner_key_field(invalid_curve_encoding),

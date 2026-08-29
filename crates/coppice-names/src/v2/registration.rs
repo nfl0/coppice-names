@@ -1,4 +1,4 @@
-//! Experimental v2 COMMIT/REVEAL registration.
+//! Names v2 COMMIT/REVEAL registration.
 
 use super::state::{
     MAX_RECORD_BYTES, NameId, OwnerKey, ProducerPosition, StateRef, hash_bytes, name_id,
@@ -7,13 +7,13 @@ use super::state::{
 use pasta_curves::group::ff::PrimeField;
 use serde::{Deserialize, Serialize};
 
-/// Experimental v2 registration commitment version byte.
+/// Names v2 registration commitment version byte.
 pub const V2_REGISTRATION_VERSION: u8 = 2;
 
 /// Errors from v2 registration-intent encoding.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RegistrationError {
-    /// The name is not a canonical v1-compatible bare label.
+    /// The name is not a canonical bare label.
     InvalidName,
     /// The owner is not a canonical non-identity Ironwood `ak` key.
     InvalidOwner,
@@ -37,8 +37,12 @@ pub struct RegistrationIntent {
 impl RegistrationIntent {
     /// Validates and returns the canonical name identifier.
     pub fn name_id(&self) -> Result<NameId, RegistrationError> {
-        let canonical = crate::envelope::normalize_name(&self.name)
-            .map_err(|_| RegistrationError::InvalidName)?;
+        let canonical = self
+            .name
+            .strip_suffix(".zec")
+            .unwrap_or(&self.name)
+            .to_owned();
+        super::state::name_id(&canonical).map_err(|_| RegistrationError::InvalidName)?;
         if canonical != self.name {
             return Err(RegistrationError::InvalidName);
         }

@@ -240,7 +240,7 @@ pub struct GenesisStatement {
     pub state_nullifier: [u8; 32],
     /// Registration input nullifier from the same Ironwood action.
     pub registration_nullifier: [u8; 32],
-    /// Experimental minimum state-note bond value in zatoshis.
+    /// Minimum state-note bond value in zatoshis.
     pub minimum_bond_zatoshis: u64,
     /// Canonical name disclosed by the REVEAL intent.
     pub intent_name_id: NameId,
@@ -353,13 +353,13 @@ pub trait V2StateProofVerifier {
     fn verify_transition(&self, statement: &TransitionStatement, proof: &[u8]) -> bool;
 }
 
-/// Adapter over the feature-gated experimental Orchard verifiers.
+/// Adapter over the feature-gated Names v2 Orchard verifiers.
 pub struct OrchardV2ProofVerifier {
     transition: TransitionVerifier,
     genesis: GenesisVerifier,
 }
 
-/// Errors while creating an experimental v2 proof.
+/// Errors while creating a Names v2 proof.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProofCreationError {
     /// The host statement could not be converted to canonical circuit inputs.
@@ -368,14 +368,14 @@ pub enum ProofCreationError {
     Proving,
 }
 
-/// Wallet-facing adapter over the experimental Orchard proving keys.
+/// Wallet-facing adapter over the Names v2 Orchard proving keys.
 pub struct OrchardV2ProofProver {
     transition: TransitionProver,
     genesis: GenesisProver,
 }
 
 impl OrchardV2ProofProver {
-    /// Generates the experimental proving keys. Deployment tooling should
+    /// Generates the Names v2 proving keys. Deployment tooling should
     /// persist/cache keys rather than doing this per transaction.
     pub fn new() -> Self {
         let (transition, _, genesis, _) = orchard_state_note::keygen();
@@ -385,7 +385,7 @@ impl OrchardV2ProofProver {
         }
     }
 
-    /// Builds the adapter from already-generated experimental proving keys.
+    /// Builds the adapter from already-generated Names v2 proving keys.
     pub const fn from_parts(transition: TransitionProver, genesis: GenesisProver) -> Self {
         Self {
             transition,
@@ -429,7 +429,7 @@ impl Default for OrchardV2ProofProver {
 }
 
 impl OrchardV2ProofVerifier {
-    /// Generates experimental proving/verifying keys and keeps only verifiers.
+    /// Generates Names v2 proving/verifying keys and keeps only verifiers.
     pub fn new() -> Self {
         let (_, transition, _, genesis) = orchard_state_note::keygen();
         Self {
@@ -438,7 +438,7 @@ impl OrchardV2ProofVerifier {
         }
     }
 
-    /// Builds the adapter from already-generated experimental verifiers.
+    /// Builds the adapter from already-generated Names v2 verifiers.
     pub const fn from_parts(transition: TransitionVerifier, genesis: GenesisVerifier) -> Self {
         Self {
             transition,

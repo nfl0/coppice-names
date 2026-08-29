@@ -8,7 +8,7 @@ use coppice::application::{ApplicationBlockContext, ApplicationTransactionContex
 use coppice::replay::CoreTransactionContext;
 use serde::{Deserialize, Serialize};
 
-/// The operation codes used by the experimental state-note circuit.
+/// The operation codes used by the Names v2 state-note circuit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OperationKind {
     /// Changes the canonical record while preserving the lease.
@@ -92,7 +92,7 @@ impl IronwoodActionRef {
     }
 }
 
-/// An experimental v2 operation carried by a canonical transaction.
+/// A Names v2 operation carried by a canonical transaction.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum V2Operation {
     /// Hidden registration intent committed before maturity.
@@ -116,7 +116,7 @@ pub enum V2Operation {
         state_nullifier: [u8; 32],
         /// Exact action whose commitment is `state_commitment`.
         action_index: u32,
-        /// Experimental genesis state-note proof.
+        /// Names v2 genesis state-note proof.
         proof: Vec<u8>,
     },
     /// Arbitrary-height record update.
@@ -131,7 +131,7 @@ pub enum V2Operation {
         state_nullifier: [u8; 32],
         /// Exact action whose commitment is `state_commitment`.
         action_index: u32,
-        /// Experimental transition proof.
+        /// Names v2 transition proof.
         proof: Vec<u8>,
     },
     /// Deterministic-slot lease renewal.
@@ -146,7 +146,7 @@ pub enum V2Operation {
         state_nullifier: [u8; 32],
         /// Exact action whose commitment is `state_commitment`.
         action_index: u32,
-        /// Experimental transition proof.
+        /// Names v2 transition proof.
         proof: Vec<u8>,
     },
     /// Explicit terminal release.
@@ -161,7 +161,7 @@ pub enum V2Operation {
         state_nullifier: [u8; 32],
         /// Exact action whose commitment is `state_commitment`.
         action_index: u32,
-        /// Experimental transition proof.
+        /// Names v2 transition proof.
         proof: Vec<u8>,
     },
 }

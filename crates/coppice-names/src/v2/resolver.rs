@@ -40,7 +40,7 @@ impl CanonicalSource for BTreeMap<u32, CanonicalBlock> {
 pub enum ResolveError {
     /// The input name is not canonical.
     InvalidName,
-    /// The experimental parameters are invalid.
+    /// The Names v2 parameters are invalid.
     InvalidParameters,
     /// A canonical block or transaction required by resolution is absent,
     /// malformed, or internally inconsistent. This is fatal source/history
@@ -81,7 +81,7 @@ pub struct ResolutionResult {
     pub stats: ResolutionStats,
 }
 
-/// Fresh resolver for the experimental v2 schedule and lineage.
+/// Fresh resolver for the Names v2 schedule and lineage.
 #[derive(Clone, Copy, Debug)]
 pub struct FreshResolver {
     params: V2Parameters,

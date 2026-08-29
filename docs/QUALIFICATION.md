@@ -66,7 +66,7 @@ regeneration/requalification.
 The pre-migration v1 source, CNV1 vectors, VK identities, and complete local
 live lifecycle were frozen and qualified. The historical `v1.0.0` tags are
 preserved unchanged. The current Zakura-backed artifact and qualification are
-recorded below and must be released under a new tag if publication is desired.
+recorded below and are released under the coordinated `names-v1.0.1` tag.
 
 ## Current Zakura-backed release qualification: 2026-08-30
 
@@ -75,6 +75,9 @@ The protocol reset intentionally rebranded the corrected v2 design as Names v1,
 so the final wire artifact is CNV1 revision `0x01` (not the superseded CNV2
 revision). The deterministic generators produced the existing checked-in bytes
 exactly; no wire bytes changed during this campaign.
+
+The coordinated release tag for this Zakura-backed implementation is
+`names-v1.0.1`; the historical `names-v1.0.0` tags remain unchanged.
 
 Deterministic artifact checks:
 

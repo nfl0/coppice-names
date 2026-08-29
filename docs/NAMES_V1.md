@@ -7,9 +7,9 @@ asserted by `crates/coppice-names/tests/names_v1_wire_vectors.rs`.
 
 Status: the current Zakura-backed source has regenerated and frozen the CNV1
 vectors and state-note VK identities, and the complete lifecycle passed live
-local-regtest qualification. The historical `names-v1.0.0` tag remains
-unchanged; this source is a forward release candidate, not a public deployment
-and not an independent security audit.
+local-regtest qualification. The coordinated release tag is
+`names-v1.0.1`; the historical `names-v1.0.0` tag remains unchanged. This is
+not a public deployment and not an independent security audit.
 
 ## 1. Authority and layering
 

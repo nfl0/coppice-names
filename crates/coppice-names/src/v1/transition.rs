@@ -16,7 +16,7 @@ use orchard::circuit::state_note_binding::{
     TransitionWitness,
 };
 use pasta_curves::{group::ff::PrimeField, pallas};
-use rand_core::RngCore;
+use rand_core::Rng;
 
 /// Errors while constructing canonical proof public inputs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -394,7 +394,7 @@ impl OrchardV1ProofProver {
     }
 
     /// Proves the Ironwood-native registration-note to state-note relation.
-    pub fn prove_genesis<R: RngCore>(
+    pub fn prove_genesis<R: Rng>(
         &self,
         statement: &GenesisStatement,
         witness: GenesisWitness,
@@ -408,7 +408,7 @@ impl OrchardV1ProofProver {
     }
 
     /// Proves one value-preserving state-note transition.
-    pub fn prove_transition<R: RngCore>(
+    pub fn prove_transition<R: Rng>(
         &self,
         statement: &TransitionStatement,
         witness: TransitionWitness,

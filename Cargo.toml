@@ -4,7 +4,7 @@ members = ["crates/coppice-names"]
 
 [workspace.package]
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.91"
 license = "Apache-2.0"
 repository = "https://github.com/nfl0/coppice-names"
 
@@ -16,33 +16,30 @@ coppice = { package = "coppice", path = "../coppice/crates/coppice" }
 coppice-names = { package = "coppice-names", path = "crates/coppice-names" }
 coppice-librustzcash = { path = "../coppice/crates/coppice-librustzcash" }
 blake2b_simd = "1"
-halo2_gadgets = { version = "0.5", default-features = false }
-halo2_proofs = "=0.3.2"
+halo2_gadgets = { package = "zakura-halo2-gadgets", version = "=1.0.0", default-features = false }
+halo2_proofs = { package = "zakura-halo2-proofs", version = "=1.0.0" }
 hex = "0.4"
 incrementalmerkletree = { version = "0.8.2", features = ["legacy-api"] }
-orchard = { version = "=0.15.3", features = ["std"] }
-pasta_curves = "0.5"
-rand_chacha = "0.3"
-rand_core = "0.6"
-sapling = { package = "sapling-crypto", version = "0.7.0" }
+orchard = { package = "zakura-orchard", version = "=1.0.0", features = ["std", "state-note"] }
+pasta_curves = { package = "zakura-pasta-curves", version = "=1.0.0" }
+rand_chacha = "0.10"
+rand_core = "0.10"
+sapling = { package = "zakura-sapling-crypto", version = "=1.0.0" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 postcard = { version = "1", features = ["alloc"] }
 sha2 = "0.10"
 shardtree = "0.7"
-zcash_note_encryption = "0.4.1"
+zcash_note_encryption = "0.4.2"
 zcash_address = { git = "https://github.com/zcash/librustzcash.git", rev = "6c07e5f3297febf469e5cc8d0b91321e0767cdd7" }
-zcash_client_backend = { git = "https://github.com/zcash/librustzcash.git", rev = "6c07e5f3297febf469e5cc8d0b91321e0767cdd7" }
-zcash_keys = { git = "https://github.com/zcash/librustzcash.git", rev = "6c07e5f3297febf469e5cc8d0b91321e0767cdd7" }
-zcash_primitives = { version = "=0.30.0", features = ["std"] }
-zcash_protocol = { version = "=0.10.3", features = ["std", "local-consensus"] }
-zip321 = { git = "https://github.com/zcash/librustzcash.git", rev = "6c07e5f3297febf469e5cc8d0b91321e0767cdd7" }
+zcash_client_backend = { package = "zakura-client-backend", version = "=0.1.0-rc4" }
+zcash_keys = { package = "zakura-keys", version = "=1.0.0" }
+zcash_primitives = { package = "zakura-primitives", version = "=1.0.0", features = ["std"] }
+zcash_protocol = { version = "=0.10.5", features = ["std", "local-consensus"] }
+zip321 = "=0.9.0"
 zip32 = "0.2.1"
 
 [patch.crates-io]
-# Names pins the post-reset complete-local-transition circuit. Historical tags
-# remain immutable and are not moved or rewritten.
-orchard = { git = "https://github.com/nfl0/orchard-coppice.git", rev = "5588c4e42d7158233a50471c04340ea58615bb0e" }
-zcash_primitives = { git = "https://github.com/zcash/librustzcash.git", rev = "6c07e5f3297febf469e5cc8d0b91321e0767cdd7" }
-zcash_protocol = { git = "https://github.com/zcash/librustzcash.git", rev = "6c07e5f3297febf469e5cc8d0b91321e0767cdd7" }
-zcash_transparent = { git = "https://github.com/zcash/librustzcash.git", rev = "6c07e5f3297febf469e5cc8d0b91321e0767cdd7" }
+# Replace the released Zakura Orchard package with the Coppice extension while
+# retaining one package/type family across Coppice Core and Names.
+zakura-orchard = { git = "https://github.com/nfl0/orchard-coppice.git", rev = "0e09398970130b9510ce5011129acafc5039e79f" }

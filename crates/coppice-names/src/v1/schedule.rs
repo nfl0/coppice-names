@@ -1,6 +1,6 @@
 //! Deterministic, name-derived REVEAL/RENEW anchor opportunities.
 
-use super::{lease::V2Parameters, state::NameId};
+use super::{lease::V1Parameters, state::NameId};
 
 /// Returns the one slot offset selected for a name in an epoch.
 pub fn slot_offset(name_id: NameId, epoch: u64, epoch_size: u32) -> u32 {
@@ -8,20 +8,20 @@ pub fn slot_offset(name_id: NameId, epoch: u64, epoch_size: u32) -> u32 {
     let mut input = Vec::with_capacity(32 + 8);
     input.extend_from_slice(&name_id);
     input.extend_from_slice(&epoch.to_be_bytes());
-    let hash = super::state::hash_bytes("CoppiceN2Slot", &input);
+    let hash = super::state::hash_bytes("CoppiceN1Slot", &input);
     let value = u64::from_le_bytes(hash[..8].try_into().expect("slot hash prefix"));
     (value % u64::from(epoch_size)) as u32
 }
 
 /// Returns the canonical anchor height for a name and epoch.
-pub fn slot_height(name_id: NameId, epoch: u64, params: V2Parameters) -> Option<u32> {
+pub fn slot_height(name_id: NameId, epoch: u64, params: V1Parameters) -> Option<u32> {
     let base = epoch.checked_mul(u64::from(params.epoch_size))?;
     let height = base.checked_add(u64::from(slot_offset(name_id, epoch, params.epoch_size)))?;
     u32::try_from(height).ok()
 }
 
 /// Returns whether a height is the scheduled opportunity for this name.
-pub fn is_anchor_height(name_id: NameId, height: u32, params: V2Parameters) -> bool {
+pub fn is_anchor_height(name_id: NameId, height: u32, params: V1Parameters) -> bool {
     if params.epoch_size == 0 || height < params.activation_height {
         return false;
     }
@@ -34,7 +34,7 @@ pub fn is_anchor_height(name_id: NameId, height: u32, params: V2Parameters) -> b
 pub fn candidate_anchor_heights_with_age(
     name_id: NameId,
     tip_height: u32,
-    params: V2Parameters,
+    params: V1Parameters,
     maximum_age: u32,
 ) -> Vec<u32> {
     let lower = tip_height.saturating_sub(maximum_age);
@@ -56,7 +56,7 @@ pub fn candidate_anchor_heights_with_age(
 pub fn fresh_candidate_anchor_heights(
     name_id: NameId,
     tip_height: u32,
-    params: V2Parameters,
+    params: V1Parameters,
 ) -> Vec<u32> {
     let Ok(max_age) = params.max_anchor_age() else {
         return Vec::new();
@@ -69,7 +69,7 @@ pub fn fresh_candidate_anchor_heights(
 pub fn reset_candidate_anchor_heights(
     name_id: NameId,
     height: u32,
-    params: V2Parameters,
+    params: V1Parameters,
 ) -> Vec<u32> {
     let Ok(horizon) = params.reset_horizon() else {
         return Vec::new();
@@ -81,7 +81,7 @@ pub fn reset_candidate_anchor_heights(
 pub fn candidate_anchor_heights(
     name_id: NameId,
     tip_height: u32,
-    params: V2Parameters,
+    params: V1Parameters,
 ) -> Vec<u32> {
     let Ok(max_gap) = params.max_anchor_gap() else {
         return Vec::new();
@@ -90,7 +90,7 @@ pub fn candidate_anchor_heights(
 }
 
 /// Computes the next scheduled slot at or after a height.
-pub fn next_anchor_height(name_id: NameId, from_height: u32, params: V2Parameters) -> Option<u32> {
+pub fn next_anchor_height(name_id: NameId, from_height: u32, params: V1Parameters) -> Option<u32> {
     if params.epoch_size == 0 {
         return None;
     }
@@ -111,7 +111,7 @@ mod tests {
 
     #[test]
     fn different_names_can_share_a_slot_without_sharing_state() {
-        let params = V2Parameters::testing();
+        let params = V1Parameters::testing();
         let first = super::super::state::name_id("name0").unwrap();
         let mut collision = None;
         for index in 1..256 {
@@ -143,7 +143,7 @@ mod tests {
 
     #[test]
     fn name_grinding_changes_only_the_derived_slot() {
-        let params = V2Parameters::testing();
+        let params = V1Parameters::testing();
         let first = super::super::state::name_id("grind-a").unwrap();
         let second = super::super::state::name_id("grind-b").unwrap();
         assert_ne!(first, second);

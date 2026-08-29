@@ -2,11 +2,12 @@
 
 This document describes the implemented, qualified, and frozen Names
 production path from the actual code. Normative bytes are frozen in
-[`../test-vectors/names_v2_wire.json`](../test-vectors/names_v2_wire.json) and
-asserted by `crates/coppice-names/tests/names_v2_wire_vectors.rs`.
+[`../test-vectors/names_v1_wire.json`](../test-vectors/names_v1_wire.json) and
+asserted by `crates/coppice-names/tests/names_v1_wire_vectors.rs`.
 
-Status: this code path is qualified locally against the pinned Zakura/Zaino
-stack. It is not a public deployment and has no independent security audit.
+Status: this is the post-qualification Names v1 reset. Final v1 wire/VK
+artifact regeneration and live qualification are pending; this is not a
+public deployment and has no independent security audit.
 
 ## 1. Authority and layering
 
@@ -21,20 +22,20 @@ reset eligibility, proof semantics, and resolution. `orchard-coppice`
 the state-note binding circuits and the designated Ironwood action pairing.
 
 Registration is always two operations: `COMMIT` then `REVEAL`. There is no
-`REGISTER` and no `TRANSFER` in v2. Transfer is planned for v3; see
+`REGISTER` and no `TRANSFER` in v1. Transfer is planned for v3; see
 [§13](#13-roadmap-planned-v3-transfer-and-marketplace).
 
 Physical invariant: the designated Names spend and the designated successor
 state output occupy the same Ironwood action, whose nullifier is the Names
 input nullifier and whose commitment is the successor commitment. Carrier,
 funding, and change effects occupy other actions. The designated action index
-is finalized before CNV2 encoding (the operation commits to it) and cannot be
+is finalized before CNV1 encoding (the operation commits to it) and cannot be
 reassigned by any later builder stage.
 
 ## 2. Frozen protocol surfaces
 
-The v2 operation family is exactly `COMMIT`, `REVEAL`, `UPDATE`, `RENEW`,
-`RELEASE`. The release wire encoding is `CNV2 || 0x02 || canonical
+The v1 operation family is exactly `COMMIT`, `REVEAL`, `UPDATE`, `RENEW`,
+`RELEASE`. The v1 wire encoding is `CNV1 || 0x01 || canonical
 postcard` of one operation; the decoder re-encodes and compares bytes,
 rejecting every non-canonical encoding. CPV1
 framing is the unchanged generic transport: one distinct rendezvous output
@@ -57,18 +58,18 @@ per frame, 16,093-byte maximum payload.
   vector). `Some(exact prior terminal head)` is the explicit replacement
   path. Whether a `None` reset is canonically eligible is a state-machine and
   canonical-replay semantic check; constructors and wallets never decide it.
-- State digest: `CoppiceN2State` domain over canonical state fields plus the
+- State digest: `CoppiceN1State` domain over canonical state fields plus the
   note commitment; the genesis proof commits it, and transition proofs commit
   both predecessor and successor digests.
-- COMMIT commitment: `CoppiceN2Com` domain over version, name id, owner,
+- COMMIT commitment: `CoppiceN1Com` domain over version, name id, owner,
   record digest, record length, and fresh secret, via
   `RegistrationIntent::commitment()`. The formula lives only in
   `coppice-names`; no wallet or harness duplicates it.
 - Operation tags: `Commit` (no action), `Reveal` (genesis), and
   `Update`/`Renew`/`Release` (transition codes 1/2/3 in the circuit).
 - Schedule, lease, claimability, reset-horizon, and abandonment rules are the
-  qualified ones in `coppice-names::v2::{lease, schedule}` and
-  `v2::machine`: exactly one deterministic anchor per epoch; REVEAL/RENEW
+  qualified ones in `coppice-names::v1::{lease, schedule}` and
+  `v1::machine`: exactly one deterministic anchor per epoch; REVEAL/RENEW
   only at the anchor; lease extension only by renewal at a scheduled slot;
   expired claimability at `lease_expiry + grace`; released claimability at
   `terminal_height + reuse_delay`; abandoned claimability at
@@ -79,9 +80,10 @@ per frame, 16,093-byte maximum payload.
   deterministically and enforces only history/applicability (claimability,
   reset, abandonment).
 
-Frozen vector-set identity (SHA-256 over the length-prefixed canonical
-envelopes in family order, CNV2 revision `0x02`):
-`0379bf3bf665d3d0ce3a8c9b3a82bf6b67c01a33dc11a26b1b44bd1cd013a556`.
+The reset invalidates the former CNV2 vector identity. The regenerated CNV1
+vector-set identity (SHA-256 over length-prefixed canonical envelopes in family
+order) is
+`dff01501326305709dc1eda3241a92458ce17a3461b6dd254c7f8f841a6932b1`.
 
 ## 3. Proof boundaries and circuit freeze
 
@@ -123,29 +125,26 @@ fails verification becomes abandonment. The schedule predicate and lease
 duration are canonical deterministic statement preprocessing derived by the
 runtime from `name_id`, the operation height, and the protocol parameters.
 
-The circuits live in `orchard-coppice` under the `experimental-state-note`
-feature and are derived deterministically from the pinned params (`K = 11`)
-and pinned Halo2 `0.3.2`. The corrected release freeze pins the transition
-verifying-key identity to
-`5ed1a1385f15e0e13e284cf1a7c319449d42b4902abc57b5ebefb60d04995cc1` and the
-genesis verifying-key identity to
-`81aa1ade09b0ca86eb80c021a66e2cf629875ecab258a99a4a2ecd0df2c7f5ae`.
-Proving keys are derived at runtime from the same pinned derivation; no trusted
-parameter distribution exists or is needed. The semantic Names registration
-preimage version remains `2`; CNV2 `0x02` is the disjoint corrected wire/artifact
-revision and rejects the superseded `0x01` envelopes.
+The circuits live in `orchard-coppice` under the `state-note` feature and are
+derived deterministically from the pinned params (`K = 11`) and pinned Halo2
+`0.3.2`. The v1 reset requires fresh transition/genesis VK identity
+regeneration; no former CNV2 identity is normative until that freeze is
+recorded. Proving keys are derived at runtime from the same pinned derivation;
+no trusted parameter distribution exists or is needed. The semantic Names
+registration preimage version is `1`; CNV1 `0x01` rejects the superseded CNV2
+`0x02` envelopes.
 
 ## 4. Wallet construction flow
 
 The reusable production construction layer is
-`zcash-devtool::names_v2_operation` over the low-level designated-pair PCZT
-builder `zcash-devtool::names_v2_builder`. A wallet host drives:
+`zcash-devtool::names_v1_operation` over the low-level designated-pair PCZT
+builder `zcash-devtool::names_v1_builder`. A wallet host drives:
 
 1. `prepare_commit(&RegistrationIntent)` — canonical pre-broadcast COMMIT
    transport. It intentionally exposes no producer position: the canonical
    `CommitRef` exists only after the COMMIT transaction is canonically
    included, and the host discovers it by replay.
-2. `prepare_reveal(RevealInputs, V2Parameters)` /
+2. `prepare_reveal(RevealInputs, V1Parameters)` /
    `prepare_update` / `prepare_renew` / `prepare_release(TransitionInputs)`
    — binds the intent↔COMMIT commitment, the exact canonical references, the
    exact successor note (rho = spent nullifier, value preserved, recipient
@@ -154,8 +153,8 @@ builder `zcash-devtool::names_v2_builder`. A wallet host drives:
    local typed-binding failures (wrong intent/COMMIT pairing, mismatched
    predecessor note, inactive or expired predecessor, non-scheduled RENEW
    height, unchanged UPDATE record).
-3. Host proving with `OrchardV2ProofProver` under the host RNG, then
-   `finalize(proof)` — the complete proof-carrying operation, CNV2 bytes,
+3. Host proving with `OrchardV1ProofProver` under the host RNG, then
+   `finalize(proof)` — the complete proof-carrying operation, CNV1 bytes,
    CPV1 frames, footprint, and the exact successor note opening.
 4. `planned_state_operation_shape_and_fee` then `plan_state_operation` — the
    designated-pair Ironwood plan. Funding is fully general
@@ -165,10 +164,10 @@ builder `zcash-devtool::names_v2_builder`. A wallet host drives:
    the supplied funding contributes exactly the ZIP-317 fee after paying
    carriers and change, so underfunded and overfunding shapes are rejected
    before any proving.
-5. The existing PCZT pipeline: `build_names_v2_bundle`, `build_names_v2_pczt`,
-   `finalize_names_v2_pczt_io`, `install_names_v2_ironwood_witnesses` (witness
-   plan resolved by nullifier), `prove_names_v2_ironwood_pczt`,
-   `sign_names_v2_ironwood_pczt`, `extract_names_v2_transaction`, then host
+5. The existing PCZT pipeline: `build_names_v1_bundle`, `build_names_v1_pczt`,
+   `finalize_names_v1_pczt_io`, `install_names_v1_ironwood_witnesses` (witness
+   plan resolved by nullifier), `prove_names_v1_ironwood_pczt`,
+   `sign_names_v1_ironwood_pczt`, `extract_names_v1_transaction`, then host
    broadcast.
 
 Outgoing recovery and memos are explicit wallet decisions. The empty memo is
@@ -190,12 +189,12 @@ producer reference.
 
 ## 5. Resolution
 
-`coppice-names::v2::FreshResolver` is the application-facing resolution API.
+`coppice-names::v1::FreshResolver` is the application-facing resolution API.
 Given the name and the canonical blocks, it returns `ResolutionResult`:
 `status` (`Active`, `Stale`, `Grace`, `Released`, `Abandoned`, `Expired`,
 `Missing`), the accepted `NameState` (`data` record/owner/sequence/lease/
 status/terminal plus `commitment` and canonical `state_ref`), the discovery
-anchor when genuinely useful, and bounded replay stats. `V2StateMachine`
+anchor when genuinely useful, and bounded replay stats. `V1StateMachine`
 full replay remains the independent authority; production callers treat
 resolver/replay disagreement as a host error. `CanonicalBlock::
 from_application_context` is the adapter from generic Core transaction
@@ -203,7 +202,7 @@ contexts; Core never interprets Names payload bytes.
 
 ## 6. Persistence and caching model
 
-There is no v2-specific cache and no trusted snapshot. Canonical chain data
+There is no v1-specific cache and no trusted snapshot. Canonical chain data
 remains authoritative; everything local is re-derivable. Startup and per-name
 lookups are bounded by the qualified FreshResolver discovery window; full
 state-machine state is reconstructed by replay from the activation height.
@@ -219,7 +218,7 @@ the qualified runtime facilities and ordinary canonical replay.
 Zallet remains external and unmodified in this release, pinned at
 `f904040613d6b2c3f24ab58cfef1b555bf68e918` (upstream `zcash/zallet`
 `v0.1.0-beta.3`). Its JSON-RPC and internal wallet pipeline are pre-stable
-and provide no application-extension surface, so binding Names v2 into it
+and provide no application-extension surface, so binding Names v1 into it
 would require inventing Zallet APIs and redesigning its wallet path — that is
 a deliberate future integration decision, not part of this release. The
 documented host contract for any future wallet host (Zallet included) is
@@ -238,7 +237,7 @@ never consumes pending COMMITs or indices; duplicate-COMMIT rejection;
 canonical transaction/operation/action ordering enforcement; stale-
 predecessor and shadow-lineage exclusion via exact `StateRef` references and
 one-time nullifiers; checked arithmetic throughout lease, schedule, sequence,
-and height boundaries; CNV2 canonical re-encode equality and CPV1-bounded
+and height boundaries; CNV1 canonical re-encode equality and CPV1-bounded
 payloads (no unbounded decode); abandonment from ordinary canonical nullifier
 effects including the claimability floor.
 
@@ -251,14 +250,10 @@ coverage including the zero-funding failure case.
 
 ## 9. Performance notes
 
-Measured on the development machine used for qualification: the routine
-(cheap) test suites run in seconds. The corrected Names implementation
-genesis and transition proofs measured during the 2026-08-29 live run produce
-4,704-byte proofs; the resulting CNV2 envelopes are 5,118 bytes for REVEAL
-and 5,011 bytes for UPDATE, RENEW, and RELEASE (11 CPV1 frames each).
-Per-operation proving and Ironwood consensus proof generation dominate
-construction time. These are qualification measurements only; proof-size and
-performance optimization remains post-release work.
+The previous corrected-v2 proof-size measurements are not v1 release evidence;
+proof-size and performance measurements will be regenerated after the v1 VK
+and wire freeze. Per-operation proving and Ironwood consensus proof generation
+remain post-reset qualification work.
 FreshResolver cost is bounded by the discovery window: only the name's
 visible operations in the bounded anchor tail are replayed, and only
 scheduled anchor blocks are probed for reset eligibility; no global index or
@@ -270,7 +265,7 @@ these costs.
 The production construction layer is parameterized over `Parameters` for fee
 and shape planning and targets the `BranchId::Nu6_3` V6/Ironwood consensus
 branch explicitly at PCZT creation, with a documented gate in
-`names_v2_builder`. Ironwood is the NU6.3-era shielded pool; until upstream
+`names_v1_builder`. Ironwood is the NU6.3-era shielded pool; until upstream
 dependencies define a successor branch and transaction version for Ironwood
 transactions, that gate is the explicit current-support boundary rather than a
 hidden assumption. No speculative NU7 behavior exists in the code.
@@ -284,10 +279,10 @@ synthetic blocks and wire conformance. Heavy work is opt-in:
 - `cargo test -- --ignored` runs the proof-generating unit tests (real
   Names genesis proof and real Ironwood consensus proof fixtures).
 - `scripts/live-qualification.sh` drives the real Zakura → Zaino →
-  zcash-devtool stack; its disposable v2 phases build and mine live
+  zcash-devtool stack; its disposable v1 phases build and mine live
   operations and verify canonical acceptance.
 
-The `names-v2-live` harness is retained as release-regression tooling;
+The `names-v1-live` harness is retained as release-regression tooling;
 construction logic is not duplicated between it and the library.
 
 ## 12. Release qualification
@@ -305,7 +300,7 @@ implemented, frozen, or qualified, and no v3 wire layout, circuit public
 input, marketplace offer format, payment mechanic, or transfer cryptography
 is fixed here.
 
-Names v2 deliberately ships without a `TRANSFER` operation. **TRANSFER is
+Names v1 deliberately ships without a `TRANSFER` operation. **TRANSFER is
 planned for v3**, together with a **Names marketplace** built around transfer
 with atomic Zcash settlement: offers and payment are expected to settle
 through ordinary Zcash transactions/PCZTs rather than any separate consensus
@@ -313,7 +308,7 @@ or fork-choice system. Zcash remains the sole consensus and fork-choice
 authority.
 
 The intended compatibility model is continuation of the existing per-name
-state-note lineage. An existing canonical v2 `NameState` remains the
+state-note lineage. An existing canonical v1 `NameState` remains the
 registered name, and a future v3 operation should be able to consume that
 existing canonical state head directly. There is no global state migration,
 no migration transaction merely for upgrading, no `RELEASE` + `COMMIT` +
@@ -321,7 +316,7 @@ no migration transaction merely for upgrading, no `RELEASE` + `COMMIT` +
 names. Conceptually the desired evolution is:
 
 ```text
-... -> UPDATE_v2 -> RENEW_v2 -> TRANSFER_v3 -> UPDATE_v3 -> ...
+... -> UPDATE_v1 -> RENEW_v1 -> TRANSFER_v3 -> UPDATE_v3 -> ...
 ```
 
 The name identity and lineage survive protocol-version upgrades: protocol

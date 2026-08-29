@@ -1,4 +1,4 @@
-//! Canonical action views and operation envelopes for Names v2.
+//! Canonical action views and operation envelopes for Names v1.
 
 use super::{
     registration::{CommitRef, RegistrationIntent, ReplacementRef},
@@ -8,7 +8,7 @@ use coppice::application::{ApplicationBlockContext, ApplicationTransactionContex
 use coppice::replay::CoreTransactionContext;
 use serde::{Deserialize, Serialize};
 
-/// The operation codes used by the Names v2 state-note circuit.
+/// The operation codes used by the Names v1 state-note circuit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OperationKind {
     /// Changes the canonical record while preserving the lease.
@@ -48,7 +48,7 @@ pub enum ActionViewError {
     MismatchedEffectLengths,
     /// A supplied action index is not its canonical zero-based array index.
     NonCanonicalIndex,
-    /// The effect arrays contain more actions than the v2 index type can name.
+    /// The effect arrays contain more actions than the v1 index type can name.
     TooManyActions,
 }
 
@@ -92,9 +92,9 @@ impl IronwoodActionRef {
     }
 }
 
-/// A Names v2 operation carried by a canonical transaction.
+/// A Names v1 operation carried by a canonical transaction.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum V2Operation {
+pub enum V1Operation {
     /// Hidden registration intent committed before maturity.
     Commit {
         /// The hidden commitment value.
@@ -116,7 +116,7 @@ pub enum V2Operation {
         state_nullifier: [u8; 32],
         /// Exact action whose commitment is `state_commitment`.
         action_index: u32,
-        /// Names v2 genesis state-note proof.
+        /// Names v1 genesis state-note proof.
         proof: Vec<u8>,
     },
     /// Arbitrary-height record update.
@@ -131,7 +131,7 @@ pub enum V2Operation {
         state_nullifier: [u8; 32],
         /// Exact action whose commitment is `state_commitment`.
         action_index: u32,
-        /// Names v2 transition proof.
+        /// Names v1 transition proof.
         proof: Vec<u8>,
     },
     /// Deterministic-slot lease renewal.
@@ -146,7 +146,7 @@ pub enum V2Operation {
         state_nullifier: [u8; 32],
         /// Exact action whose commitment is `state_commitment`.
         action_index: u32,
-        /// Names v2 transition proof.
+        /// Names v1 transition proof.
         proof: Vec<u8>,
     },
     /// Explicit terminal release.
@@ -161,12 +161,12 @@ pub enum V2Operation {
         state_nullifier: [u8; 32],
         /// Exact action whose commitment is `state_commitment`.
         action_index: u32,
-        /// Names v2 transition proof.
+        /// Names v1 transition proof.
         proof: Vec<u8>,
     },
 }
 
-impl V2Operation {
+impl V1Operation {
     /// Returns the state operation kind, if this is a state operation.
     pub const fn kind(&self) -> Option<OperationKind> {
         match self {
@@ -238,7 +238,7 @@ impl V2Operation {
     }
 }
 
-/// Canonical transaction data required by the v2 application.
+/// Canonical transaction data required by the v1 application.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CanonicalTransaction {
     /// Canonical transaction index.
@@ -247,13 +247,13 @@ pub struct CanonicalTransaction {
     pub txid: [u8; 32],
     /// Ordered Ironwood effects from Core.
     pub actions: Vec<IronwoodActionRef>,
-    /// v2 operations in canonical carrier order.
-    pub operations: Vec<V2Operation>,
+    /// v1 operations in canonical carrier order.
+    pub operations: Vec<V1Operation>,
 }
 
 impl CanonicalTransaction {
-    /// Adapts the ordinary application-scoped Core context into the v2 replay
-    /// view. Malformed v2 payloads contribute no typed messages; their
+    /// Adapts the ordinary application-scoped Core context into the v1 replay
+    /// view. Malformed v1 payloads contribute no typed messages; their
     /// canonical Ironwood effects remain visible for current-note spend
     /// detection.
     pub fn from_application_context(
@@ -296,7 +296,7 @@ impl CanonicalTransaction {
         let Some(action_index) = self
             .operations
             .get(operation_index)
-            .and_then(V2Operation::action_index)
+            .and_then(V1Operation::action_index)
         else {
             return true;
         };
@@ -306,13 +306,13 @@ impl CanonicalTransaction {
     }
 }
 
-pub(super) fn operations_have_canonical_order(operations: &[V2Operation]) -> bool {
+pub(super) fn operations_have_canonical_order(operations: &[V1Operation]) -> bool {
     operations
         .windows(2)
         .all(|pair| operation_order_key(&pair[0]) <= operation_order_key(&pair[1]))
 }
 
-fn operation_order_key(operation: &V2Operation) -> (u8, u32) {
+fn operation_order_key(operation: &V1Operation) -> (u8, u32) {
     match operation.action_index() {
         None => (0, 0),
         Some(action_index) => (1, action_index),

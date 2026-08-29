@@ -1,17 +1,17 @@
-//! Canonical Names v2 state-machine replay over typed Ironwood effects.
+//! Canonical Names v1 state-machine replay over typed Ironwood effects.
 
 use super::{
-    lease::{Lifecycle, V2Parameters},
+    lease::{Lifecycle, V1Parameters},
     operation::{
-        ActionViewError, CanonicalBlock, CanonicalTransaction, ChainTip, OperationKind, V2Operation,
+        ActionViewError, CanonicalBlock, CanonicalTransaction, ChainTip, OperationKind, V1Operation,
     },
     registration::CommitRef,
     state::{NameId, NameState, StateData, StateError, StateRef, StateStatus},
-    transition::{GenesisStatement, StatementError, TransitionStatement, V2StateProofVerifier},
+    transition::{GenesisStatement, StatementError, TransitionStatement, V1StateProofVerifier},
 };
 use std::collections::{BTreeMap, BTreeSet};
 
-/// Errors from canonical v2 block application.
+/// Errors from canonical v1 block application.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ApplyError {
     /// The supplied block is not the next canonical block.
@@ -84,14 +84,14 @@ impl From<StatementError> for ApplyError {
 pub struct AppliedBlock {
     /// New canonical tip.
     pub tip: ChainTip,
-    /// Every v2 message processed in canonical order. A rejection is local to
+    /// Every v1 message processed in canonical order. A rejection is local to
     /// that message; it never vetoes an otherwise canonical Zcash block.
     pub operations: Vec<AppliedOperation>,
     /// Number of pending commitments retained after end-of-block expiry.
     pub pending_commitments: usize,
 }
 
-/// Canonical application result for one carried v2 message.
+/// Canonical application result for one carried v1 message.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AppliedOperation {
     /// Transaction index containing the message.
@@ -113,7 +113,7 @@ pub enum AppliedOperationResult {
     Rejected(ApplyError),
 }
 
-/// Operation kinds accepted by one v2 block, including genesis REVEAL.
+/// Operation kinds accepted by one v1 block, including genesis REVEAL.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AppliedOperationKind {
     /// A new per-name lineage head created by REVEAL.
@@ -126,29 +126,29 @@ pub enum AppliedOperationKind {
     Release,
 }
 
-/// Derived v2 application state. It is not serialized into Core and has no
+/// Derived v1 application state. It is not serialized into Core and has no
 /// global root consumed by operations.
 #[derive(Clone, Debug)]
-pub struct V2StateMachine {
-    params: V2Parameters,
+pub struct V1StateMachine {
+    params: V1Parameters,
     tip: ChainTip,
     pending: BTreeMap<[u8; 32], CommitRef>,
     heads: BTreeMap<NameId, NameState>,
     current_by_nullifier: BTreeMap<[u8; 32], BTreeSet<NameId>>,
 }
 
-impl V2StateMachine {
-    /// Creates an empty v2 state machine at the block before activation.
+impl V1StateMachine {
+    /// Creates an empty v1 state machine at the block before activation.
     ///
     /// The all-zero predecessor is retained for deterministic synthetic
     /// chains used by the existing unit tests. Real canonical replay should
     /// use [`Self::from_activation_parent`] with the activation block's
     /// authenticated predecessor hash.
-    pub fn new(params: V2Parameters) -> Result<Self, super::lease::LeaseParameterError> {
+    pub fn new(params: V1Parameters) -> Result<Self, super::lease::LeaseParameterError> {
         Self::from_activation_parent(params, [0; 32])
     }
 
-    /// Creates an empty v2 state machine immediately before activation using
+    /// Creates an empty v1 state machine immediately before activation using
     /// the canonical hash of the activation block's predecessor.
     ///
     /// This does not weaken block continuity: the first block passed to
@@ -156,7 +156,7 @@ impl V2StateMachine {
     /// `prev_block_hash` field, and all later blocks must chain from the
     /// authenticated tip in the usual way.
     pub fn from_activation_parent(
-        params: V2Parameters,
+        params: V1Parameters,
         parent_block_hash: [u8; 32],
     ) -> Result<Self, super::lease::LeaseParameterError> {
         params.validate()?;
@@ -172,8 +172,8 @@ impl V2StateMachine {
         })
     }
 
-    /// Returns the immutable Names v2 parameters.
-    pub const fn params(&self) -> V2Parameters {
+    /// Returns the immutable Names v1 parameters.
+    pub const fn params(&self) -> V1Parameters {
         self.params
     }
 
@@ -192,14 +192,14 @@ impl V2StateMachine {
         self.pending.get(&commitment).copied()
     }
 
-    /// Applies a canonical block atomically after v2 proof and policy checks.
+    /// Applies a canonical block atomically after v1 proof and policy checks.
     pub fn apply_block<P>(
         &mut self,
         block: &CanonicalBlock,
         proofs: &P,
     ) -> Result<AppliedBlock, ApplyError>
     where
-        P: V2StateProofVerifier,
+        P: V1StateProofVerifier,
     {
         let mut next = self.clone();
         let applied = next.apply_block_inner(block, proofs)?;
@@ -213,7 +213,7 @@ impl V2StateMachine {
         proofs: &P,
     ) -> Result<AppliedBlock, ApplyError>
     where
-        P: V2StateProofVerifier,
+        P: V1StateProofVerifier,
     {
         let expected_height = self
             .tip
@@ -253,7 +253,7 @@ impl V2StateMachine {
                     Err(ApplyError::ActionAlreadyClaimed)
                 } else {
                     match operation {
-                        V2Operation::Commit { commitment } => {
+                        V1Operation::Commit { commitment } => {
                             let position = transaction.position(block.height);
                             let commit =
                                 CommitRef::new(position, operation_index as u32, *commitment);
@@ -264,7 +264,7 @@ impl V2StateMachine {
                                 Ok(None)
                             }
                         }
-                        V2Operation::Reveal { .. } => self
+                        V1Operation::Reveal { .. } => self
                             .apply_reveal(
                                 block,
                                 transaction,
@@ -273,9 +273,9 @@ impl V2StateMachine {
                                 proofs,
                             )
                             .map(|state| Some((state.data.name_id, AppliedOperationKind::Reveal))),
-                        V2Operation::Update { .. }
-                        | V2Operation::Renew { .. }
-                        | V2Operation::Release { .. } => self
+                        V1Operation::Update { .. }
+                        | V1Operation::Renew { .. }
+                        | V1Operation::Release { .. } => self
                             .apply_transition(
                                 block,
                                 transaction,
@@ -341,13 +341,13 @@ impl V2StateMachine {
         block: &CanonicalBlock,
         transaction: &CanonicalTransaction,
         operation_index: u32,
-        operation: &V2Operation,
+        operation: &V1Operation,
         proofs: &P,
     ) -> Result<NameState, ApplyError>
     where
-        P: V2StateProofVerifier,
+        P: V1StateProofVerifier,
     {
-        let V2Operation::Reveal {
+        let V1Operation::Reveal {
             intent,
             commit,
             replacement_predecessor,
@@ -469,11 +469,11 @@ impl V2StateMachine {
         block: &CanonicalBlock,
         transaction: &CanonicalTransaction,
         operation_index: u32,
-        operation: &V2Operation,
+        operation: &V1Operation,
         proofs: &P,
     ) -> Result<(NameId, AppliedOperationKind), ApplyError>
     where
-        P: V2StateProofVerifier,
+        P: V1StateProofVerifier,
     {
         let (kind, predecessor, state, state_commitment, state_nullifier, action_index, proof) =
             transition_parts(operation)
@@ -600,7 +600,7 @@ pub enum ResolutionStatus {
     Missing,
 }
 
-fn claimable_from_head(params: V2Parameters, state: &NameState) -> Option<u32> {
+fn claimable_from_head(params: V1Parameters, state: &NameState) -> Option<u32> {
     params.head_claimable_from(&state.data, state.abandoned_height)
 }
 
@@ -623,9 +623,9 @@ type TransitionParts<'a> = Option<(
     &'a [u8],
 )>;
 
-fn transition_parts(operation: &V2Operation) -> TransitionParts<'_> {
+fn transition_parts(operation: &V1Operation) -> TransitionParts<'_> {
     match operation {
-        V2Operation::Update {
+        V1Operation::Update {
             predecessor,
             state,
             state_commitment,
@@ -641,7 +641,7 @@ fn transition_parts(operation: &V2Operation) -> TransitionParts<'_> {
             *action_index,
             proof,
         )),
-        V2Operation::Renew {
+        V1Operation::Renew {
             predecessor,
             state,
             state_commitment,
@@ -657,7 +657,7 @@ fn transition_parts(operation: &V2Operation) -> TransitionParts<'_> {
             *action_index,
             proof,
         )),
-        V2Operation::Release {
+        V1Operation::Release {
             predecessor,
             state,
             state_commitment,
@@ -673,7 +673,7 @@ fn transition_parts(operation: &V2Operation) -> TransitionParts<'_> {
             *action_index,
             proof,
         )),
-        V2Operation::Commit { .. } | V2Operation::Reveal { .. } => None,
+        V1Operation::Commit { .. } | V1Operation::Reveal { .. } => None,
     }
 }
 
@@ -694,7 +694,7 @@ mod tests {
 
     struct AcceptingProofs;
 
-    impl V2StateProofVerifier for AcceptingProofs {
+    impl V1StateProofVerifier for AcceptingProofs {
         fn verify_genesis(&self, statement: &GenesisStatement, _: &[u8]) -> bool {
             statement.name_id == statement.intent_name_id
                 && statement.owner_pk == statement.intent_owner_pk
@@ -772,7 +772,7 @@ mod tests {
         tx_index: u32,
         txid: u8,
         actions: Vec<IronwoodActionRef>,
-        operations: Vec<V2Operation>,
+        operations: Vec<V1Operation>,
     ) -> CanonicalTransaction {
         CanonicalTransaction {
             tx_index,
@@ -783,7 +783,7 @@ mod tests {
     }
 
     fn append(
-        machine: &mut V2StateMachine,
+        machine: &mut V1StateMachine,
         source: &mut BTreeMap<u32, CanonicalBlock>,
         mut transactions: Vec<CanonicalTransaction>,
     ) -> Result<AppliedBlock, ApplyError> {
@@ -834,7 +834,7 @@ mod tests {
     }
 
     fn assert_fresh_matches_replay(
-        machine: &V2StateMachine,
+        machine: &V1StateMachine,
         source: &BTreeMap<u32, CanonicalBlock>,
         name: &str,
     ) {
@@ -855,12 +855,12 @@ mod tests {
 
     #[test]
     fn activation_parent_bootstrap_accepts_first_block_and_preserves_continuity() {
-        let params = V2Parameters::testing();
+        let params = V1Parameters::testing();
         let activation_parent = [0xa5; 32];
         let activation_hash = [0xb6; 32];
         let next_hash = [0xc7; 32];
         let mut machine =
-            V2StateMachine::from_activation_parent(params, activation_parent).unwrap();
+            V1StateMachine::from_activation_parent(params, activation_parent).unwrap();
 
         let activation = CanonicalBlock {
             height: params.activation_height,
@@ -884,10 +884,10 @@ mod tests {
 
     #[test]
     fn activation_parent_bootstrap_rejects_wrong_first_predecessor() {
-        let params = V2Parameters::testing();
+        let params = V1Parameters::testing();
         let activation_parent = [0xa5; 32];
         let mut machine =
-            V2StateMachine::from_activation_parent(params, activation_parent).unwrap();
+            V1StateMachine::from_activation_parent(params, activation_parent).unwrap();
         let activation = CanonicalBlock {
             height: params.activation_height,
             block_hash: [0xb6; 32],
@@ -905,8 +905,8 @@ mod tests {
 
     #[test]
     fn application_rejection_is_local_to_one_canonical_message() {
-        let params = V2Parameters::testing();
-        let mut machine = V2StateMachine::new(params).unwrap();
+        let params = V1Parameters::testing();
+        let mut machine = V1StateMachine::new(params).unwrap();
         let alice = intent(31, "alice-reject", b"record");
         let carol = intent(32, "carol-accept", b"record");
         let alice_commitment = alice.commitment().unwrap();
@@ -920,15 +920,15 @@ mod tests {
                 1,
                 Vec::new(),
                 vec![
-                    V2Operation::Commit {
+                    V1Operation::Commit {
                         commitment: alice_commitment,
                     },
                     // Bob's duplicate is invalid Names data, not a reason to
                     // reject the host-selected canonical block.
-                    V2Operation::Commit {
+                    V1Operation::Commit {
                         commitment: alice_commitment,
                     },
-                    V2Operation::Commit {
+                    V1Operation::Commit {
                         commitment: carol_commitment,
                     },
                 ],
@@ -958,8 +958,8 @@ mod tests {
 
     #[test]
     fn invalid_scheduled_candidate_does_not_mask_later_valid_anchor() {
-        let params = V2Parameters::testing();
-        let mut machine = V2StateMachine::new(params).unwrap();
+        let params = V1Parameters::testing();
+        let mut machine = V1StateMachine::new(params).unwrap();
         let mut source = BTreeMap::new();
         let alice = intent(33, "anchor-skip", b"record");
         let commit_ref = commit(&mut machine, &mut source, &alice, 0, 33);
@@ -1001,7 +1001,7 @@ mod tests {
                     {
                         let mut valid =
                             reveal_operation(&alice, commit_ref, state, field(3303), None);
-                        if let V2Operation::Reveal { action_index, .. } = &mut valid {
+                        if let V1Operation::Reveal { action_index, .. } = &mut valid {
                             *action_index = 1;
                         }
                         valid
@@ -1028,8 +1028,8 @@ mod tests {
 
     #[test]
     fn invalid_first_action_claim_structurally_reserves_the_action() {
-        let params = V2Parameters::testing();
-        let mut machine = V2StateMachine::new(params).unwrap();
+        let params = V1Parameters::testing();
+        let mut machine = V1StateMachine::new(params).unwrap();
         let mut source = BTreeMap::new();
         let alice = intent(35, "action-reservation", b"record");
         let commit_ref = commit(&mut machine, &mut source, &alice, 0, 37);
@@ -1085,7 +1085,7 @@ mod tests {
 
     #[test]
     fn structural_action_claims_cover_reveal_and_transition_reordering() {
-        let params = V2Parameters::testing();
+        let params = V1Parameters::testing();
         let alice = intent(37, "claim-family", b"record");
         let name_id = alice.name_id().unwrap();
         let commitment = field(3701);
@@ -1156,8 +1156,8 @@ mod tests {
 
     #[test]
     fn ordinary_spend_abandons_current_state_without_a_names_transition() {
-        let params = V2Parameters::testing();
-        let mut machine = V2StateMachine::new(params).unwrap();
+        let params = V1Parameters::testing();
+        let mut machine = V1StateMachine::new(params).unwrap();
         let mut source = BTreeMap::new();
         let alice = intent(36, "ordinary-spend", b"record");
         let (_, state0, _) = register(&mut machine, &mut source, &alice, 39);
@@ -1247,8 +1247,8 @@ mod tests {
 
     #[test]
     fn transition_requires_action_nullifier_to_match_authenticated_head() {
-        let params = V2Parameters::testing();
-        let mut machine = V2StateMachine::new(params).unwrap();
+        let params = V1Parameters::testing();
+        let mut machine = V1StateMachine::new(params).unwrap();
         let mut source = BTreeMap::new();
         let alice = intent(38, "nf-binding", b"record");
         let (_, current, _) = register(&mut machine, &mut source, &alice, 45);
@@ -1302,8 +1302,8 @@ mod tests {
 
     #[test]
     fn fresh_resolution_matches_replay_across_adversarial_spends() {
-        let params = V2Parameters::testing();
-        let mut machine = V2StateMachine::new(params).unwrap();
+        let params = V1Parameters::testing();
+        let mut machine = V1StateMachine::new(params).unwrap();
         let mut source = BTreeMap::new();
         let alice = intent(39, "parity", b"record");
         let (_, current, _) = register(&mut machine, &mut source, &alice, 45);
@@ -1414,8 +1414,8 @@ mod tests {
 
     #[test]
     fn unauthenticated_predecessor_claims_are_skipped_without_poisoning_resolution() {
-        let params = V2Parameters::testing();
-        let mut machine = V2StateMachine::new(params).unwrap();
+        let params = V1Parameters::testing();
+        let mut machine = V1StateMachine::new(params).unwrap();
         let mut source = BTreeMap::new();
         let alice = intent(43, "claim-skip", b"record");
         let (_, current, _) = register(&mut machine, &mut source, &alice, 43);
@@ -1590,8 +1590,8 @@ mod tests {
 
     #[test]
     fn structural_source_failure_while_authenticating_predecessor_remains_fatal() {
-        let params = V2Parameters::testing();
-        let mut machine = V2StateMachine::new(params).unwrap();
+        let params = V1Parameters::testing();
+        let mut machine = V1StateMachine::new(params).unwrap();
         let mut source = BTreeMap::new();
         // Register late enough that the COMMIT carrier's pending-scan window
         // stays above activation history, so the only path from the claimed
@@ -1667,8 +1667,8 @@ mod tests {
 
     #[test]
     fn forged_commit_references_are_skipped_without_poisoning_resolution() {
-        let params = V2Parameters::testing();
-        let mut machine = V2StateMachine::new(params).unwrap();
+        let params = V1Parameters::testing();
+        let mut machine = V1StateMachine::new(params).unwrap();
         let mut source = BTreeMap::new();
         let alice = intent(48, "commit-claim-skip", b"alice-record");
         let (_, current, _) = register(&mut machine, &mut source, &alice, 51);
@@ -1685,7 +1685,7 @@ mod tests {
                 0,
                 53,
                 Vec::new(),
-                vec![V2Operation::Commit {
+                vec![V1Operation::Commit {
                     commitment: accepted_commit.commitment,
                 }],
             )],
@@ -1803,7 +1803,7 @@ mod tests {
 
     #[test]
     fn structural_commit_history_failures_remain_fatal() {
-        let params = V2Parameters {
+        let params = V1Parameters {
             activation_height: 1,
             epoch_size: 2,
             commit_ttl_blocks: 8,
@@ -1814,7 +1814,7 @@ mod tests {
             max_record_bytes: super::super::state::MAX_RECORD_BYTES,
             minimum_bond_zatoshis: 1,
         };
-        let mut machine = V2StateMachine::new(params).unwrap();
+        let mut machine = V1StateMachine::new(params).unwrap();
         let mut source = BTreeMap::new();
         advance_to(&mut machine, &mut source, 9);
         let alice = intent(50, "commit-source", b"record");
@@ -1873,8 +1873,8 @@ mod tests {
 
     #[test]
     fn reveal_action_claim_failures_are_nonfatal() {
-        let params = V2Parameters::testing();
-        let mut machine = V2StateMachine::new(params).unwrap();
+        let params = V1Parameters::testing();
+        let mut machine = V1StateMachine::new(params).unwrap();
         let mut source = BTreeMap::new();
         let alice = intent(51, "reveal-action-claim", b"record");
         let commit = commit(&mut machine, &mut source, &alice, 0, 63);
@@ -1919,8 +1919,8 @@ mod tests {
 
     #[test]
     fn future_predecessor_claim_cannot_bootstrap_bounded_replay() {
-        let params = V2Parameters::testing();
-        let mut machine = V2StateMachine::new(params).unwrap();
+        let params = V1Parameters::testing();
+        let mut machine = V1StateMachine::new(params).unwrap();
         let mut source = BTreeMap::new();
         let alice = intent(52, "future-predecessor", b"record-0");
         let (reveal_height, current, _) = register(&mut machine, &mut source, &alice, 65);
@@ -2019,8 +2019,8 @@ mod tests {
 
     #[test]
     fn last_grace_spend_cannot_extend_reset_claimability() {
-        let params = V2Parameters::testing();
-        let mut machine = V2StateMachine::new(params).unwrap();
+        let params = V1Parameters::testing();
+        let mut machine = V1StateMachine::new(params).unwrap();
         let mut source = BTreeMap::new();
         let alice = intent(37, "grace-spend", b"record");
         let (anchor, state, _) = register(&mut machine, &mut source, &alice, 43);
@@ -2061,8 +2061,8 @@ mod tests {
 
     #[test]
     fn reveal_cannot_reference_a_rejected_duplicate_commit_message() {
-        let params = V2Parameters::testing();
-        let mut machine = V2StateMachine::new(params).unwrap();
+        let params = V1Parameters::testing();
+        let mut machine = V1StateMachine::new(params).unwrap();
         let mut source = BTreeMap::new();
         let alice = intent(34, "duplicate-commit", b"record");
         let commitment = alice.commitment().unwrap();
@@ -2076,8 +2076,8 @@ mod tests {
                 35,
                 Vec::new(),
                 vec![
-                    V2Operation::Commit { commitment },
-                    V2Operation::Commit { commitment },
+                    V1Operation::Commit { commitment },
+                    V1Operation::Commit { commitment },
                 ],
             )],
         )
@@ -2122,8 +2122,8 @@ mod tests {
 
     #[test]
     fn fresh_resolution_rejects_cryptographically_valid_shadow_reveal_lineage() {
-        let params = V2Parameters::testing();
-        let mut machine = V2StateMachine::new(params).unwrap();
+        let params = V1Parameters::testing();
+        let mut machine = V1StateMachine::new(params).unwrap();
         let mut source = BTreeMap::new();
         let original = intent(40, "shadow", b"old-record");
         let (_, state0, _) = register(&mut machine, &mut source, &original, 40);
@@ -2183,7 +2183,7 @@ mod tests {
                     0,
                     42,
                     Vec::new(),
-                    vec![V2Operation::Commit {
+                    vec![V1Operation::Commit {
                         commitment: bob_commit.commitment,
                     }],
                 ),
@@ -2191,7 +2191,7 @@ mod tests {
                     1,
                     43,
                     Vec::new(),
-                    vec![V2Operation::Commit {
+                    vec![V1Operation::Commit {
                         commitment: charlie_commit.commitment,
                     }],
                 ),
@@ -2422,7 +2422,7 @@ mod tests {
     }
 
     fn advance_to(
-        machine: &mut V2StateMachine,
+        machine: &mut V1StateMachine,
         source: &mut BTreeMap<u32, CanonicalBlock>,
         height: u32,
     ) {
@@ -2432,7 +2432,7 @@ mod tests {
     }
 
     fn commit(
-        machine: &mut V2StateMachine,
+        machine: &mut V1StateMachine,
         source: &mut BTreeMap<u32, CanonicalBlock>,
         intent: &RegistrationIntent,
         tx_index: u32,
@@ -2448,7 +2448,7 @@ mod tests {
                 tx_index,
                 txid,
                 Vec::new(),
-                vec![V2Operation::Commit { commitment }],
+                vec![V1Operation::Commit { commitment }],
             )],
         )
         .unwrap();
@@ -2461,8 +2461,8 @@ mod tests {
         state: StateData,
         commitment: [u8; 32],
         replacement_predecessor: Option<StateRef>,
-    ) -> V2Operation {
-        V2Operation::Reveal {
+    ) -> V1Operation {
+        V1Operation::Reveal {
             intent: Box::new(intent.clone()),
             commit,
             replacement_predecessor,
@@ -2475,7 +2475,7 @@ mod tests {
     }
 
     fn register(
-        machine: &mut V2StateMachine,
+        machine: &mut V1StateMachine,
         source: &mut BTreeMap<u32, CanonicalBlock>,
         intent: &RegistrationIntent,
         txid: u8,
@@ -2540,9 +2540,9 @@ mod tests {
         state: StateData,
         commitment: [u8; 32],
         action_index: u32,
-    ) -> V2Operation {
+    ) -> V1Operation {
         match kind {
-            OperationKind::Update => V2Operation::Update {
+            OperationKind::Update => V1Operation::Update {
                 predecessor,
                 state,
                 state_commitment: commitment,
@@ -2550,7 +2550,7 @@ mod tests {
                 action_index,
                 proof: vec![1],
             },
-            OperationKind::Renew => V2Operation::Renew {
+            OperationKind::Renew => V1Operation::Renew {
                 predecessor,
                 state,
                 state_commitment: commitment,
@@ -2558,7 +2558,7 @@ mod tests {
                 action_index,
                 proof: vec![1],
             },
-            OperationKind::Release => V2Operation::Release {
+            OperationKind::Release => V1Operation::Release {
                 predecessor,
                 state,
                 state_commitment: commitment,
@@ -2571,8 +2571,8 @@ mod tests {
 
     #[test]
     fn vertical_slice_registers_updates_renews_and_releases_one_name() {
-        let params = V2Parameters::testing();
-        let mut machine = V2StateMachine::new(params).unwrap();
+        let params = V1Parameters::testing();
+        let mut machine = V1StateMachine::new(params).unwrap();
         let mut source = BTreeMap::new();
         let alice = intent(1, "alice", b"record-0");
         let (reveal_height, state0, _) = register(&mut machine, &mut source, &alice, 10);
@@ -2774,7 +2774,7 @@ mod tests {
                 transaction.operations.retain(|operation| {
                     !matches!(
                         operation,
-                        V2Operation::Reveal { .. } | V2Operation::Renew { .. }
+                        V1Operation::Reveal { .. } | V1Operation::Renew { .. }
                     )
                 });
             }
@@ -2827,8 +2827,8 @@ mod tests {
 
     #[test]
     fn missed_renewal_and_release_have_non_payable_boundaries() {
-        let params = V2Parameters::testing();
-        let mut machine = V2StateMachine::new(params).unwrap();
+        let params = V1Parameters::testing();
+        let mut machine = V1StateMachine::new(params).unwrap();
         let mut source = BTreeMap::new();
         let alice = intent(10, "lease", b"record");
         let (_, state0, _) = register(&mut machine, &mut source, &alice, 90);
@@ -2924,7 +2924,7 @@ mod tests {
         .unwrap();
         assert_rejected(&update_result, ApplyError::StalePredecessor);
 
-        let mut release_machine = V2StateMachine::new(params).unwrap();
+        let mut release_machine = V1StateMachine::new(params).unwrap();
         let mut release_source = BTreeMap::new();
         let release_intent = intent(11, "release-lease", b"record");
         let (_, release_state, _) = register(
@@ -2982,8 +2982,8 @@ mod tests {
 
     #[test]
     fn registration_preserves_two_stage_maturity_slot_and_reclaim_boundaries() {
-        let params = V2Parameters::testing();
-        let mut machine = V2StateMachine::new(params).unwrap();
+        let params = V1Parameters::testing();
+        let mut machine = V1StateMachine::new(params).unwrap();
         let mut source = BTreeMap::new();
         let alice = intent(2, "alice", b"record");
         let commitment = alice.commitment().unwrap();
@@ -3015,7 +3015,7 @@ mod tests {
                     nullifier: field(501),
                     commitment: field(500),
                 }],
-                vec![V2Operation::Commit { commitment }, same_block],
+                vec![V1Operation::Commit { commitment }, same_block],
             )],
         )
         .unwrap();
@@ -3059,7 +3059,7 @@ mod tests {
         .unwrap();
         assert_rejected(&wrong_result, ApplyError::CommitmentMismatch);
 
-        let mut outside_machine = V2StateMachine::new(params).unwrap();
+        let mut outside_machine = V1StateMachine::new(params).unwrap();
         let mut outside_source = BTreeMap::new();
         let outside_intent = intent(3, "outside", b"record");
         let outside_commit = commit(
@@ -3110,7 +3110,7 @@ mod tests {
         .unwrap();
         assert_rejected(&outside_result, ApplyError::InvalidStateProof);
 
-        let mut unavailable_machine = V2StateMachine::new(params).unwrap();
+        let mut unavailable_machine = V1StateMachine::new(params).unwrap();
         let mut unavailable_source = BTreeMap::new();
         let unavailable_intent = intent(12, "unavailable", b"record");
         let (_, unavailable_head, _) = register(
@@ -3191,7 +3191,7 @@ mod tests {
         .unwrap();
         assert_rejected(&unavailable_result, ApplyError::NameUnavailable);
 
-        let mut expiry_machine = V2StateMachine::new(params).unwrap();
+        let mut expiry_machine = V1StateMachine::new(params).unwrap();
         let mut expiry_source = BTreeMap::new();
         let expiry_intent = intent(4, "expired", b"record");
         let expiry_commit = commit(
@@ -3238,7 +3238,7 @@ mod tests {
         .unwrap();
         assert_rejected(&expiry_result, ApplyError::UnknownCommitment);
 
-        let mut reclaim_machine = V2StateMachine::new(params).unwrap();
+        let mut reclaim_machine = V1StateMachine::new(params).unwrap();
         let mut reclaim_source = BTreeMap::new();
         let reclaim_intent = intent(5, "reclaim", b"record");
         let (_, old_state, _) = register(
@@ -3306,8 +3306,8 @@ mod tests {
 
     #[test]
     fn no_predecessor_replacement_is_rejected_before_claimability() {
-        let params = V2Parameters::testing();
-        let mut machine = V2StateMachine::new(params).unwrap();
+        let params = V1Parameters::testing();
+        let mut machine = V1StateMachine::new(params).unwrap();
         let mut source = BTreeMap::new();
         let original = intent(14, "early-reset", b"record");
         let (_, previous, _) = register(&mut machine, &mut source, &original, 60);
@@ -3364,8 +3364,8 @@ mod tests {
 
     #[test]
     fn no_predecessor_replacement_is_rejected_after_claimability_before_reset_boundary() {
-        let params = V2Parameters::testing();
-        let mut machine = V2StateMachine::new(params).unwrap();
+        let params = V1Parameters::testing();
+        let mut machine = V1StateMachine::new(params).unwrap();
         let mut source = BTreeMap::new();
         let original = intent(16, "bounded-reset", b"record");
         let (_, state0, _) = register(&mut machine, &mut source, &original, 63);
@@ -3478,8 +3478,8 @@ mod tests {
 
     #[test]
     fn lineage_and_same_action_binding_reject_stale_and_cross_action_inputs() {
-        let params = V2Parameters::testing();
-        let mut machine = V2StateMachine::new(params).unwrap();
+        let params = V1Parameters::testing();
+        let mut machine = V1StateMachine::new(params).unwrap();
         let mut source = BTreeMap::new();
         let alice = intent(7, "alice", b"record");
         let (_, state0, _) = register(&mut machine, &mut source, &alice, 50);
@@ -3605,8 +3605,8 @@ mod tests {
 
     #[test]
     fn unrelated_names_commute_and_schedule_gap_is_formally_bounded() {
-        let params = V2Parameters::testing();
-        let mut machine = V2StateMachine::new(params).unwrap();
+        let params = V1Parameters::testing();
+        let mut machine = V1StateMachine::new(params).unwrap();
         let mut source = BTreeMap::new();
         let alice = intent(8, "alice", b"alice");
         let bob = intent(9, "bob", b"bob");

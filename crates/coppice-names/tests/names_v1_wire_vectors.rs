@@ -1,21 +1,21 @@
-//! Frozen Names v2 CNV2 wire vectors.
+//! Frozen Names v1 CNV1 wire vectors.
 //!
-//! `test-vectors/names_v2_wire.json` is immutable protocol evidence generated
+//! `test-vectors/names_v1_wire.json` is immutable protocol evidence generated
 //! from the reference implementation. The conformance test consumes the file
 //! without regenerating expected values. The ignored generator test is the
 //! documented regeneration path for a future protocol-version bump only; its
 //! output must never replace the frozen file silently.
 
-use coppice_names::v2::{
-    CNV2_WIRE_VERSION, CommitRef, ProducerPosition, RegistrationIntent, StateData, StateRef,
-    StateStatus, V2Operation, decode_operation, encode_operation,
+use coppice_names::v1::{
+    CNV1_WIRE_VERSION, CommitRef, ProducerPosition, RegistrationIntent, StateData, StateRef,
+    StateStatus, V1Operation, decode_operation, encode_operation,
 };
 use orchard::circuit::state_note_binding::spend_auth_owner_key_bytes;
 use orchard::keys::{SpendAuthorizingKey, SpendingKey};
 use pasta_curves::{group::ff::PrimeField, pallas};
 use sha2::{Digest, Sha256};
 
-const VECTOR_JSON: &str = include_str!("../../../test-vectors/names_v2_wire.json");
+const VECTOR_JSON: &str = include_str!("../../../test-vectors/names_v1_wire.json");
 
 fn frozen_intent() -> RegistrationIntent {
     let spending_key = SpendingKey::from_bytes([0x2A; 32]).unwrap();
@@ -65,7 +65,7 @@ fn frozen_proof() -> Vec<u8> {
     vec![0x5A; 1_920]
 }
 
-fn frozen_vector_operations() -> Vec<(&'static str, V2Operation)> {
+fn frozen_vector_operations() -> Vec<(&'static str, V1Operation)> {
     let intent = frozen_intent();
     let intent_commitment = intent.commitment().unwrap();
     let predecessor = frozen_predecessor();
@@ -85,13 +85,13 @@ fn frozen_vector_operations() -> Vec<(&'static str, V2Operation)> {
     vec![
         (
             "commit",
-            V2Operation::Commit {
+            V1Operation::Commit {
                 commitment: intent_commitment,
             },
         ),
         (
             "reveal_first_registration",
-            V2Operation::Reveal {
+            V1Operation::Reveal {
                 intent: Box::new(intent.clone()),
                 commit: frozen_commit_ref(intent_commitment),
                 replacement_predecessor: None,
@@ -104,7 +104,7 @@ fn frozen_vector_operations() -> Vec<(&'static str, V2Operation)> {
         ),
         (
             "reveal_explicit_replacement",
-            V2Operation::Reveal {
+            V1Operation::Reveal {
                 intent: Box::new(intent.clone()),
                 commit: frozen_commit_ref(intent_commitment),
                 replacement_predecessor: Some(explicit_replacement),
@@ -121,7 +121,7 @@ fn frozen_vector_operations() -> Vec<(&'static str, V2Operation)> {
         // explicitly instead of freezing duplicate bytes.
         (
             "update",
-            V2Operation::Update {
+            V1Operation::Update {
                 predecessor: predecessor.clone(),
                 state: frozen_state(|state| {
                     state.sequence = 1;
@@ -135,7 +135,7 @@ fn frozen_vector_operations() -> Vec<(&'static str, V2Operation)> {
         ),
         (
             "renew",
-            V2Operation::Renew {
+            V1Operation::Renew {
                 predecessor: predecessor.clone(),
                 state: frozen_state(|state| {
                     state.sequence = 1;
@@ -149,7 +149,7 @@ fn frozen_vector_operations() -> Vec<(&'static str, V2Operation)> {
         ),
         (
             "release",
-            V2Operation::Release {
+            V1Operation::Release {
                 predecessor,
                 state: frozen_state(|state| {
                     state.sequence = 1;
@@ -171,7 +171,7 @@ fn canonical_envelopes() -> Vec<(&'static str, Vec<u8>)> {
         .map(|(name, operation)| {
             (
                 name,
-                encode_operation(&operation).expect("frozen vector operation fits CNV2 and CPV1"),
+                encode_operation(&operation).expect("frozen vector operation fits CNV1 and CPV1"),
             )
         })
         .collect()
@@ -187,8 +187,8 @@ fn vector_set_digest(envelopes: &[&[u8]]) -> String {
 }
 
 #[test]
-#[ignore = "vector generator: `cargo test -p coppice-names --test names_v2_wire_vectors -- --ignored --nocapture generate` regenerates test-vectors/names_v2_wire.json for a new protocol version only"]
-fn generate_names_v2_wire_vectors() {
+#[ignore = "vector generator: `cargo test -p coppice-names --test names_v1_wire_vectors -- --ignored --nocapture generate` regenerates test-vectors/names_v1_wire.json for a new protocol version only"]
+fn generate_names_v1_wire_vectors() {
     let envelopes = canonical_envelopes();
     let reset_shaped = envelopes
         .iter()
@@ -219,9 +219,9 @@ fn generate_names_v2_wire_vectors() {
         .map(|(_, bytes)| bytes.as_slice())
         .collect();
     let document = serde_json::json!({
-        "protocol": "coppice-names-v2",
-        "protocol_version": 2,
-        "wire_format": "CNV2 || 0x02 || canonical postcard operation list",
+        "protocol": "coppice-names-v1",
+        "protocol_version": 1,
+        "wire_format": "CNV1 || 0x01 || canonical postcard operation list",
         "vector_set_sha256": vector_set_digest(&envelopes_for_digest),
         "inputs": {
             "spending_key_hex": hex::encode([0x2A; 32]),
@@ -259,12 +259,12 @@ fn generate_names_v2_wire_vectors() {
 }
 
 #[test]
-fn frozen_names_v2_wire_vectors_reproduce_canonical_encodings() {
+fn frozen_names_v1_wire_vectors_reproduce_canonical_encodings() {
     let fixture: serde_json::Value = serde_json::from_str(VECTOR_JSON).unwrap();
-    assert_eq!(fixture["protocol"], "coppice-names-v2");
+    assert_eq!(fixture["protocol"], "coppice-names-v1");
     assert_eq!(
         fixture["protocol_version"].as_u64(),
-        Some(CNV2_WIRE_VERSION as u64)
+        Some(CNV1_WIRE_VERSION as u64)
     );
 
     let by_id: std::collections::BTreeMap<&str, &serde_json::Value> = fixture["vectors"]
@@ -285,7 +285,7 @@ fn frozen_names_v2_wire_vectors_reproduce_canonical_encodings() {
         assert_eq!(
             hex::encode(encoded),
             entry["envelope_hex"].as_str().unwrap(),
-            "vector {name} drifted from the frozen CNV2 bytes"
+            "vector {name} drifted from the frozen CNV1 bytes"
         );
         assert_eq!(
             encoded.len(),
@@ -313,6 +313,6 @@ fn frozen_names_v2_wire_vectors_reproduce_canonical_encodings() {
     assert_eq!(
         vector_set_digest(&digest_envelopes),
         fixture["vector_set_sha256"].as_str().unwrap(),
-        "Names v2 vector-set identity changed"
+        "Names v1 vector-set identity changed"
     );
 }

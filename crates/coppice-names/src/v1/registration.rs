@@ -1,4 +1,4 @@
-//! Names v2 COMMIT/REVEAL registration.
+//! Names v1 COMMIT/REVEAL registration.
 
 use super::state::{
     MAX_RECORD_BYTES, NameId, OwnerKey, ProducerPosition, StateRef, hash_bytes, name_id,
@@ -7,17 +7,17 @@ use super::state::{
 use pasta_curves::group::ff::PrimeField;
 use serde::{Deserialize, Serialize};
 
-/// Names v2 registration commitment version byte.
-pub const V2_REGISTRATION_VERSION: u8 = 2;
+/// Names v1 registration commitment version byte.
+pub const V1_REGISTRATION_VERSION: u8 = 1;
 
-/// Errors from v2 registration-intent encoding.
+/// Errors from v1 registration-intent encoding.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RegistrationError {
     /// The name is not a canonical bare label.
     InvalidName,
     /// The owner is not a canonical non-identity Ironwood `ak` key.
     InvalidOwner,
-    /// The committed record exceeds the v2 bound.
+    /// The committed record exceeds the v1 bound.
     RecordTooLarge,
 }
 
@@ -54,20 +54,20 @@ impl RegistrationIntent {
         name_id(&canonical).map_err(|_| RegistrationError::InvalidName)
     }
 
-    /// Computes the hidden v2 COMMIT value.
+    /// Computes the hidden v1 COMMIT value.
     pub fn commitment(&self) -> Result<[u8; 32], RegistrationError> {
         let name_id = self.name_id()?;
         let record_digest = record_digest_field(&self.record).to_repr();
         let record_len =
             u32::try_from(self.record.len()).map_err(|_| RegistrationError::RecordTooLarge)?;
         let mut preimage = Vec::with_capacity(1 + 32 + 32 + 32 + 4 + 32);
-        preimage.push(V2_REGISTRATION_VERSION);
+        preimage.push(V1_REGISTRATION_VERSION);
         preimage.extend_from_slice(&name_id);
         preimage.extend_from_slice(&self.owner_pk);
         preimage.extend_from_slice(&record_digest);
         preimage.extend_from_slice(&record_len.to_be_bytes());
         preimage.extend_from_slice(&self.secret);
-        Ok(hash_bytes("CoppiceN2Com", &preimage))
+        Ok(hash_bytes("CoppiceN1Com", &preimage))
     }
 }
 

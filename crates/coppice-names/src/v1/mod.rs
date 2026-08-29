@@ -8,7 +8,7 @@
 use coppice::application::{ApplicationId, derive_application_id};
 
 /// Exact application-family identity used by Names operations on the generic
-/// Coppice transport. The operation version is encoded by CNV2 itself.
+/// Coppice transport. The operation version is encoded by CNV1 itself.
 pub const NAMES_CANONICAL_APPLICATION_IDENTITY: &[u8] = b"coppice.names";
 
 /// Returns the canonical Names application family identifier.
@@ -27,14 +27,14 @@ pub mod state;
 pub mod transition;
 pub mod wire;
 
-pub use lease::{LeaseParameterError, Lifecycle, V2Parameters};
+pub use lease::{LeaseParameterError, Lifecycle, V1Parameters};
 pub use machine::{
     AppliedBlock, AppliedOperation, AppliedOperationKind, AppliedOperationResult, ApplyError,
-    ResolutionStatus, V2StateMachine,
+    ResolutionStatus, V1StateMachine,
 };
 pub use operation::{
     ActionViewError, CanonicalBlock, CanonicalTransaction, ChainTip, IronwoodActionRef,
-    OperationKind, V2Operation,
+    OperationKind, V1Operation,
 };
 pub use registration::{CommitRef, RegistrationError, RegistrationIntent};
 pub use resolver::{
@@ -44,10 +44,10 @@ pub use state::{
     NameId, NameState, OwnerKey, ProducerPosition, StateData, StateError, StateRef, StateStatus,
 };
 pub use transition::{
-    GenesisStatement, OrchardV2ProofProver, OrchardV2ProofVerifier, ProofCreationError,
-    StatementError, TransitionStatement, V2StateProofVerifier,
+    GenesisStatement, OrchardV1ProofProver, OrchardV1ProofVerifier, ProofCreationError,
+    StatementError, TransitionStatement, V1StateProofVerifier,
 };
 pub use wire::{
-    CNV2_WIRE_VERSION, WireError, decode_operation, decode_operations, encode_operation,
+    CNV1_WIRE_VERSION, WireError, decode_operation, decode_operations, encode_operation,
     encode_operations, operation_footprint,
 };

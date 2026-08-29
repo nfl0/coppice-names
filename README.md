@@ -13,7 +13,7 @@ Core rendezvous semantics.
 ```text
 crates/coppice-names                 Names state machine, resolver, proofs, and wire
 docs/                                Names protocol and qualification material
-test-vectors/                        Names v2 normative wire vectors
+test-vectors/                        Names v1 normative wire vectors
 ```
 
 The application uses Coppice's generic transport and canonical source

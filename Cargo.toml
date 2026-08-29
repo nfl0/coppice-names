@@ -40,9 +40,9 @@ zip321 = { git = "https://github.com/zcash/librustzcash.git", rev = "6c07e5f3297
 zip32 = "0.2.1"
 
 [patch.crates-io]
-# Names pins the corrected complete-local-transition circuit. Historical tags
+# Names pins the post-reset complete-local-transition circuit. Historical tags
 # remain immutable and are not moved or rewritten.
-orchard = { git = "https://github.com/nfl0/orchard-coppice.git", rev = "84e22d5bc62bb138bce5d8a21ec61d3afe01bc12" }
+orchard = { git = "https://github.com/nfl0/orchard-coppice.git", rev = "5588c4e42d7158233a50471c04340ea58615bb0e" }
 zcash_primitives = { git = "https://github.com/zcash/librustzcash.git", rev = "6c07e5f3297febf469e5cc8d0b91321e0767cdd7" }
 zcash_protocol = { git = "https://github.com/zcash/librustzcash.git", rev = "6c07e5f3297febf469e5cc8d0b91321e0767cdd7" }
 zcash_transparent = { git = "https://github.com/zcash/librustzcash.git", rev = "6c07e5f3297febf469e5cc8d0b91321e0767cdd7" }

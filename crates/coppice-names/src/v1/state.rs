@@ -1,6 +1,6 @@
 //! Canonical values for the Names state-note lineage.
 //!
-//! The v2 state is deliberately a value object. It has no application root
+//! The v1 state is deliberately a value object. It has no application root
 //! and no implicit transaction identity; the producer position is carried by
 //! [`StateRef`] and is authenticated by the resolver when it follows a
 //! lineage.
@@ -18,13 +18,13 @@ pub const MAX_RECORD_BYTES: usize = 1024;
 /// Maximum canonical bare-name length.
 pub const MAX_NAME_LEN: usize = 63;
 
-/// The canonical 32-byte name identifier used by v2.
+/// The canonical 32-byte name identifier used by v1.
 pub type NameId = [u8; 32];
 /// The canonical Ironwood `ak`/RedPallas SpendAuth validating-key encoding
-/// used by v2.
+/// used by v1.
 pub type OwnerKey = [u8; 32];
 
-/// Errors from canonical v2 state construction.
+/// Errors from canonical v1 state construction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StateError {
     /// The name is not a canonical bare label.
@@ -33,7 +33,7 @@ pub enum StateError {
     InvalidOwner,
     /// A state commitment or digest is not a canonical Pallas field encoding.
     InvalidField,
-    /// The destination/record exceeds the Names v2 bound.
+    /// The destination/record exceeds the Names v1 bound.
     RecordTooLarge,
     /// Active states cannot carry a terminal height.
     ActiveTerminalHeight,
@@ -43,7 +43,7 @@ pub enum StateError {
     ReferenceCommitmentMismatch,
 }
 
-/// The only state statuses in the v2 milestone.
+/// The only state statuses in the v1 milestone.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StateStatus {
     /// The name can resolve and can be renewed or updated while its lease is live.
@@ -62,7 +62,7 @@ impl StateStatus {
     }
 }
 
-/// The canonical, non-note portion of a v2 name state.
+/// The canonical, non-note portion of a v1 name state.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StateData {
     /// The name this state belongs to.
@@ -161,7 +161,7 @@ pub struct StateRef {
     pub producer_txid: [u8; 32],
     /// Ironwood action index whose commitment is this state note.
     pub producer_action_index: u32,
-    /// Exact v2 carrier-message index that declared this state note.
+    /// Exact v1 carrier-message index that declared this state note.
     pub producer_operation_index: u32,
     /// The state-note commitment created by that action.
     pub commitment: [u8; 32],
@@ -198,7 +198,7 @@ impl StateRef {
         )
     }
 
-    /// Returns the explicit v2 field binding used in a transition proof.
+    /// Returns the explicit v1 field binding used in a transition proof.
     pub fn digest(&self) -> [u8; 32] {
         let mut bytes = Vec::with_capacity(4 + 4 + 32 + 4 + 4 + 32 + 32);
         bytes.extend_from_slice(&self.producer_height.to_be_bytes());
@@ -208,7 +208,7 @@ impl StateRef {
         bytes.extend_from_slice(&self.producer_operation_index.to_be_bytes());
         bytes.extend_from_slice(&self.commitment);
         bytes.extend_from_slice(&self.nullifier);
-        hash_to_field("CoppiceN2Ref", &bytes).to_repr()
+        hash_to_field("CoppiceN1Ref", &bytes).to_repr()
     }
 }
 
@@ -268,7 +268,7 @@ impl NameState {
 /// Computes the deterministic name identifier after canonical name validation.
 pub fn name_id(name: &str) -> Result<NameId, StateError> {
     let canonical = normalize_name(name)?;
-    Ok(hash_bytes("CoppiceN2Name", canonical.as_bytes()))
+    Ok(hash_bytes("CoppiceN1Name", canonical.as_bytes()))
 }
 
 /// Normalizes a presented name to its canonical bare-label form.
@@ -288,12 +288,12 @@ fn normalize_name(name: &str) -> Result<String, StateError> {
     Ok(bare.to_owned())
 }
 
-/// Computes the explicit v2 record digest field.
+/// Computes the explicit v1 record digest field.
 pub fn record_digest_field(record: &[u8]) -> pallas::Base {
     let mut bytes = Vec::with_capacity(4 + record.len());
     bytes.extend_from_slice(&(u32::try_from(record.len()).unwrap_or(u32::MAX)).to_be_bytes());
     bytes.extend_from_slice(record);
-    hash_to_field("CoppiceN2Rec", &bytes)
+    hash_to_field("CoppiceN1Rec", &bytes)
 }
 
 /// Returns the canonical field encoding of an Ironwood `ak` key.
@@ -328,10 +328,10 @@ pub fn state_digest(data: &StateData, commitment: [u8; 32]) -> [u8; 32] {
 
 /// Maps the canonical byte name identifier into the circuit's field domain.
 pub fn name_id_field(name_id: NameId) -> pallas::Base {
-    hash_to_field("CoppiceN2NID", &name_id)
+    hash_to_field("CoppiceN1NID", &name_id)
 }
 
-/// Hashes bytes under an explicit v2 domain.
+/// Hashes bytes under an explicit v1 domain.
 pub(crate) fn hash_bytes(label: &str, bytes: &[u8]) -> [u8; 32] {
     let personal = personalization(label);
     let digest = blake2b_simd::Params::new()
@@ -359,7 +359,7 @@ fn personalization(label: &str) -> [u8; 16] {
     let bytes = label.as_bytes();
     assert!(
         bytes.len() <= 16,
-        "v2 hash labels are fixed and <= 16 bytes"
+        "v1 hash labels are fixed and <= 16 bytes"
     );
     let mut personal = [0u8; 16];
     personal[..bytes.len()].copy_from_slice(bytes);

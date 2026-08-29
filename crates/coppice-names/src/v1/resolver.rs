@@ -1,13 +1,13 @@
-//! Fresh Names v2 resolution from ordinary canonical block acquisition.
+//! Fresh Names v1 resolution from ordinary canonical block acquisition.
 
 use super::{
-    lease::{Lifecycle, V2Parameters},
+    lease::{Lifecycle, V1Parameters},
     machine::ResolutionStatus,
-    operation::{CanonicalBlock, CanonicalTransaction, ChainTip, OperationKind, V2Operation},
+    operation::{CanonicalBlock, CanonicalTransaction, ChainTip, OperationKind, V1Operation},
     registration::{CommitRef, RegistrationIntent},
     schedule,
     state::{NameId, NameState, StateData, StateRef, StateStatus},
-    transition::{GenesisStatement, TransitionStatement, V2StateProofVerifier},
+    transition::{GenesisStatement, TransitionStatement, V1StateProofVerifier},
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -40,7 +40,7 @@ impl CanonicalSource for BTreeMap<u32, CanonicalBlock> {
 pub enum ResolveError {
     /// The input name is not canonical.
     InvalidName,
-    /// The Names v2 parameters are invalid.
+    /// The Names v1 parameters are invalid.
     InvalidParameters,
     /// A canonical block or transaction required by resolution is absent,
     /// malformed, or internally inconsistent. This is fatal source/history
@@ -81,15 +81,15 @@ pub struct ResolutionResult {
     pub stats: ResolutionStats,
 }
 
-/// Fresh resolver for the Names v2 schedule and lineage.
+/// Fresh resolver for the Names v1 schedule and lineage.
 #[derive(Clone, Copy, Debug)]
 pub struct FreshResolver {
-    params: V2Parameters,
+    params: V1Parameters,
 }
 
 impl FreshResolver {
     /// Constructs a resolver after validating schedule and lease parameters.
-    pub fn new(params: V2Parameters) -> Result<Self, ResolveError> {
+    pub fn new(params: V1Parameters) -> Result<Self, ResolveError> {
         params
             .validate()
             .map_err(|_| ResolveError::InvalidParameters)?;
@@ -97,7 +97,7 @@ impl FreshResolver {
     }
 
     /// Returns the parameters used by this resolver.
-    pub const fn params(&self) -> V2Parameters {
+    pub const fn params(&self) -> V1Parameters {
         self.params
     }
 
@@ -110,7 +110,7 @@ impl FreshResolver {
     ) -> Result<ResolutionResult, ResolveError>
     where
         S: CanonicalSource,
-        P: V2StateProofVerifier,
+        P: V1StateProofVerifier,
     {
         let name_id = super::state::name_id(name).map_err(|_| ResolveError::InvalidName)?;
         let tip = source.tip();
@@ -202,7 +202,7 @@ struct MessagePosition {
 }
 
 struct Authenticator<'a, S, P> {
-    params: V2Parameters,
+    params: V1Parameters,
     source: &'a S,
     proofs: &'a P,
     stats: ResolutionStats,
@@ -225,7 +225,7 @@ enum ClaimAuthentication<T> {
 impl<'a, S, P> Authenticator<'a, S, P>
 where
     S: CanonicalSource,
-    P: V2StateProofVerifier,
+    P: V1StateProofVerifier,
 {
     /// Replays only this name's visible operations in canonical block,
     /// transaction, and carrier-message order. A rejected Names message is
@@ -297,13 +297,13 @@ where
                         continue;
                     }
                     let candidate = match operation {
-                        V2Operation::Commit { .. } => continue,
-                        V2Operation::Reveal { .. } => {
+                        V1Operation::Commit { .. } => continue,
+                        V1Operation::Reveal { .. } => {
                             self.authenticate_reveal(&block, transaction, operation)
                         }
-                        V2Operation::Update { .. }
-                        | V2Operation::Renew { .. }
-                        | V2Operation::Release { .. } => {
+                        V1Operation::Update { .. }
+                        | V1Operation::Renew { .. }
+                        | V1Operation::Release { .. } => {
                             self.authenticate_transition(&block, transaction, operation)
                         }
                     };
@@ -315,7 +315,7 @@ where
                         Err(error) => return Err(error),
                     };
                     let accepted = match operation {
-                        V2Operation::Reveal {
+                        V1Operation::Reveal {
                             replacement_predecessor,
                             commit,
                             ..
@@ -331,9 +331,9 @@ where
                             }
                             None => replacement_predecessor.is_none(),
                         },
-                        V2Operation::Update { predecessor, .. }
-                        | V2Operation::Renew { predecessor, .. }
-                        | V2Operation::Release { predecessor, .. } => match replay.state.as_ref() {
+                        V1Operation::Update { predecessor, .. }
+                        | V1Operation::Renew { predecessor, .. }
+                        | V1Operation::Release { predecessor, .. } => match replay.state.as_ref() {
                             Some(current) => {
                                 current.abandoned_height.is_none()
                                     && current.state_ref == *predecessor
@@ -344,14 +344,14 @@ where
                             // merely proof-valid Ironwood note.
                             None => true,
                         },
-                        V2Operation::Commit { .. } => false,
+                        V1Operation::Commit { .. } => false,
                     };
                     if !accepted {
                         continue;
                     }
                     if matches!(
                         operation,
-                        V2Operation::Reveal { .. } | V2Operation::Renew { .. }
+                        V1Operation::Reveal { .. } | V1Operation::Renew { .. }
                     ) {
                         replay.anchor = Some(successor.state_ref);
                     }
@@ -487,9 +487,9 @@ where
         &mut self,
         block: &CanonicalBlock,
         transaction: &CanonicalTransaction,
-        operation: &V2Operation,
+        operation: &V1Operation,
     ) -> Result<NameState, ResolveError> {
-        let V2Operation::Reveal {
+        let V1Operation::Reveal {
             intent,
             commit,
             replacement_predecessor,
@@ -656,7 +656,7 @@ where
         };
         if !matches!(
             exact_transaction.operations.get(commit.operation_index as usize),
-            Some(V2Operation::Commit { commitment }) if *commitment == commit.commitment
+            Some(V1Operation::Commit { commitment }) if *commitment == commit.commitment
         ) {
             return Ok(ClaimAuthentication::Unauthenticated);
         }
@@ -691,7 +691,7 @@ where
                             operation_index: commit.operation_index,
                         };
                     match operation {
-                        V2Operation::Commit { commitment } => {
+                        V1Operation::Commit { commitment } => {
                             let candidate = CommitRef::new(
                                 transaction.position(height),
                                 operation_index as u32,
@@ -709,7 +709,7 @@ where
                                 };
                             }
                         }
-                        V2Operation::Reveal {
+                        V1Operation::Reveal {
                             commit: consumed, ..
                         } if pending.contains_key(&consumed.commitment) => {
                             if self.state_operation_is_accepted(&block, transaction, operation)? {
@@ -739,7 +739,7 @@ where
         &mut self,
         block: &CanonicalBlock,
         transaction: &CanonicalTransaction,
-        operation: &V2Operation,
+        operation: &V1Operation,
     ) -> Result<bool, ResolveError> {
         let Some(action_index) = operation.action_index() else {
             return Ok(false);
@@ -767,7 +767,7 @@ where
 
     /// Authenticates the bounded no-predecessor COMMIT rule at the COMMIT
     /// height. The range begins at activation when there is not yet a full
-    /// reset horizon of v2 history; no trusted snapshot is involved.
+    /// reset horizon of v1 history; no trusted snapshot is involved.
     fn no_predecessor_reset_eligible(
         &mut self,
         name_id: NameId,
@@ -803,7 +803,7 @@ where
                     if operation.name_id() != Some(name_id)
                         || !matches!(
                             operation,
-                            V2Operation::Reveal { .. } | V2Operation::Renew { .. }
+                            V1Operation::Reveal { .. } | V1Operation::Renew { .. }
                         )
                     {
                         continue;
@@ -822,7 +822,7 @@ where
         &mut self,
         block: &CanonicalBlock,
         transaction: &CanonicalTransaction,
-        operation: &V2Operation,
+        operation: &V1Operation,
     ) -> Result<NameState, ResolveError> {
         self.stats.predecessor_chain_steps = self
             .stats
@@ -951,7 +951,7 @@ fn validate_block_shape(block: &CanonicalBlock, expected_height: u32) -> Result<
 
 fn operation_index(
     transaction: &CanonicalTransaction,
-    operation: &V2Operation,
+    operation: &V1Operation,
 ) -> Result<u32, ResolveError> {
     transaction
         .operations
@@ -971,9 +971,9 @@ type TransitionParts<'a> = Option<(
     &'a [u8],
 )>;
 
-fn transition_parts(operation: &V2Operation) -> TransitionParts<'_> {
+fn transition_parts(operation: &V1Operation) -> TransitionParts<'_> {
     match operation {
-        V2Operation::Update {
+        V1Operation::Update {
             predecessor,
             state,
             state_commitment,
@@ -989,7 +989,7 @@ fn transition_parts(operation: &V2Operation) -> TransitionParts<'_> {
             *action_index,
             proof,
         )),
-        V2Operation::Renew {
+        V1Operation::Renew {
             predecessor,
             state,
             state_commitment,
@@ -1005,7 +1005,7 @@ fn transition_parts(operation: &V2Operation) -> TransitionParts<'_> {
             *action_index,
             proof,
         )),
-        V2Operation::Release {
+        V1Operation::Release {
             predecessor,
             state,
             state_commitment,
@@ -1021,6 +1021,6 @@ fn transition_parts(operation: &V2Operation) -> TransitionParts<'_> {
             *action_index,
             proof,
         )),
-        V2Operation::Commit { .. } | V2Operation::Reveal { .. } => None,
+        V1Operation::Commit { .. } | V1Operation::Reveal { .. } => None,
     }
 }

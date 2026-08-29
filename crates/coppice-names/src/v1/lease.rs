@@ -1,8 +1,8 @@
-//! Deterministic v2 lease and reclaimability rules.
+//! Deterministic v1 lease and reclaimability rules.
 
 use super::{state::StateData, state::StateError, state::StateStatus};
 
-/// Errors from Names v2 protocol-parameter validation.
+/// Errors from Names v1 protocol-parameter validation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LeaseParameterError {
     /// The schedule would have no slots.
@@ -16,7 +16,7 @@ pub enum LeaseParameterError {
     /// A payable state could outlive the window in which a fresh resolver
     /// probes its deterministic anchors.
     RefreshDeadlineTooShort,
-    /// A grace or reuse interval of zero is not used by Names v2.
+    /// A grace or reuse interval of zero is not used by Names v1.
     ZeroTerminalInterval,
     /// A zero-value state note cannot serve as a bond.
     ZeroMinimumBond,
@@ -24,13 +24,13 @@ pub enum LeaseParameterError {
     ArithmeticOverflow,
 }
 
-/// The v2 constants that affect schedule, registration, and lease semantics.
+/// The v1 constants that affect schedule, registration, and lease semantics.
 ///
 /// These values are explicit protocol parameters and are intentionally kept
 /// separate from generic Coppice runtime configuration.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct V2Parameters {
-    /// First height at which v2 operations may be accepted.
+pub struct V1Parameters {
+    /// First height at which v1 operations may be accepted.
     pub activation_height: u32,
     /// Number of blocks in one deterministic anchor epoch.
     pub epoch_size: u32,
@@ -48,13 +48,13 @@ pub struct V2Parameters {
     pub grace_period_blocks: u32,
     /// Delay after explicit RELEASE before a name is reclaimable.
     pub reuse_delay_blocks: u32,
-    /// Maximum canonical record size used by the v2 state encoding.
+    /// Maximum canonical record size used by the v1 state encoding.
     pub max_record_bytes: usize,
     /// Minimum value, in zatoshis, carried by every state note.
     pub minimum_bond_zatoshis: u64,
 }
 
-impl V2Parameters {
+impl V1Parameters {
     /// A small deterministic fixture policy used by focused unit tests.
     pub const fn testing() -> Self {
         Self {
@@ -240,7 +240,7 @@ impl V2Parameters {
         }
     }
 
-    /// Validates that a state has the expected v2 representation limits.
+    /// Validates that a state has the expected v1 representation limits.
     pub fn validate_state(self, state: &StateData) -> Result<(), StateError> {
         state.validate()?;
         if state.record.len() > self.max_record_bytes {
@@ -272,7 +272,7 @@ mod tests {
 
     #[test]
     fn reset_horizon_covers_active_and_latest_possible_release() {
-        let params = V2Parameters::testing();
+        let params = V1Parameters::testing();
         let anchor = 100;
         let horizon = params.reset_horizon().unwrap();
         assert_eq!(horizon, 35);
@@ -291,7 +291,7 @@ mod tests {
 
     #[test]
     fn payable_window_is_separate_from_lease_lifetime() {
-        let params = V2Parameters::testing();
+        let params = V1Parameters::testing();
         assert_eq!(params.max_anchor_gap().unwrap(), 15);
         assert_eq!(params.max_anchor_age().unwrap(), 15);
         assert_eq!(params.max_two_slot_gap().unwrap(), 23);

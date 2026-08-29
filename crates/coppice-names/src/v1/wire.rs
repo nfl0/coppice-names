@@ -1,19 +1,19 @@
-//! Canonical Names v2 application-envelope encoding.
+//! Canonical Names v1 application-envelope encoding.
 
-use super::operation::{V2Operation, operations_have_canonical_order};
+use super::operation::{V1Operation, operations_have_canonical_order};
 
-const MAGIC: &[u8; 4] = b"CNV2";
-/// Corrected Names v2 envelope revision.
+const MAGIC: &[u8; 4] = b"CNV1";
+/// Names v1 envelope revision.
 ///
-/// Revision 1 was the pre-correction proof envelope. Revision 2 is the
-/// release artifact for the complete local-transition proof and deliberately
-/// rejects revision-1 operation bytes at the decoder boundary.
-pub const CNV2_WIRE_VERSION: u8 = 2;
+/// The v1 reset deliberately uses a fresh CNV1 prefix and revision byte, so
+/// bytes from the abandoned corrected-v2 experiment are rejected at the
+/// decoder boundary.
+pub const CNV1_WIRE_VERSION: u8 = 1;
 
-/// Errors from the Names v2 wire codec.
+/// Errors from the Names v1 wire codec.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WireError {
-    /// The envelope magic or wire version is not Names v2.
+    /// The envelope magic or wire version is not Names v1.
     WrongVersion,
     /// The payload is malformed or has a non-canonical encoding.
     InvalidEncoding,
@@ -24,7 +24,7 @@ pub enum WireError {
 /// Encoded operation, proof, and CPV1 transport footprint.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct OperationFootprint {
-    /// Complete v2 operation-envelope bytes.
+    /// Complete v1 operation-envelope bytes.
     pub operation_bytes: usize,
     /// Proof bytes carried by this operation.
     pub proof_bytes: usize,
@@ -35,20 +35,20 @@ pub struct OperationFootprint {
     pub minimum_ironwood_actions: usize,
 }
 
-/// Encodes one operation under an unambiguous Names-v2-only prefix.
-pub fn encode_operation(operation: &V2Operation) -> Result<Vec<u8>, WireError> {
+/// Encodes one operation under an unambiguous Names-v1-only prefix.
+pub fn encode_operation(operation: &V1Operation) -> Result<Vec<u8>, WireError> {
     encode_operations(core::slice::from_ref(operation))
 }
 
-/// Encodes the canonically ordered v2 messages carried by one transaction.
-pub fn encode_operations(operations: &[V2Operation]) -> Result<Vec<u8>, WireError> {
+/// Encodes the canonically ordered v1 messages carried by one transaction.
+pub fn encode_operations(operations: &[V1Operation]) -> Result<Vec<u8>, WireError> {
     if !operations_have_canonical_order(operations) {
         return Err(WireError::InvalidEncoding);
     }
     let encoded = postcard::to_allocvec(operations).map_err(|_| WireError::InvalidEncoding)?;
     let mut bytes = Vec::with_capacity(MAGIC.len() + 1 + encoded.len());
     bytes.extend_from_slice(MAGIC);
-    bytes.push(CNV2_WIRE_VERSION);
+    bytes.push(CNV1_WIRE_VERSION);
     bytes.extend_from_slice(&encoded);
     if bytes.len() > coppice::carrier::MAX_CPV1_PAYLOAD_LEN {
         return Err(WireError::TooLarge);
@@ -56,8 +56,8 @@ pub fn encode_operations(operations: &[V2Operation]) -> Result<Vec<u8>, WireErro
     Ok(bytes)
 }
 
-/// Decodes one canonical Names v2 operation and rejects alternate encodings.
-pub fn decode_operation(bytes: &[u8]) -> Result<V2Operation, WireError> {
+/// Decodes one canonical Names v1 operation and rejects alternate encodings.
+pub fn decode_operation(bytes: &[u8]) -> Result<V1Operation, WireError> {
     let mut operations = decode_operations(bytes)?;
     if operations.len() != 1 {
         return Err(WireError::InvalidEncoding);
@@ -65,14 +65,14 @@ pub fn decode_operation(bytes: &[u8]) -> Result<V2Operation, WireError> {
     Ok(operations.remove(0))
 }
 
-/// Decodes one canonical ordered v2 message list.
-pub fn decode_operations(bytes: &[u8]) -> Result<Vec<V2Operation>, WireError> {
+/// Decodes one canonical ordered v1 message list.
+pub fn decode_operations(bytes: &[u8]) -> Result<Vec<V1Operation>, WireError> {
     if bytes.get(..MAGIC.len()) != Some(MAGIC)
-        || bytes.get(MAGIC.len()).copied() != Some(CNV2_WIRE_VERSION)
+        || bytes.get(MAGIC.len()).copied() != Some(CNV1_WIRE_VERSION)
     {
         return Err(WireError::WrongVersion);
     }
-    let operations = postcard::from_bytes::<Vec<V2Operation>>(&bytes[MAGIC.len() + 1..])
+    let operations = postcard::from_bytes::<Vec<V1Operation>>(&bytes[MAGIC.len() + 1..])
         .map_err(|_| WireError::InvalidEncoding)?;
     if operations.is_empty()
         || encode_operations(&operations).map_err(|_| WireError::InvalidEncoding)? != bytes
@@ -83,14 +83,14 @@ pub fn decode_operations(bytes: &[u8]) -> Result<Vec<V2Operation>, WireError> {
 }
 
 /// Measures the exact CPV1 footprint without changing Core framing limits.
-pub fn operation_footprint(operation: &V2Operation) -> Result<OperationFootprint, WireError> {
+pub fn operation_footprint(operation: &V1Operation) -> Result<OperationFootprint, WireError> {
     let bytes = encode_operation(operation)?;
     let proof_bytes = match operation {
-        V2Operation::Commit { .. } => 0,
-        V2Operation::Reveal { proof, .. }
-        | V2Operation::Update { proof, .. }
-        | V2Operation::Renew { proof, .. }
-        | V2Operation::Release { proof, .. } => proof.len(),
+        V1Operation::Commit { .. } => 0,
+        V1Operation::Reveal { proof, .. }
+        | V1Operation::Update { proof, .. }
+        | V1Operation::Renew { proof, .. }
+        | V1Operation::Release { proof, .. } => proof.len(),
     };
     let cpv1_frames =
         coppice::transport::required_frames(bytes.len()).map_err(|_| WireError::TooLarge)?;
@@ -98,11 +98,11 @@ pub fn operation_footprint(operation: &V2Operation) -> Result<OperationFootprint
     // operations add one successor state-note output; their one designated
     // spend can share that action when cross-address pairing is enabled.
     let minimum_ironwood_actions = match operation {
-        V2Operation::Commit { .. } => cpv1_frames,
-        V2Operation::Reveal { .. }
-        | V2Operation::Update { .. }
-        | V2Operation::Renew { .. }
-        | V2Operation::Release { .. } => cpv1_frames.checked_add(1).ok_or(WireError::TooLarge)?,
+        V1Operation::Commit { .. } => cpv1_frames,
+        V1Operation::Reveal { .. }
+        | V1Operation::Update { .. }
+        | V1Operation::Renew { .. }
+        | V1Operation::Release { .. } => cpv1_frames.checked_add(1).ok_or(WireError::TooLarge)?,
     };
     Ok(OperationFootprint {
         operation_bytes: bytes.len(),
@@ -115,7 +115,7 @@ pub fn operation_footprint(operation: &V2Operation) -> Result<OperationFootprint
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::v2::{
+    use crate::v1::{
         CommitRef, ProducerPosition, RegistrationIntent, StateData, StateRef, StateStatus,
     };
     use orchard::{
@@ -126,20 +126,20 @@ mod tests {
 
     #[test]
     fn commit_encoding_is_canonical_and_superseded_prefixes_are_rejected() {
-        let operation = V2Operation::Commit {
+        let operation = V1Operation::Commit {
             commitment: [7; 32],
         };
         let bytes = encode_operation(&operation).unwrap();
-        assert_eq!(&bytes[..5], b"CNV2\x02");
+        assert_eq!(&bytes[..5], b"CNV1\x01");
         assert_eq!(decode_operation(&bytes).unwrap(), operation);
         let mut old_revision = bytes.clone();
-        old_revision[4] = 1;
+        old_revision[4] = 2;
         assert_eq!(
             decode_operation(&old_revision),
             Err(WireError::WrongVersion)
         );
         let mut wrong = bytes;
-        wrong[3] = b'1';
+        wrong[3] = b'2';
         assert_eq!(decode_operation(&wrong), Err(WireError::WrongVersion));
     }
 
@@ -156,7 +156,7 @@ mod tests {
         };
         let predecessor =
             StateRef::new(ProducerPosition::new(1, 0, [3; 32]), 0, 0, [4; 32], [5; 32]);
-        let update = V2Operation::Update {
+        let update = V1Operation::Update {
             predecessor,
             state,
             state_commitment: [6; 32],
@@ -164,7 +164,7 @@ mod tests {
             action_index: 1,
             proof: Vec::new(),
         };
-        let commit = V2Operation::Commit {
+        let commit = V1Operation::Commit {
             commitment: [8; 32],
         };
         let noncanonical = [update, commit];
@@ -175,7 +175,7 @@ mod tests {
 
         // Model hostile bytes without going through the canonical encoder.
         let mut bytes = Vec::from(MAGIC.as_slice());
-        bytes.push(CNV2_WIRE_VERSION);
+        bytes.push(CNV1_WIRE_VERSION);
         bytes.extend(postcard::to_allocvec(&noncanonical).unwrap());
         assert_eq!(decode_operations(&bytes), Err(WireError::InvalidEncoding));
     }
@@ -207,7 +207,7 @@ mod tests {
             0,
             intent.commitment().unwrap(),
         );
-        let reveal = V2Operation::Reveal {
+        let reveal = V1Operation::Reveal {
             intent: Box::new(intent),
             commit,
             replacement_predecessor: None,
@@ -227,7 +227,7 @@ mod tests {
         let mut successor = state;
         successor.sequence = 1;
         successor.record.push(1);
-        let update = V2Operation::Update {
+        let update = V1Operation::Update {
             predecessor,
             state: successor.clone(),
             state_commitment: pallas::Base::from(13).to_repr(),
@@ -237,7 +237,7 @@ mod tests {
         };
         successor.record.pop();
         successor.lease_expiry = 2_000;
-        let renew = V2Operation::Renew {
+        let renew = V1Operation::Renew {
             predecessor,
             state: successor,
             state_commitment: pallas::Base::from(15).to_repr(),

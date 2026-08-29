@@ -1,7 +1,8 @@
-# Names v2 qualification record
+# Names v1 qualification record
 
-This record covers the corrected Names v2 implementation at the pinned
-release heads. The live run is local evidence only; it is not a public-network
+This record is the reset handoff for Names v1. The prior corrected-v2 live run
+is historical evidence only; v1 artifact regeneration and live qualification
+remain pending. Any eventual run is local evidence only, not a public-network
 deployment or an independent security audit.
 
 The qualification path is `zcash-devtool/scripts/live-qualification.sh
@@ -10,16 +11,14 @@ checks canonical `COMMIT -> REVEAL -> UPDATE -> RENEW -> RELEASE` acceptance.
 Each operation is independently checked by full replay and `FreshResolver`.
 The run also checks the exact `Released`/`Expired` claimability boundary.
 
-Frozen artifacts:
+Reset artifact status:
 
-- CNV2 revision: `0x02`
+- CNV1 revision: `0x01`
 - wire-vector identity:
-  `0379bf3bf665d3d0ce3a8c9b3a82bf6b67c01a33dc11a26b1b44bd1cd013a556`
-- state-note transition VK identity:
-  `5ed1a1385f15e0e13e284cf1a7c319449d42b4902abc57b5ebefb60d04995cc1`
-- state-note genesis VK identity:
-  `81aa1ade09b0ca86eb80c021a66e2cf629875ecab258a99a4a2ecd0df2c7f5ae`
-- Orchard source pin: `84e22d5bc62bb138bce5d8a21ec61d3afe01bc12`
+  `dff01501326305709dc1eda3241a92458ce17a3461b6dd254c7f8f841a6932b1`
+- state-note transition VK identity: pending v1 freeze
+- state-note genesis VK identity: pending v1 freeze
+- Orchard source pin: pending the post-reset Orchard commit
 
 Proof-size and performance optimization remain separate post-qualification
 work. Final wire/VK regeneration and live qualification must be rerun if any

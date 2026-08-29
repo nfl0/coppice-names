@@ -1,4 +1,4 @@
-//! Experimental Coppice Names v2 vertical slice.
+//! Coppice Names v2 protocol implementation.
 //!
 //! This namespace is additive. The v1 envelope, registration, BondProof,
 //! runtime identities, and serialized state remain owned by their existing
@@ -35,6 +35,6 @@ pub use transition::{
     StatementError, TransitionStatement, V2StateProofVerifier,
 };
 pub use wire::{
-    WireError, decode_operation, decode_operations, encode_operation, encode_operations,
-    operation_footprint,
+    CNV2_WIRE_VERSION, WireError, decode_operation, decode_operations, encode_operation,
+    encode_operations, operation_footprint,
 };

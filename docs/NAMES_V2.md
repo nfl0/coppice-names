@@ -37,9 +37,9 @@ reassigned by any later builder stage.
 ## 2. Frozen protocol surfaces
 
 The v2 operation family is exactly `COMMIT`, `REVEAL`, `UPDATE`, `RENEW`,
-`RELEASE`. Wire encoding is `CNV2 || 0x01 || canonical postcard` of one
-operation; the decoder re-encodes and compares bytes, rejecting every
-non-canonical encoding, and the prefix is disjoint from frozen v1. CPV1
+`RELEASE`. The corrected release wire encoding is `CNV2 || 0x02 || canonical
+postcard` of one operation; the decoder re-encodes and compares bytes,
+rejecting every non-canonical encoding, and the prefix is disjoint from frozen v1. CPV1
 framing is the unchanged generic transport: one distinct rendezvous output
 per frame, 16,093-byte maximum payload.
 
@@ -83,8 +83,8 @@ per frame, 16,093-byte maximum payload.
   reset, abandonment).
 
 Frozen vector-set identity (SHA-256 over the length-prefixed canonical
-envelopes in family order):
-`0c9bfdd7b0a26fb5c645b356f418d97fb48c7d910e2d1ce0e8d18c3e7f2cb7d5`.
+envelopes in family order, CNV2 revision `0x02`):
+`0379bf3bf665d3d0ce3a8c9b3a82bf6b67c01a33dc11a26b1b44bd1cd013a556`.
 
 ## 3. Proof boundaries and circuit freeze
 
@@ -128,11 +128,15 @@ runtime from `name_id`, the operation height, and the protocol parameters.
 
 The circuits live in `orchard-coppice` under the `experimental-state-note`
 feature and are derived deterministically from the pinned params (`K = 11`)
-and pinned Halo2 `0.3.2`. Final verifying-key identities are deliberately not
-frozen yet: the fork's freeze test is ignored until the corrected architecture
-is accepted, after which freezing requires an explicit protocol-version bump.
-Proving keys are derived at runtime from the same pinned derivation; no
-trusted parameter distribution exists or is needed.
+and pinned Halo2 `0.3.2`. The corrected release freeze pins the transition
+verifying-key identity to
+`5ed1a1385f15e0e13e284cf1a7c319449d42b4902abc57b5ebefb60d04995cc1` and the
+genesis verifying-key identity to
+`81aa1ade09b0ca86eb80c021a66e2cf629875ecab258a99a4a2ecd0df2c7f5ae`.
+Proving keys are derived at runtime from the same pinned derivation; no trusted
+parameter distribution exists or is needed. The semantic Names registration
+preimage version remains `2`; CNV2 `0x02` is the disjoint corrected wire/artifact
+revision and rejects the superseded `0x01` envelopes.
 
 ## 4. Wallet construction flow
 
@@ -251,10 +255,13 @@ coverage including the zero-funding failure case.
 
 Measured on the development machine used for qualification: the routine
 (cheap) test suites run in seconds; the full coppice-names suite including
-heavy v1 proof tests completes in a few minutes. The Names v2 genesis and
-transition proofs measured during live qualification produce 4,640-byte
-proofs; per-operation proving dominates construction time. Ironwood
-consensus proof generation per transaction is the other dominant cost.
+heavy v1 proof tests completes in a few minutes. The corrected Names v2
+genesis and transition proofs measured during the 2026-08-29 live run produce
+4,704-byte proofs; the resulting CNV2 envelopes are 5,118 bytes for REVEAL
+and 5,011 bytes for UPDATE, RENEW, and RELEASE (11 CPV1 frames each).
+Per-operation proving and Ironwood consensus proof generation dominate
+construction time. These are qualification measurements only; proof-size and
+performance optimization remains post-release work.
 FreshResolver cost is bounded by the discovery window: only the name's
 visible operations in the bounded anchor tail are replayed, and only
 scheduled anchor blocks are probed for reset eligibility; no global index or

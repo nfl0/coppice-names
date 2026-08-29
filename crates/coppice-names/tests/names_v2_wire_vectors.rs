@@ -7,8 +7,8 @@
 //! output must never replace the frozen file silently.
 
 use coppice_names::v2::{
-    CommitRef, ProducerPosition, RegistrationIntent, StateData, StateRef, StateStatus, V2Operation,
-    decode_operation, encode_operation,
+    CNV2_WIRE_VERSION, CommitRef, ProducerPosition, RegistrationIntent, StateData, StateRef,
+    StateStatus, V2Operation, decode_operation, encode_operation,
 };
 use orchard::circuit::state_note_binding::spend_auth_owner_key_bytes;
 use orchard::keys::{SpendAuthorizingKey, SpendingKey};
@@ -220,7 +220,8 @@ fn generate_names_v2_wire_vectors() {
         .collect();
     let document = serde_json::json!({
         "protocol": "coppice-names-v2",
-        "wire_format": "CNV2 || 0x01 || canonical postcard operation list",
+        "protocol_version": 2,
+        "wire_format": "CNV2 || 0x02 || canonical postcard operation list",
         "vector_set_sha256": vector_set_digest(&envelopes_for_digest),
         "inputs": {
             "spending_key_hex": hex::encode([0x2A; 32]),
@@ -261,6 +262,10 @@ fn generate_names_v2_wire_vectors() {
 fn frozen_names_v2_wire_vectors_reproduce_canonical_encodings() {
     let fixture: serde_json::Value = serde_json::from_str(VECTOR_JSON).unwrap();
     assert_eq!(fixture["protocol"], "coppice-names-v2");
+    assert_eq!(
+        fixture["protocol_version"].as_u64(),
+        Some(CNV2_WIRE_VERSION as u64)
+    );
 
     let by_id: std::collections::BTreeMap<&str, &serde_json::Value> = fixture["vectors"]
         .as_array()

@@ -121,7 +121,7 @@ development and integration. It does not mean that Coppice is publicly
 deployed, audited, or ready for an operational rollout without future network,
 packaging, and deployment decisions.
 
-## Names v2 release qualification: 2026-08-28
+## Historical Names v2 qualification (superseded): 2026-08-28
 
 The full Names v2 lifecycle was qualified live on a fresh disposable
 Zakura -> patched Zaino -> `zcash-devtool` stack through the production
@@ -175,3 +175,45 @@ previously retained live v2 qualification evidence and the deterministic
 regression suites; this release qualification demonstrates the production
 construction path end to end rather than regenerating every historical live
 transaction.
+
+## Corrected Names v2 release qualification: 2026-08-29
+
+The corrected release artifacts were qualified end to end on a fresh
+disposable Zakura -> patched Zaino -> `zcash-devtool` Regtest stack with
+`./scripts/live-qualification.sh --phase 9 --keep-state`. The run used the
+corrected Orchard pin
+`84e22d5bc62bb138bce5d8a21ec61d3afe01bc12`, CNV2 revision `0x02`, and the
+frozen vector-set identity
+`0379bf3bf665d3d0ce3a8c9b3a82bf6b67c01a33dc11a26b1b44bd1cd013a556`.
+The preserved evidence directory is
+`/tmp/coppice-live-qualification.bm6kAr`.
+
+Canonical lifecycle (each verification reports replay/FreshResolver parity):
+
+- COMMIT `b997517a260b67eb1d583c145af52e91578daf80062f2e8eec6136c19f2431ba`
+  mined at height 15; exact accepted producer position was height 15,
+  transaction index 1, operation index 0.
+- REVEAL `50d08d227688fc2d62791a5cf936826847524f4164beef313f4204d3c593ef61`
+  mined at the scheduled anchor height 23; replay and FreshResolver both
+  returned `Active`.
+- UPDATE `771eeee79437c6928bafd9bfc9d4da48488935bb5cf8397b70381daffa58da3f`
+  mined at height 24 and accepted; both paths returned `Active`.
+- RENEW `5de4b2dc7536f7fbf2042595e60fb22a4cae067fc72b372975ce6c0f507e9e51`
+  mined at scheduled anchor height 27 and accepted; both paths returned
+  `Active`.
+- RELEASE `448e47ca81097658fad865bcc2115adaba67af69a2904a9d5db1fa8c108124e0`
+  mined at height 28 and accepted; both paths returned `Released`.
+
+The release claimability boundary was also checked: `Released` at the last
+blocked height 31 and `Expired` exactly at height 32 (`terminal_height 28 +
+reuse_delay 4`), with replay and FreshResolver agreeing at both heights.
+Every lifecycle verification recorded `NAMES_FULL_FRESH_MATCH=yes`, and all
+five canonical operations recorded accepted COMMIT/REVEAL/UPDATE/RENEW/RELEASE
+prefixes as applicable.
+
+Observed (non-optimized) corrected-release costs were 4,704-byte Names proofs,
+5,118-byte REVEAL and 5,011-byte UPDATE/RENEW/RELEASE CNV2 envelopes, and 11
+CPV1 frames for each state operation. Names proving took 3,752-4,019 ms in
+this run; Ironwood consensus proofs took 44,309-44,593 ms per transaction.
+Proof-size and performance optimization remains post-release work and is not a
+release gate here.

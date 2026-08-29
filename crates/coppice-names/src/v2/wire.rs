@@ -1,11 +1,16 @@
-//! Canonical experimental Names v2 application-envelope encoding.
+//! Canonical Names v2 application-envelope encoding.
 
 use super::operation::{V2Operation, operations_have_canonical_order};
 
 const MAGIC: &[u8; 4] = b"CNV2";
-const WIRE_VERSION: u8 = 1;
+/// Corrected Names v2 envelope revision.
+///
+/// Revision 1 was the pre-correction proof envelope. Revision 2 is the
+/// release artifact for the complete local-transition proof and deliberately
+/// rejects revision-1 operation bytes at the decoder boundary.
+pub const CNV2_WIRE_VERSION: u8 = 2;
 
-/// Errors from the experimental v2 wire codec.
+/// Errors from the Names v2 wire codec.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WireError {
     /// The envelope magic or wire version is not Names v2.
@@ -43,7 +48,7 @@ pub fn encode_operations(operations: &[V2Operation]) -> Result<Vec<u8>, WireErro
     let encoded = postcard::to_allocvec(operations).map_err(|_| WireError::InvalidEncoding)?;
     let mut bytes = Vec::with_capacity(MAGIC.len() + 1 + encoded.len());
     bytes.extend_from_slice(MAGIC);
-    bytes.push(WIRE_VERSION);
+    bytes.push(CNV2_WIRE_VERSION);
     bytes.extend_from_slice(&encoded);
     if bytes.len() > coppice::carrier::MAX_CPV1_PAYLOAD_LEN {
         return Err(WireError::TooLarge);
@@ -63,7 +68,7 @@ pub fn decode_operation(bytes: &[u8]) -> Result<V2Operation, WireError> {
 /// Decodes one canonical ordered v2 message list.
 pub fn decode_operations(bytes: &[u8]) -> Result<Vec<V2Operation>, WireError> {
     if bytes.get(..MAGIC.len()) != Some(MAGIC)
-        || bytes.get(MAGIC.len()).copied() != Some(WIRE_VERSION)
+        || bytes.get(MAGIC.len()).copied() != Some(CNV2_WIRE_VERSION)
     {
         return Err(WireError::WrongVersion);
     }
@@ -125,8 +130,14 @@ mod tests {
             commitment: [7; 32],
         };
         let bytes = encode_operation(&operation).unwrap();
-        assert_eq!(&bytes[..5], b"CNV2\x01");
+        assert_eq!(&bytes[..5], b"CNV2\x02");
         assert_eq!(decode_operation(&bytes).unwrap(), operation);
+        let mut old_revision = bytes.clone();
+        old_revision[4] = 1;
+        assert_eq!(
+            decode_operation(&old_revision),
+            Err(WireError::WrongVersion)
+        );
         let mut wrong = bytes;
         wrong[3] = b'1';
         assert_eq!(decode_operation(&wrong), Err(WireError::WrongVersion));
@@ -164,7 +175,7 @@ mod tests {
 
         // Model hostile bytes without going through the canonical encoder.
         let mut bytes = Vec::from(MAGIC.as_slice());
-        bytes.push(WIRE_VERSION);
+        bytes.push(CNV2_WIRE_VERSION);
         bytes.extend(postcard::to_allocvec(&noncanonical).unwrap());
         assert_eq!(decode_operations(&bytes), Err(WireError::InvalidEncoding));
     }

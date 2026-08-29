@@ -244,16 +244,19 @@ this accepted-producer replay on the new branch.
 
 ## Experimental wire and footprint
 
-Operations use an explicit `CNV2 || 0x01` prefix followed by canonical compact
+The design-time wire described here used `CNV2 || 0x01`; the corrected release
+artifact uses disjoint revision `CNV2 || 0x02` followed by canonical compact
 binary encoding. The decoder re-encodes and compares bytes, and the prefix is
-disjoint from frozen v1. Generic CPV1 framing is unchanged. With the current
-real 4,640-byte Halo2 proofs and a 64-byte record fixture, exact footprints are:
+disjoint from frozen v1. Generic CPV1 framing is unchanged. The corrected
+release run measured real 4,704-byte Halo2 proofs (64-byte record fixture) and
+the following exact footprints; optimization is intentionally deferred:
 
 | operation | envelope bytes | proof bytes | CPV1 frames | minimum Ironwood actions |
 | --- | ---: | ---: | ---: | ---: |
-| REVEAL | 5,056 | 4,640 | 11 | 12 |
-| UPDATE | 4,950 | 4,640 | 10 | 11 |
-| RENEW | 4,949 | 4,640 | 10 | 11 |
+| REVEAL | 5,118 | 4,704 | 11 | 12 |
+| UPDATE | 5,011 | 4,704 | 11 | 11 |
+| RENEW | 5,011 | 4,704 | 11 | 11 |
+| RELEASE | 5,011 | 4,704 | 11 | 11 |
 
 Each CPV1 frame is carried by a distinct Ironwood rendezvous output, and each
 state operation adds its successor state-note output. With the one required

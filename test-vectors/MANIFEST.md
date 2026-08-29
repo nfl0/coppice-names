@@ -99,7 +99,10 @@ encodings for the full operation family: `commit`,
 `reveal_no_predecessor_reset_shaped` (byte-identical to the first
 registration encoding by construction), `update`, `renew`, and `release`.
 The frozen inputs, per-vector envelope bytes, and the SHA-256 vector-set
-identity are recorded in the file. The conformance harness is
+identity are recorded in the file. The corrected release uses CNV2 revision
+`0x02` and vector-set identity
+`0379bf3bf665d3d0ce3a8c9b3a82bf6b67c01a33dc11a26b1b44bd1cd013a556`; the
+superseded `0x01` envelopes are not accepted. The conformance harness is
 `crates/coppice-names/tests/names_v2_wire_vectors.rs`; it only asserts. The
 ignored `generate_names_v2_wire_vectors` test in the same file is the sole
 regeneration path for a future protocol-version bump and must never silently

@@ -1,4 +1,12 @@
-# Coppice Names v2 architectural correction report
+# Coppice Names v2 architectural correction report (historical)
+
+> This report records the pre-release baseline and the correction requirements
+> identified before the complete local-transition circuit was accepted. It is
+> retained for audit history; its pre-correction release verdict is superseded
+> by the corrected circuit and release artifacts documented in
+> [`NAMES_V2.md`](NAMES_V2.md). The release pins the corrected Orchard source at
+> `84e22d5bc62bb138bce5d8a21ec61d3afe01bc12`, freezes the regenerated VK
+> identities, and uses CNV2 revision `0x02`.
 
 ## 1. Executive verdict
 

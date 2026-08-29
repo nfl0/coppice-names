@@ -114,6 +114,15 @@ impl FreshResolver {
     {
         let name_id = super::state::name_id(name).map_err(|_| ResolveError::InvalidName)?;
         let tip = source.tip();
+        if tip.height >= self.params.activation_height {
+            let tip_block = source
+                .block(tip.height)
+                .ok_or(ResolveError::InvalidLineage)?;
+            validate_block_shape(&tip_block, tip.height)?;
+            if tip_block.block_hash != tip.block_hash {
+                return Err(ResolveError::InvalidLineage);
+            }
+        }
         let mut auth = Authenticator {
             params: self.params,
             source,
@@ -201,15 +210,14 @@ struct Authenticator<'a, S, P> {
     visiting: BTreeSet<StateRef>,
 }
 
-/// Outcome of authenticating an operation-provided predecessor or
-/// replacement `StateRef` claim.
+/// Outcome of authenticating an operation-provided canonical reference claim.
 ///
 /// The distinction keeps untrusted-claim failures nonfatal: they make only
 /// the containing operation unaccepted. Canonical source/history integrity
 /// failures reached while authenticating remain fatal `ResolveError`s.
-enum ReferenceAuthentication {
-    /// The claim authenticates to the accepted Names producer it identifies.
-    Accepted(Box<NameState>),
+enum ClaimAuthentication<T> {
+    /// The claim authenticates to the exact accepted producer it identifies.
+    Authenticated(T),
     /// The claim does not authenticate to an accepted Names producer.
     Unauthenticated,
 }
@@ -253,21 +261,8 @@ where
                 .source
                 .block(height)
                 .ok_or(ResolveError::InvalidLineage)?;
-            if block.height != height
-                || previous_hash.is_some_and(|hash| block.prev_block_hash != hash)
-                || block
-                    .transactions
-                    .windows(2)
-                    .any(|pair| pair[0].tx_index >= pair[1].tx_index)
-                || block.transactions.iter().any(|transaction| {
-                    transaction
-                        .actions
-                        .iter()
-                        .enumerate()
-                        .any(|(index, action)| action.action_index != index as u32)
-                        || !transaction.has_canonical_operation_order()
-                })
-            {
+            validate_block_shape(&block, height)?;
+            if previous_hash.is_some_and(|hash| block.prev_block_hash != hash) {
                 return Err(ResolveError::InvalidLineage);
             }
             previous_hash = Some(block.block_hash);
@@ -383,7 +378,7 @@ where
     /// substitute for this replay check.
     ///
     /// Failures attributable to the untrusted claim itself are reported as
-    /// [`ReferenceAuthentication::Unauthenticated`]. Canonical source/history
+    /// [`ClaimAuthentication::Unauthenticated`]. Canonical source/history
     /// integrity failures reached while authenticating — absent blocks inside
     /// the required canonical range, malformed shapes, or broken chain
     /// linkage encountered during the recursive replay — propagate as fatal
@@ -391,29 +386,29 @@ where
     fn authenticate_accepted_state_ref(
         &mut self,
         reference: StateRef,
-    ) -> Result<ReferenceAuthentication, ResolveError> {
+    ) -> Result<ClaimAuthentication<Box<NameState>>, ResolveError> {
         if let Some(state) = self.cache.get(&reference) {
-            return Ok(ReferenceAuthentication::Accepted(Box::new(state.clone())));
+            return Ok(ClaimAuthentication::Authenticated(Box::new(state.clone())));
         }
         if !self.visiting.insert(reference) {
             // Circular ancestry is constructible only by the untrusted claims
             // themselves; canonical acceptance never depends on a later
             // producer.
-            return Ok(ReferenceAuthentication::Unauthenticated);
+            return Ok(ClaimAuthentication::Unauthenticated);
         }
         self.stats.lineage_block_probes = self
             .stats
             .lineage_block_probes
             .checked_add(1)
             .ok_or(ResolveError::ArithmeticOverflow)?;
-        let result = (|| -> Result<ReferenceAuthentication, ResolveError> {
+        let result = (|| -> Result<ClaimAuthentication<Box<NameState>>, ResolveError> {
             let tip = self.source.tip();
             if reference.producer_height < self.params.activation_height
                 || reference.producer_height > tip.height
             {
                 // No accepted Names producer can exist outside the canonical
                 // source range, so the claim fails on its face.
-                return Ok(ReferenceAuthentication::Unauthenticated);
+                return Ok(ClaimAuthentication::Unauthenticated);
             }
             // Inside the canonical range a complete source must carry every
             // block; a missing block is source corruption, not a claim
@@ -422,32 +417,33 @@ where
                 .source
                 .block(reference.producer_height)
                 .ok_or(ResolveError::InvalidLineage)?;
+            validate_block_shape(&block, reference.producer_height)?;
             let Some(transaction) =
                 exact_transaction(&block, reference.producer_tx_index, reference.producer_txid)
             else {
-                return Ok(ReferenceAuthentication::Unauthenticated);
+                return Ok(ClaimAuthentication::Unauthenticated);
             };
             let Some(action) = transaction.action(reference.producer_action_index) else {
-                return Ok(ReferenceAuthentication::Unauthenticated);
+                return Ok(ClaimAuthentication::Unauthenticated);
             };
             if action.commitment != reference.commitment {
-                return Ok(ReferenceAuthentication::Unauthenticated);
+                return Ok(ClaimAuthentication::Unauthenticated);
             }
             let Some(operation) = transaction
                 .operations
                 .get(reference.producer_operation_index as usize)
             else {
-                return Ok(ReferenceAuthentication::Unauthenticated);
+                return Ok(ClaimAuthentication::Unauthenticated);
             };
             if !transaction.is_first_action_claim(reference.producer_operation_index as usize)
                 || operation.action_index() != Some(reference.producer_action_index)
                 || operation.state_commitment() != Some(reference.commitment)
                 || operation.state_nullifier() != Some(reference.nullifier)
             {
-                return Ok(ReferenceAuthentication::Unauthenticated);
+                return Ok(ClaimAuthentication::Unauthenticated);
             }
             let Some(name_id) = operation.name_id() else {
-                return Ok(ReferenceAuthentication::Unauthenticated);
+                return Ok(ClaimAuthentication::Unauthenticated);
             };
             let state = self.replay_name_through(
                 name_id,
@@ -459,13 +455,13 @@ where
             )?;
             match state {
                 Some(state) if state.state_ref == reference => {
-                    Ok(ReferenceAuthentication::Accepted(Box::new(state)))
+                    Ok(ClaimAuthentication::Authenticated(Box::new(state)))
                 }
-                _ => Ok(ReferenceAuthentication::Unauthenticated),
+                _ => Ok(ClaimAuthentication::Unauthenticated),
             }
         })();
         self.visiting.remove(&reference);
-        if let Ok(ReferenceAuthentication::Accepted(state)) = &result {
+        if let Ok(ClaimAuthentication::Authenticated(state)) = &result {
             self.cache.insert(reference, state.as_ref().clone());
         }
         result
@@ -520,27 +516,43 @@ where
         {
             return Err(ResolveError::InvalidOperation);
         }
-        self.authenticate_accepted_commit(*commit)?;
+        let current_operation_index = operation_index(transaction, operation)?;
+        if commit.position.height >= block.height {
+            return Err(ResolveError::InvalidOperation);
+        }
+        match self.authenticate_accepted_commit(*commit)? {
+            ClaimAuthentication::Authenticated(()) => {}
+            ClaimAuthentication::Unauthenticated => {
+                return Err(ResolveError::InvalidOperation);
+            }
+        }
         let maturity = commit
             .position
             .height
             .checked_add(1)
-            .ok_or(ResolveError::ArithmeticOverflow)?;
+            .ok_or(ResolveError::InvalidOperation)?;
         let expiry = commit
             .position
             .height
             .checked_add(self.params.commit_ttl_blocks)
-            .ok_or(ResolveError::ArithmeticOverflow)?;
-        if block.height == commit.position.height {
-            return Err(ResolveError::InvalidOperation);
-        }
+            .ok_or(ResolveError::InvalidOperation)?;
         if block.height < maturity || block.height > expiry {
             return Err(ResolveError::InvalidOperation);
         }
         if let Some(previous_ref) = replacement_predecessor {
+            if !state_ref_precedes(
+                *previous_ref,
+                MessagePosition {
+                    height: block.height,
+                    tx_index: transaction.tx_index,
+                    operation_index: current_operation_index,
+                },
+            ) {
+                return Err(ResolveError::InvalidOperation);
+            }
             let mut previous = match self.authenticate_accepted_state_ref(*previous_ref)? {
-                ReferenceAuthentication::Accepted(previous) => previous,
-                ReferenceAuthentication::Unauthenticated => {
+                ClaimAuthentication::Authenticated(previous) => previous,
+                ClaimAuthentication::Unauthenticated => {
                     return Err(ResolveError::InvalidOperation);
                 }
             };
@@ -568,14 +580,14 @@ where
         }
         let action = transaction
             .action(*action_index)
-            .ok_or(ResolveError::InvalidLineage)?;
+            .ok_or(ResolveError::InvalidOperation)?;
         if action.commitment != *state_commitment {
-            return Err(ResolveError::InvalidLineage);
+            return Err(ResolveError::InvalidOperation);
         }
         let state_ref = StateRef::new(
             transaction.position(block.height),
             *action_index,
-            operation_index(transaction, operation)?,
+            current_operation_index,
             *state_commitment,
             *state_nullifier,
         );
@@ -596,12 +608,17 @@ where
         start_height: u32,
         end_height: u32,
     ) -> Result<Option<u32>, ResolveError> {
+        let mut previous_hash = None;
         for height in start_height..=end_height {
             let block = self
                 .source
                 .block(height)
                 .ok_or(ResolveError::InvalidLineage)?;
             validate_block_shape(&block, height)?;
+            if previous_hash.is_some_and(|hash| block.prev_block_hash != hash) {
+                return Err(ResolveError::InvalidLineage);
+            }
+            previous_hash = Some(block.block_hash);
             if block.transactions.iter().any(|transaction| {
                 transaction
                     .actions
@@ -617,19 +634,31 @@ where
     /// Verifies that `commit` names the exact message which was admitted to
     /// the finite pending-COMMIT set. Seeing the same bytes elsewhere in the
     /// transaction is deliberately insufficient.
-    fn authenticate_accepted_commit(&mut self, commit: CommitRef) -> Result<(), ResolveError> {
+    fn authenticate_accepted_commit(
+        &mut self,
+        commit: CommitRef,
+    ) -> Result<ClaimAuthentication<()>, ResolveError> {
+        let tip = self.source.tip();
+        if commit.position.height < self.params.activation_height
+            || commit.position.height > tip.height
+        {
+            return Ok(ClaimAuthentication::Unauthenticated);
+        }
         let exact_block = self
             .source
             .block(commit.position.height)
             .ok_or(ResolveError::InvalidLineage)?;
-        let exact_transaction =
+        validate_block_shape(&exact_block, commit.position.height)?;
+        let Some(exact_transaction) =
             exact_transaction(&exact_block, commit.position.tx_index, commit.position.txid)
-                .ok_or(ResolveError::InvalidLineage)?;
+        else {
+            return Ok(ClaimAuthentication::Unauthenticated);
+        };
         if !matches!(
             exact_transaction.operations.get(commit.operation_index as usize),
             Some(V2Operation::Commit { commitment }) if *commitment == commit.commitment
         ) {
-            return Err(ResolveError::InvalidLineage);
+            return Ok(ClaimAuthentication::Unauthenticated);
         }
         let lower = commit
             .position
@@ -637,12 +666,17 @@ where
             .saturating_sub(self.params.commit_ttl_blocks)
             .max(self.params.activation_height);
         let mut pending = BTreeMap::<[u8; 32], CommitRef>::new();
+        let mut previous_hash = None;
         for height in lower..=commit.position.height {
             let block = self
                 .source
                 .block(height)
                 .ok_or(ResolveError::InvalidLineage)?;
             validate_block_shape(&block, height)?;
+            if previous_hash.is_some_and(|hash| block.prev_block_hash != hash) {
+                return Err(ResolveError::InvalidLineage);
+            }
+            previous_hash = Some(block.block_hash);
             for transaction in &block.transactions {
                 for (operation_index, operation) in transaction.operations.iter().enumerate() {
                     let position = MessagePosition {
@@ -669,9 +703,9 @@ where
                             }
                             if target {
                                 return if candidate == commit && accepted {
-                                    Ok(())
+                                    Ok(ClaimAuthentication::Authenticated(()))
                                 } else {
-                                    Err(ResolveError::InvalidOperation)
+                                    Ok(ClaimAuthentication::Unauthenticated)
                                 };
                             }
                         }
@@ -684,7 +718,7 @@ where
                         }
                         _ => {
                             if target {
-                                return Err(ResolveError::InvalidLineage);
+                                return Ok(ClaimAuthentication::Unauthenticated);
                             }
                         }
                     }
@@ -698,7 +732,7 @@ where
                     .is_some_and(|expiry| expiry > height)
             });
         }
-        Err(ResolveError::InvalidLineage)
+        Ok(ClaimAuthentication::Unauthenticated)
     }
 
     fn state_operation_is_accepted(
@@ -726,8 +760,8 @@ where
             commitment,
             nullifier,
         ))? {
-            ReferenceAuthentication::Accepted(_) => Ok(true),
-            ReferenceAuthentication::Unauthenticated => Ok(false),
+            ClaimAuthentication::Authenticated(_) => Ok(true),
+            ClaimAuthentication::Unauthenticated => Ok(false),
         }
     }
 
@@ -763,6 +797,7 @@ where
                 .source
                 .block(height)
                 .ok_or(ResolveError::InvalidLineage)?;
+            validate_block_shape(&block, height)?;
             for transaction in &block.transactions {
                 for operation in &transaction.operations {
                     if operation.name_id() != Some(name_id)
@@ -806,13 +841,24 @@ where
         else {
             return Err(ResolveError::InvalidOperation);
         };
+        let current_operation_index = operation_index(transaction, operation)?;
+        if !state_ref_precedes(
+            *predecessor_ref,
+            MessagePosition {
+                height: block.height,
+                tx_index: transaction.tx_index,
+                operation_index: current_operation_index,
+            },
+        ) {
+            return Err(ResolveError::InvalidOperation);
+        }
         // A predecessor claim that does not authenticate to an accepted Names
         // producer makes this operation unaccepted, exactly as replay treats
         // it; it never poisons resolution of the name itself. Structural
         // source/history failures propagate and remain fatal.
         let predecessor = match self.authenticate_accepted_state_ref(*predecessor_ref)? {
-            ReferenceAuthentication::Accepted(predecessor) => predecessor,
-            ReferenceAuthentication::Unauthenticated => return Err(ResolveError::InvalidOperation),
+            ClaimAuthentication::Authenticated(predecessor) => predecessor,
+            ClaimAuthentication::Unauthenticated => return Err(ResolveError::InvalidOperation),
         };
         if predecessor.state_ref != *predecessor_ref || predecessor.abandoned_height.is_some() {
             return Err(ResolveError::InvalidOperation);
@@ -834,7 +880,7 @@ where
         let state_ref = StateRef::new(
             transaction.position(block.height),
             action_index,
-            operation_index(transaction, operation)?,
+            current_operation_index,
             *state_commitment,
             *state_nullifier,
         );
@@ -872,6 +918,14 @@ fn exact_transaction(
         .transactions
         .iter()
         .find(|transaction| transaction.tx_index == tx_index && transaction.txid == txid)
+}
+
+fn state_ref_precedes(reference: StateRef, consumer: MessagePosition) -> bool {
+    MessagePosition {
+        height: reference.producer_height,
+        tx_index: reference.producer_tx_index,
+        operation_index: reference.producer_operation_index,
+    } < consumer
 }
 
 fn validate_block_shape(block: &CanonicalBlock, expected_height: u32) -> Result<(), ResolveError> {

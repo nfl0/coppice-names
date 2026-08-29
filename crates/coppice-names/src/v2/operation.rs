@@ -282,9 +282,7 @@ impl CanonicalTransaction {
 
     /// Checks that carrier operations do not reorder canonical action indices.
     pub fn has_canonical_operation_order(&self) -> bool {
-        self.operations
-            .windows(2)
-            .all(|pair| operation_order_key(&pair[0]) <= operation_order_key(&pair[1]))
+        operations_have_canonical_order(&self.operations)
     }
 
     /// Returns true when `operation_index` is the first carrier message in
@@ -306,6 +304,12 @@ impl CanonicalTransaction {
             .iter()
             .any(|operation| operation.action_index() == Some(action_index))
     }
+}
+
+pub(super) fn operations_have_canonical_order(operations: &[V2Operation]) -> bool {
+    operations
+        .windows(2)
+        .all(|pair| operation_order_key(&pair[0]) <= operation_order_key(&pair[1]))
 }
 
 fn operation_order_key(operation: &V2Operation) -> (u8, u32) {

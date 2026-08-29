@@ -1666,6 +1666,358 @@ mod tests {
     }
 
     #[test]
+    fn forged_commit_references_are_skipped_without_poisoning_resolution() {
+        let params = V2Parameters::testing();
+        let mut machine = V2StateMachine::new(params).unwrap();
+        let mut source = BTreeMap::new();
+        let alice = intent(48, "commit-claim-skip", b"alice-record");
+        let (_, current, _) = register(&mut machine, &mut source, &alice, 51);
+        let name_id = alice.name_id().unwrap();
+
+        let bob = intent(49, "commit-claim-skip", b"bob-record");
+        let accepted_commit = commit(&mut machine, &mut source, &bob, 0, 52);
+        let duplicate_height = machine.tip().height + 1;
+        let duplicate_position = ProducerPosition::new(duplicate_height, 0, [53; 32]);
+        let duplicate = append(
+            &mut machine,
+            &mut source,
+            vec![transaction(
+                0,
+                53,
+                Vec::new(),
+                vec![V2Operation::Commit {
+                    commitment: accepted_commit.commitment,
+                }],
+            )],
+        )
+        .unwrap();
+        assert_rejected(&duplicate, ApplyError::DuplicateCommitment);
+        let rejected_duplicate = CommitRef::new(duplicate_position, 0, accepted_commit.commitment);
+
+        let reveal_height =
+            schedule::next_anchor_height(name_id, machine.tip().height + 1, params).unwrap();
+        advance_to(&mut machine, &mut source, reveal_height - 1);
+        let replacement_state = StateData {
+            name_id,
+            owner_pk: bob.owner_pk,
+            sequence: 0,
+            record: bob.record.clone(),
+            lease_expiry: params.lease_expiry(reveal_height).unwrap(),
+            status: StateStatus::Active,
+            terminal_height: 0,
+        };
+
+        let mut beyond_tip = accepted_commit;
+        beyond_tip.position.height = reveal_height + 50;
+        let mut wrong_txid = accepted_commit;
+        wrong_txid.position.txid = [0xfe; 32];
+        let mut wrong_tx_index = accepted_commit;
+        wrong_tx_index.position.tx_index += 1;
+        let mut wrong_operation_index = accepted_commit;
+        wrong_operation_index.operation_index += 1;
+        let forged = [
+            beyond_tip,
+            wrong_txid,
+            wrong_tx_index,
+            wrong_operation_index,
+            rejected_duplicate,
+        ];
+        let transactions = forged
+            .into_iter()
+            .enumerate()
+            .map(|(index, commit)| {
+                let action_commitment = field(4_800 + index as u64);
+                transaction(
+                    index as u32,
+                    54 + index as u8,
+                    vec![IronwoodActionRef {
+                        action_index: 0,
+                        nullifier: field(4_900 + index as u64),
+                        commitment: action_commitment,
+                    }],
+                    vec![reveal_operation(
+                        &bob,
+                        commit,
+                        replacement_state.clone(),
+                        action_commitment,
+                        None,
+                    )],
+                )
+            })
+            .collect();
+        let hostile_block = CanonicalBlock {
+            height: reveal_height,
+            block_hash: [0x63; 32],
+            prev_block_hash: machine.tip().block_hash,
+            transactions,
+        };
+        let applied = machine
+            .apply_block(&hostile_block, &AcceptingProofs)
+            .unwrap();
+        assert!(applied.operations.iter().all(|operation| matches!(
+            operation.result,
+            AppliedOperationResult::Rejected(
+                ApplyError::CommitmentMismatch | ApplyError::UnknownCommitment
+            )
+        )));
+        source.insert(hostile_block.height, hostile_block);
+
+        assert_eq!(machine.head(name_id).unwrap().state_ref, current.state_ref);
+        assert_fresh_matches_replay(&machine, &source, "commit-claim-skip");
+
+        // Resolution continues through a later valid operation on the real
+        // accepted head; none of the forged references poison the name.
+        let successor = state_after(
+            &current,
+            b"alice-updated",
+            1,
+            current.data.lease_expiry,
+            StateStatus::Active,
+            0,
+        );
+        let successor_commitment = field(4_950);
+        append(
+            &mut machine,
+            &mut source,
+            vec![transaction(
+                0,
+                59,
+                vec![IronwoodActionRef {
+                    action_index: 0,
+                    nullifier: current.state_ref.nullifier,
+                    commitment: successor_commitment,
+                }],
+                vec![transition_operation(
+                    OperationKind::Update,
+                    current.state_ref,
+                    successor,
+                    successor_commitment,
+                    0,
+                )],
+            )],
+        )
+        .unwrap();
+        assert_fresh_matches_replay(&machine, &source, "commit-claim-skip");
+        assert_eq!(machine.head(name_id).unwrap().data.sequence, 1);
+    }
+
+    #[test]
+    fn structural_commit_history_failures_remain_fatal() {
+        let params = V2Parameters {
+            activation_height: 1,
+            epoch_size: 2,
+            commit_ttl_blocks: 8,
+            refresh_deadline_blocks: 3,
+            lease_duration_blocks: 12,
+            grace_period_blocks: 3,
+            reuse_delay_blocks: 4,
+            max_record_bytes: super::super::state::MAX_RECORD_BYTES,
+            minimum_bond_zatoshis: 1,
+        };
+        let mut machine = V2StateMachine::new(params).unwrap();
+        let mut source = BTreeMap::new();
+        advance_to(&mut machine, &mut source, 9);
+        let alice = intent(50, "commit-source", b"record");
+        let (reveal_height, _, accepted_commit) = register(&mut machine, &mut source, &alice, 60);
+        let fresh_lower = reveal_height - params.max_anchor_age().unwrap();
+        let commit_lower = accepted_commit
+            .position
+            .height
+            .saturating_sub(params.commit_ttl_blocks)
+            .max(params.activation_height);
+        let corrupted_height = commit_lower + 1;
+        assert!(corrupted_height < fresh_lower);
+        assert!(corrupted_height < accepted_commit.position.height);
+        assert_fresh_matches_replay(&machine, &source, "commit-source");
+
+        // A missing block genuinely required to reconstruct the accepted
+        // COMMIT's pending window is fatal, even though it lies below the
+        // ordinary fresh-name sweep.
+        let original = source.remove(&corrupted_height).unwrap();
+        assert_eq!(
+            FreshResolver::new(params)
+                .unwrap()
+                .resolve("commit-source", &source, &AcceptingProofs),
+            Err(ResolveError::InvalidLineage)
+        );
+        source.insert(corrupted_height, original.clone());
+
+        // Malformed canonical transaction shape in that same required range
+        // is also source corruption, not an unauthenticated COMMIT claim.
+        let malformed = source.get_mut(&corrupted_height).unwrap();
+        malformed.transactions = vec![
+            transaction(0, 61, Vec::new(), Vec::new()),
+            transaction(0, 62, Vec::new(), Vec::new()),
+        ];
+        assert_eq!(
+            FreshResolver::new(params)
+                .unwrap()
+                .resolve("commit-source", &source, &AcceptingProofs),
+            Err(ResolveError::InvalidLineage)
+        );
+        source.insert(corrupted_height, original);
+
+        // Internal linkage across the contiguous authentication range is
+        // equally structural and remains fatal.
+        source
+            .get_mut(&(corrupted_height + 1))
+            .unwrap()
+            .prev_block_hash = [0xfd; 32];
+        assert_eq!(
+            FreshResolver::new(params)
+                .unwrap()
+                .resolve("commit-source", &source, &AcceptingProofs),
+            Err(ResolveError::InvalidLineage)
+        );
+    }
+
+    #[test]
+    fn reveal_action_claim_failures_are_nonfatal() {
+        let params = V2Parameters::testing();
+        let mut machine = V2StateMachine::new(params).unwrap();
+        let mut source = BTreeMap::new();
+        let alice = intent(51, "reveal-action-claim", b"record");
+        let commit = commit(&mut machine, &mut source, &alice, 0, 63);
+        let name_id = alice.name_id().unwrap();
+        let reveal_height =
+            schedule::next_anchor_height(name_id, machine.tip().height + 1, params).unwrap();
+        advance_to(&mut machine, &mut source, reveal_height - 1);
+        let state = StateData {
+            name_id,
+            owner_pk: alice.owner_pk,
+            sequence: 0,
+            record: alice.record.clone(),
+            lease_expiry: params.lease_expiry(reveal_height).unwrap(),
+            status: StateStatus::Active,
+            terminal_height: 0,
+        };
+        let declared_commitment = field(5_001);
+        let malformed_reveal = append(
+            &mut machine,
+            &mut source,
+            vec![transaction(
+                0,
+                64,
+                vec![IronwoodActionRef {
+                    action_index: 0,
+                    nullifier: field(5_002),
+                    commitment: field(5_003),
+                }],
+                vec![reveal_operation(
+                    &alice,
+                    commit,
+                    state,
+                    declared_commitment,
+                    None,
+                )],
+            )],
+        )
+        .unwrap();
+        assert_rejected(&malformed_reveal, ApplyError::ActionCommitmentMismatch);
+        assert_fresh_matches_replay(&machine, &source, "reveal-action-claim");
+    }
+
+    #[test]
+    fn future_predecessor_claim_cannot_bootstrap_bounded_replay() {
+        let params = V2Parameters::testing();
+        let mut machine = V2StateMachine::new(params).unwrap();
+        let mut source = BTreeMap::new();
+        let alice = intent(52, "future-predecessor", b"record-0");
+        let (reveal_height, current, _) = register(&mut machine, &mut source, &alice, 65);
+        let name_id = alice.name_id().unwrap();
+
+        // Put a proof-shaped hostile RENEW beyond the fresh window of the real
+        // anchor. Its claimed predecessor is an UPDATE that will not be
+        // produced until the following block.
+        let hostile_height = schedule::next_anchor_height(
+            name_id,
+            reveal_height + params.max_anchor_age().unwrap() + 1,
+            params,
+        )
+        .unwrap();
+        assert!(hostile_height < current.data.lease_expiry);
+        advance_to(&mut machine, &mut source, hostile_height - 1);
+        let future_height = hostile_height + 1;
+        let future_commitment = field(5_101);
+        let future_ref = StateRef::new(
+            ProducerPosition::new(future_height, 0, [67; 32]),
+            0,
+            0,
+            future_commitment,
+            future_commitment,
+        );
+        let future_state = state_after(
+            &current,
+            b"record-1",
+            1,
+            current.data.lease_expiry,
+            StateStatus::Active,
+            0,
+        );
+        let hostile_state = StateData {
+            name_id,
+            owner_pk: current.data.owner_pk,
+            sequence: 2,
+            record: future_state.record.clone(),
+            lease_expiry: params.lease_expiry(hostile_height).unwrap(),
+            status: StateStatus::Active,
+            terminal_height: 0,
+        };
+        let hostile_commitment = field(5_102);
+        let hostile_block = CanonicalBlock {
+            height: hostile_height,
+            block_hash: [0x64; 32],
+            prev_block_hash: machine.tip().block_hash,
+            transactions: vec![transaction(
+                0,
+                66,
+                vec![IronwoodActionRef {
+                    action_index: 0,
+                    nullifier: future_ref.nullifier,
+                    commitment: hostile_commitment,
+                }],
+                vec![transition_operation(
+                    OperationKind::Renew,
+                    future_ref,
+                    hostile_state,
+                    hostile_commitment,
+                    0,
+                )],
+            )],
+        };
+        let applied = machine
+            .apply_block(&hostile_block, &AcceptingProofs)
+            .unwrap();
+        assert_rejected(&applied, ApplyError::StalePredecessor);
+        source.insert(hostile_block.height, hostile_block);
+
+        append(
+            &mut machine,
+            &mut source,
+            vec![transaction(
+                0,
+                67,
+                vec![IronwoodActionRef {
+                    action_index: 0,
+                    nullifier: current.state_ref.nullifier,
+                    commitment: future_commitment,
+                }],
+                vec![transition_operation(
+                    OperationKind::Update,
+                    current.state_ref,
+                    future_state,
+                    future_commitment,
+                    0,
+                )],
+            )],
+        )
+        .unwrap();
+        assert_eq!(machine.tip().height, future_height);
+        assert_fresh_matches_replay(&machine, &source, "future-predecessor");
+        assert_eq!(machine.head(name_id).unwrap().data.sequence, 1);
+    }
+
+    #[test]
     fn last_grace_spend_cannot_extend_reset_claimability() {
         let params = V2Parameters::testing();
         let mut machine = V2StateMachine::new(params).unwrap();

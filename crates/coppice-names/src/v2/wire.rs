@@ -1,6 +1,6 @@
 //! Canonical experimental Names v2 application-envelope encoding.
 
-use super::operation::V2Operation;
+use super::operation::{V2Operation, operations_have_canonical_order};
 
 const MAGIC: &[u8; 4] = b"CNV2";
 const WIRE_VERSION: u8 = 1;
@@ -37,6 +37,9 @@ pub fn encode_operation(operation: &V2Operation) -> Result<Vec<u8>, WireError> {
 
 /// Encodes the canonically ordered v2 messages carried by one transaction.
 pub fn encode_operations(operations: &[V2Operation]) -> Result<Vec<u8>, WireError> {
+    if !operations_have_canonical_order(operations) {
+        return Err(WireError::InvalidEncoding);
+    }
     let encoded = postcard::to_allocvec(operations).map_err(|_| WireError::InvalidEncoding)?;
     let mut bytes = Vec::with_capacity(MAGIC.len() + 1 + encoded.len());
     bytes.extend_from_slice(MAGIC);
@@ -127,6 +130,43 @@ mod tests {
         let mut wrong = bytes;
         wrong[3] = b'1';
         assert_eq!(decode_operation(&wrong), Err(WireError::WrongVersion));
+    }
+
+    #[test]
+    fn noncanonical_operation_order_is_rejected_at_the_wire_boundary() {
+        let state = StateData {
+            name_id: [1; 32],
+            owner_pk: [2; 32],
+            sequence: 1,
+            record: Vec::new(),
+            lease_expiry: 10,
+            status: StateStatus::Active,
+            terminal_height: 0,
+        };
+        let predecessor =
+            StateRef::new(ProducerPosition::new(1, 0, [3; 32]), 0, 0, [4; 32], [5; 32]);
+        let update = V2Operation::Update {
+            predecessor,
+            state,
+            state_commitment: [6; 32],
+            state_nullifier: [7; 32],
+            action_index: 1,
+            proof: Vec::new(),
+        };
+        let commit = V2Operation::Commit {
+            commitment: [8; 32],
+        };
+        let noncanonical = [update, commit];
+        assert_eq!(
+            encode_operations(&noncanonical),
+            Err(WireError::InvalidEncoding)
+        );
+
+        // Model hostile bytes without going through the canonical encoder.
+        let mut bytes = Vec::from(MAGIC.as_slice());
+        bytes.push(WIRE_VERSION);
+        bytes.extend(postcard::to_allocvec(&noncanonical).unwrap());
+        assert_eq!(decode_operations(&bytes), Err(WireError::InvalidEncoding));
     }
 
     #[test]

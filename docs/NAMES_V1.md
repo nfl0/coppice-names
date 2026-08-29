@@ -22,8 +22,8 @@ reset eligibility, proof semantics, and resolution. `orchard-coppice`
 the state-note binding circuits and the designated Ironwood action pairing.
 
 Registration is always two operations: `COMMIT` then `REVEAL`. There is no
-`REGISTER` and no `TRANSFER` in v1. Transfer is planned for v3; see
-[§13](#13-roadmap-planned-v3-transfer-and-marketplace).
+`REGISTER` and no `TRANSFER` in v1. Transfer is planned for v2; see
+[§13](#13-roadmap-planned-v2-transfer-and-marketplace).
 
 Physical invariant: the designated Names spend and the designated successor
 state output occupy the same Ironwood action, whose nullifier is the Names
@@ -294,15 +294,15 @@ release records. Qualification demonstrates the production construction path
 end to end on the pinned stack; it is local evidence, not an audit or a
 deployment guarantee.
 
-## 13. Roadmap: planned v3 transfer and marketplace
+## 13. Roadmap: planned v2 transfer and marketplace
 
 This section is a roadmap note, not a specification: nothing here is
-implemented, frozen, or qualified, and no v3 wire layout, circuit public
+implemented, frozen, or qualified, and no v2 wire layout, circuit public
 input, marketplace offer format, payment mechanic, or transfer cryptography
 is fixed here.
 
 Names v1 deliberately ships without a `TRANSFER` operation. **TRANSFER is
-planned for v3**, together with a **Names marketplace** built around transfer
+planned for v2**, together with a **Names marketplace** built around transfer
 with atomic Zcash settlement: offers and payment are expected to settle
 through ordinary Zcash transactions/PCZTs rather than any separate consensus
 or fork-choice system. Zcash remains the sole consensus and fork-choice
@@ -310,18 +310,18 @@ authority.
 
 The intended compatibility model is continuation of the existing per-name
 state-note lineage. An existing canonical v1 `NameState` remains the
-registered name, and a future v3 operation should be able to consume that
+registered name, and a future v2 operation should be able to consume that
 existing canonical state head directly. There is no global state migration,
 no migration transaction merely for upgrading, no `RELEASE` + `COMMIT` +
 `REVEAL` cycle, and no requirement for existing owners to re-register their
 names. Conceptually the desired evolution is:
 
 ```text
-... -> UPDATE_v1 -> RENEW_v1 -> TRANSFER_v3 -> UPDATE_v3 -> ...
+... -> UPDATE_v1 -> RENEW_v1 -> TRANSFER_v2 -> UPDATE_v2 -> ...
 ```
 
 The name identity and lineage survive protocol-version upgrades: protocol
 version belongs to the operation and proof advancing the lineage, not to
-whether the name still exists. A v3 transfer is expected to change ownership
+whether the name still exists. A v2 transfer is expected to change ownership
 while preserving the same `name_id` and continuing the sequence and state
 lineage.

@@ -18,7 +18,7 @@ Reset artifact status:
   `dff01501326305709dc1eda3241a92458ce17a3461b6dd254c7f8f841a6932b1`
 - state-note transition VK identity: pending v1 freeze
 - state-note genesis VK identity: pending v1 freeze
-- Orchard source pin: pending the post-reset Orchard commit
+- Orchard source pin: `5588c4e42d7158233a50471c04340ea58615bb0e`
 
 Proof-size and performance optimization remain separate post-qualification
 work. Final wire/VK regeneration and live qualification must be rerun if any

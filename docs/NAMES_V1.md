@@ -5,9 +5,9 @@ production path from the actual code. Normative bytes are frozen in
 [`../test-vectors/names_v1_wire.json`](../test-vectors/names_v1_wire.json) and
 asserted by `crates/coppice-names/tests/names_v1_wire_vectors.rs`.
 
-Status: this is the post-qualification Names v1 reset. Final v1 wire/VK
-artifact regeneration and live qualification are pending; this is not a
-public deployment and has no independent security audit.
+Status: this is the post-qualification Names v1 reset. The deterministic CNV1
+vectors are regenerated; final VK freeze and live qualification are pending.
+This is not a public deployment and has no independent security audit.
 
 ## 1. Authority and layering
 

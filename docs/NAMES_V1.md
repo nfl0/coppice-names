@@ -58,9 +58,10 @@ per frame, 16,093-byte maximum payload.
   vector). `Some(exact prior terminal head)` is the explicit replacement
   path. Whether a `None` reset is canonically eligible is a state-machine and
   canonical-replay semantic check; constructors and wallets never decide it.
-- State digest: `CoppiceN1State` domain over canonical state fields plus the
-  note commitment; the genesis proof commits it, and transition proofs commit
-  both predecessor and successor digests.
+- State digest: the `N1STATE` Poseidon domain field
+  (`0x004e_3153_5441_5445`) over canonical state fields plus the note
+  commitment; the genesis proof commits it, and transition proofs commit both
+  predecessor and successor digests.
 - COMMIT commitment: `CoppiceN1Com` domain over version, name id, owner,
   record digest, record length, and fresh secret, via
   `RegistrationIntent::commitment()`. The formula lives only in

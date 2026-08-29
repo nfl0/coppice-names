@@ -1,16 +1,15 @@
 # Coppice Names production reference
 
-This document describes the historical, pre-Zakura-dependency Names v1
-production path from the actual code. Normative bytes are frozen in
+This document describes the current Zakura-backed Names v1 production path
+from the actual code. Normative bytes are frozen in
 [`../test-vectors/names_v1_wire.json`](../test-vectors/names_v1_wire.json) and
 asserted by `crates/coppice-names/tests/names_v1_wire_vectors.rs`.
 
-Status: the pre-migration CNV1 vectors and state-note VK identities are
-historical release evidence, and the complete lifecycle passed live local-
-regtest qualification. The current source now uses the Zakura cryptography
-family and the `zakura-port` Orchard extension; final VK/wire regeneration and
-live qualification for that source are still pending. This is not a public
-deployment and has no independent security audit.
+Status: the current Zakura-backed source has regenerated and frozen the CNV1
+vectors and state-note VK identities, and the complete lifecycle passed live
+local-regtest qualification. The historical `names-v1.0.0` tag remains
+unchanged; this source is a forward release candidate, not a public deployment
+and not an independent security audit.
 
 ## 1. Authority and layering
 
@@ -84,10 +83,11 @@ per frame, 16,093-byte maximum payload.
   deterministically and enforces only history/applicability (claimability,
   reset, abandonment).
 
-The reset invalidates the former CNV2 vector identity. The regenerated CNV1
-vector-set identity (SHA-256 over length-prefixed canonical envelopes in family
-order) is
+The reset invalidates the former CNV2 vector identity. The final CNV1 vector-set
+identity (SHA-256 over length-prefixed canonical envelopes in family order) is
 `dff01501326305709dc1eda3241a92458ce17a3461b6dd254c7f8f841a6932b1`.
+The checked-in vector file SHA-256 is
+`0aeb8795386c47f235375a648b0a3c512e75c8f3d9a5b40ae8c224d0807ef40a`.
 
 ## 3. Proof boundaries and circuit freeze
 
@@ -131,11 +131,10 @@ runtime from `name_id`, the operation height, and the protocol parameters.
 
 The circuits live in the `state-note` feature of the `zakura-port` branch of
 `orchard-coppice` and are derived deterministically from the pinned params
-(`K = 11`) and current Zakura Halo2 packages. The identities below are the
-historical pre-migration values; they must be regenerated before release. The
-historical transition VK identity is
+(`K = 11`) and current Zakura Halo2 packages. The regenerated and frozen
+transition VK identity is
 `5ed1a1385f15e0e13e284cf1a7c319449d42b4902abc57b5ebefb60d04995cc1`; the
-historical genesis VK identity is
+regenerated and frozen genesis VK identity is
 `81aa1ade09b0ca86eb80c021a66e2cf629875ecab258a99a4a2ecd0df2c7f5ae`.
 Proving keys are derived at runtime from the same pinned derivation; no
 trusted parameter distribution exists or is needed. The semantic Names

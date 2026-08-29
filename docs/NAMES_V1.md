@@ -5,9 +5,10 @@ production path from the actual code. Normative bytes are frozen in
 [`../test-vectors/names_v1_wire.json`](../test-vectors/names_v1_wire.json) and
 asserted by `crates/coppice-names/tests/names_v1_wire_vectors.rs`.
 
-Status: this is the post-qualification Names v1 reset. The deterministic CNV1
-vectors are regenerated; final VK freeze and live qualification are pending.
-This is not a public deployment and has no independent security audit.
+Status: this is the post-qualification Names v1 release baseline. The CNV1
+vectors and state-note VK identities are frozen, and the complete lifecycle
+has passed live local-regtest qualification. This is not a public deployment
+and has no independent security audit.
 
 ## 1. Authority and layering
 
@@ -128,10 +129,12 @@ runtime from `name_id`, the operation height, and the protocol parameters.
 
 The circuits live in `orchard-coppice` under the `state-note` feature and are
 derived deterministically from the pinned params (`K = 11`) and pinned Halo2
-`0.3.2`. The v1 reset requires fresh transition/genesis VK identity
-regeneration; no former CNV2 identity is normative until that freeze is
-recorded. Proving keys are derived at runtime from the same pinned derivation;
-no trusted parameter distribution exists or is needed. The semantic Names
+`0.3.2`. The frozen transition VK identity is
+`5ed1a1385f15e0e13e284cf1a7c319449d42b4902abc57b5ebefb60d04995cc1`; the
+frozen genesis VK identity is
+`81aa1ade09b0ca86eb80c021a66e2cf629875ecab258a99a4a2ecd0df2c7f5ae`.
+Proving keys are derived at runtime from the same pinned derivation; no
+trusted parameter distribution exists or is needed. The semantic Names
 registration preimage version is `1`; CNV1 `0x01` rejects the superseded CNV2
 `0x02` envelopes.
 
@@ -251,10 +254,10 @@ coverage including the zero-funding failure case.
 
 ## 9. Performance notes
 
-The previous corrected-v2 proof-size measurements are not v1 release evidence;
-proof-size and performance measurements will be regenerated after the v1 VK
-and wire freeze. Per-operation proving and Ironwood consensus proof generation
-remain post-reset qualification work.
+The live release qualification recorded the current unoptimized proving and
+Ironwood consensus costs. Proof-size and performance optimization remains a
+separate post-release campaign, including evaluation of the Zakura Common
+cryptography stack; it is not part of the v1 release gate.
 FreshResolver cost is bounded by the discovery window: only the name's
 visible operations in the bounded anchor tail are replayed, and only
 scheduled anchor blocks are probed for reset eligibility; no global index or

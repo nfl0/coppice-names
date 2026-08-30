@@ -9,6 +9,7 @@ use super::{
     state::{NameId, NameState, StateData, StateError, StateRef, StateStatus},
     transition::{GenesisStatement, StatementError, TransitionStatement, V1StateProofVerifier},
 };
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Errors from canonical v1 block application.
@@ -65,6 +66,23 @@ pub enum ApplyError {
     MissingPredecessor,
     /// A height arithmetic operation overflowed.
     ArithmeticOverflow,
+}
+
+/// Errors while decoding the application-owned machine checkpoint.
+///
+/// The checkpoint is an acceleration artifact, not a source of protocol
+/// authority. Decoding therefore rebuilds all derived indexes and validates
+/// every persisted state/reference before the machine can be used.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MachineSnapshotError {
+    /// The payload is not a valid postcard encoding of the v1 checkpoint.
+    Encoding,
+    /// Persisted protocol parameters fail the v1 parameter checks.
+    InvalidParameters,
+    /// A persisted pending COMMIT or state head is internally inconsistent.
+    InvalidState,
+    /// A persisted producer position lies outside the machine's canonical tip.
+    InvalidReference,
 }
 
 impl From<StateError> for ApplyError {
@@ -137,6 +155,14 @@ pub struct V1StateMachine {
     current_by_nullifier: BTreeMap<[u8; 32], BTreeSet<NameId>>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct StoredV1StateMachine {
+    params: V1Parameters,
+    tip: ChainTip,
+    pending: BTreeMap<[u8; 32], CommitRef>,
+    heads: BTreeMap<NameId, NameState>,
+}
+
 impl V1StateMachine {
     /// Creates an empty v1 state machine at the block before activation.
     ///
@@ -160,11 +186,30 @@ impl V1StateMachine {
         parent_block_hash: [u8; 32],
     ) -> Result<Self, super::lease::LeaseParameterError> {
         params.validate()?;
-        Ok(Self {
-            tip: ChainTip {
+        Self::from_pre_activation_tip(
+            params,
+            ChainTip {
                 height: params.activation_height - 1,
                 block_hash: parent_block_hash,
             },
+        )
+    }
+
+    /// Creates an empty machine at an arbitrary canonical tip before Names
+    /// activation. This is used when an application is installed into a Core
+    /// runtime that has already advanced through pre-activation blocks.
+    pub fn from_pre_activation_tip(
+        params: V1Parameters,
+        tip: ChainTip,
+    ) -> Result<Self, super::lease::LeaseParameterError> {
+        params.validate()?;
+        if tip.height >= params.activation_height {
+            // The constructor intentionally has no way to invent active Names
+            // state. Active checkpoints must go through the snapshot loader.
+            return Err(super::lease::LeaseParameterError::InitialTipAfterActivation);
+        }
+        Ok(Self {
+            tip,
             params,
             pending: BTreeMap::new(),
             heads: BTreeMap::new(),
@@ -190,6 +235,107 @@ impl V1StateMachine {
     /// Returns the pending COMMIT reference, if present.
     pub fn pending(&self, commitment: [u8; 32]) -> Option<CommitRef> {
         self.pending.get(&commitment).copied()
+    }
+
+    /// Advances an empty pre-activation machine by one canonical position.
+    /// No Core effects or application payloads are interpreted before the
+    /// Names activation height.
+    pub fn advance_pre_activation(&mut self, tip: ChainTip) -> Result<(), ApplyError> {
+        if self.tip.height.checked_add(1) != Some(tip.height) {
+            return Err(ApplyError::NonSequentialHeight);
+        }
+        if tip.height >= self.params.activation_height {
+            return Err(ApplyError::NonSequentialHeight);
+        }
+        self.tip = tip;
+        Ok(())
+    }
+
+    /// Serializes only application-owned state needed for a checkpoint. The
+    /// nullifier index is deliberately omitted and rebuilt during restore.
+    pub(crate) fn snapshot_bytes(&self) -> Result<Vec<u8>, MachineSnapshotError> {
+        postcard::to_allocvec(&StoredV1StateMachine {
+            params: self.params,
+            tip: self.tip,
+            pending: self.pending.clone(),
+            heads: self.heads.clone(),
+        })
+        .map_err(|_| MachineSnapshotError::Encoding)
+    }
+
+    /// Restores and validates an application-owned checkpoint, rebuilding all
+    /// derived indexes instead of trusting serialized caches.
+    pub(crate) fn from_snapshot_bytes(bytes: &[u8]) -> Result<Self, MachineSnapshotError> {
+        let stored: StoredV1StateMachine =
+            postcard::from_bytes(bytes).map_err(|_| MachineSnapshotError::Encoding)?;
+        stored
+            .params
+            .validate()
+            .map_err(|_| MachineSnapshotError::InvalidParameters)?;
+        let activation_base = stored
+            .params
+            .activation_height
+            .checked_sub(1)
+            .ok_or(MachineSnapshotError::InvalidParameters)?;
+        // A newly installed application may be checkpointed while still
+        // below its own activation height if Core's runtime activated earlier.
+        // Such a checkpoint is valid only while the application-owned state is
+        // still empty; accepted pending commits or heads necessarily occur at
+        // or after the Names activation boundary.
+        if stored.tip.height < activation_base
+            && (!stored.pending.is_empty() || !stored.heads.is_empty())
+        {
+            return Err(MachineSnapshotError::InvalidReference);
+        }
+
+        for (commitment, commit) in &stored.pending {
+            if *commitment != commit.commitment
+                || commit.position.height < stored.params.activation_height
+                || commit.position.height > stored.tip.height
+            {
+                return Err(MachineSnapshotError::InvalidReference);
+            }
+        }
+
+        let mut current_by_nullifier = BTreeMap::<[u8; 32], BTreeSet<NameId>>::new();
+        for (name_id, state) in &stored.heads {
+            if *name_id != state.data.name_id
+                || stored.params.validate_state(&state.data).is_err()
+                || state.state_ref.commitment != state.commitment
+                || state.state_ref.producer_height < stored.params.activation_height
+                || state.state_ref.producer_height > stored.tip.height
+                || state.state_digest != super::state::state_digest(&state.data, state.commitment)
+            {
+                return Err(MachineSnapshotError::InvalidState);
+            }
+            super::state::canonical_field(state.commitment)
+                .map_err(|_| MachineSnapshotError::InvalidState)?;
+            super::state::canonical_field(state.state_ref.nullifier)
+                .map_err(|_| MachineSnapshotError::InvalidState)?;
+            if let Some(abandoned_height) = state.abandoned_height
+                && (abandoned_height < state.state_ref.producer_height
+                    || abandoned_height > stored.tip.height)
+            {
+                return Err(MachineSnapshotError::InvalidReference);
+            }
+            if state.data.status == StateStatus::Released && state.abandoned_height.is_some() {
+                return Err(MachineSnapshotError::InvalidState);
+            }
+            if state.data.status == StateStatus::Active && state.abandoned_height.is_none() {
+                current_by_nullifier
+                    .entry(state.state_ref.nullifier)
+                    .or_default()
+                    .insert(*name_id);
+            }
+        }
+
+        Ok(Self {
+            params: stored.params,
+            tip: stored.tip,
+            pending: stored.pending,
+            heads: stored.heads,
+            current_by_nullifier,
+        })
     }
 
     /// Applies a canonical block atomically after v1 proof and policy checks.

@@ -3000,3 +3000,46 @@ fn unrelated_names_commute_and_schedule_gap_is_formally_bounded() {
     }
     assert!(schedule::candidate_anchor_heights(alice.name_id().unwrap(), 100, params).len() <= 3);
 }
+
+#[test]
+fn snapshot_restore_enforces_configured_record_limit() {
+    let mut params = V1Parameters::testing();
+    params.max_record_bytes = 1;
+    let intent = intent(91, "snapshot-limit", b"too-long");
+    let name_id = intent.name_id().unwrap();
+    let commitment = field(9101);
+    let state = NameState::new(
+        StateData {
+            name_id,
+            owner_pk: intent.owner_pk,
+            sequence: 0,
+            record: intent.record,
+            lease_expiry: params.lease_expiry(1).unwrap(),
+            status: StateStatus::Active,
+            terminal_height: 0,
+        },
+        commitment,
+        StateRef::new(
+            ProducerPosition::new(1, 0, [91; 32]),
+            0,
+            0,
+            commitment,
+            field(9102),
+        ),
+    )
+    .unwrap();
+    let stored = StoredV1StateMachine {
+        params,
+        tip: ChainTip {
+            height: 1,
+            block_hash: [91; 32],
+        },
+        pending: BTreeMap::new(),
+        heads: BTreeMap::from([(name_id, state)]),
+    };
+    let bytes = postcard::to_allocvec(&stored).unwrap();
+    assert!(matches!(
+        V1StateMachine::from_snapshot_bytes(&bytes),
+        Err(MachineSnapshotError::InvalidState)
+    ));
+}

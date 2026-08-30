@@ -213,7 +213,7 @@ impl StateRef {
 }
 
 /// A state value together with its current authenticated note identity.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NameState {
     /// Canonical state values.
     pub data: StateData,

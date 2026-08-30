@@ -31,7 +31,9 @@ postcard = { version = "1", features = ["alloc"] }
 sha2 = "0.10"
 shardtree = "0.7"
 zcash_note_encryption = "0.4.2"
-zcash_address = { git = "https://github.com/zcash/librustzcash.git", rev = "6c07e5f3297febf469e5cc8d0b91321e0767cdd7" }
+# Keep the address parser on the same released package/type family used by
+# coppice-wallet and zcash-devtool. The Zakura forks do not alter this parser.
+zcash_address = "0.13.0"
 zcash_client_backend = { package = "zakura-client-backend", version = "=0.1.0-rc4" }
 zcash_keys = { package = "zakura-keys", version = "=1.0.0" }
 zcash_primitives = { package = "zakura-primitives", version = "=1.0.0", features = ["std"] }

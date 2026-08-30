@@ -17,9 +17,11 @@ pub fn names_application_id() -> ApplicationId {
         .expect("the Names application identity is nonempty")
 }
 
+pub mod application;
 pub mod lease;
 pub mod machine;
 pub mod operation;
+pub mod payment;
 pub mod registration;
 pub mod resolver;
 pub mod schedule;
@@ -27,14 +29,23 @@ pub mod state;
 pub mod transition;
 pub mod wire;
 
+pub use application::{
+    NAMES_APPLICATION_SNAPSHOT_FORMAT_VERSION, NAMES_APPLICATION_VERSION, NamesApplication,
+    NamesApplicationApplyError, NamesApplicationBlockOutput, NamesApplicationConfigError,
+    NamesApplicationRewindError, NamesApplicationSnapshotError,
+};
 pub use lease::{LeaseParameterError, Lifecycle, V1Parameters};
 pub use machine::{
     AppliedBlock, AppliedOperation, AppliedOperationKind, AppliedOperationResult, ApplyError,
-    ResolutionStatus, V1StateMachine,
+    MachineSnapshotError, ResolutionStatus, V1StateMachine,
 };
 pub use operation::{
     ActionViewError, CanonicalBlock, CanonicalTransaction, ChainTip, IronwoodActionRef,
     OperationKind, V1Operation,
+};
+pub use payment::{
+    PAYMENT_RECORD_HEADER_LEN, PAYMENT_RECORD_MAGIC, PAYMENT_RECORD_VERSION, PaymentNetwork,
+    PaymentRecord, PaymentRecordError,
 };
 pub use registration::{CommitRef, RegistrationError, RegistrationIntent};
 pub use resolver::{

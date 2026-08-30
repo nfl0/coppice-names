@@ -207,18 +207,47 @@ resolver/replay disagreement as a host error. `CanonicalBlock::
 from_application_context` is the adapter from generic Core transaction
 contexts; Core never interprets Names payload bytes.
 
+`NamesApplication<P>` is the thin `CoppiceApplication` adapter for hosting the
+same machine in `CoppiceRuntime`. It advances position-only through blocks
+before the Names activation height, converts active Core contexts through
+`CanonicalBlock::from_application_context`, and stages the existing machine
+atomically. The verifier is held behind `Arc` so Core's clone-before-apply
+boundary does not require a proof-system-specific `Clone` implementation.
+Wallet hosts construct it at the Core tip (or the authenticated activation
+parent), and use `bootstrap_canonical_chain_with_progress` for a complete
+directory bootstrap. No wallet funding, note selection, key storage, or
+proving policy is hidden in this adapter.
+Its `resolve_fresh` convenience method only delegates to the existing bounded
+`FreshResolver` against a host-supplied canonical source; it is not a directory
+index or a replacement for full replay.
+For persistence, `from_snapshot` checks local payload/envelope consistency;
+`from_snapshot_at_runtime` additionally takes the host's actual Core runtime
+activation height and enforces the common rewind boundary before composition.
+A checkpoint is never canonical evidence.
+
 ## 6. Persistence and caching model
 
-There is no v1-specific cache and no trusted snapshot. Canonical chain data
-remains authoritative; everything local is re-derivable. Startup and per-name
-lookups are bounded by the qualified FreshResolver discovery window; full
-state-machine state is reconstructed by replay from the activation height.
-The only persisted acceleration is the generic Coppice runtime
-snapshot/rewind machinery (independently validated Core/application layers,
-retention-horizon rewind, rebuild-from-activation beyond retention), which is
-owned by Core and the composed runtime and never trusts stale cached state.
-Restart behavior, reorg rewind, and beyond-retention rebuild are covered by
-the qualified runtime facilities and ordinary canonical replay.
+There is no v1-specific canonical cache or remote/trusted snapshot. Canonical
+chain data remains authoritative; everything local is re-derivable. Startup
+and per-name lookups are bounded by the qualified FreshResolver discovery
+window; full state-machine state is reconstructed by replay from the
+activation height. `NamesApplication` exposes an application-owned checkpoint
+payload and common `ApplicationSnapshot` metadata for local wallet persistence.
+The payload contains the current machine and deliberately omits its in-memory
+undo journal, so a restored checkpoint advertises only its current tip as a
+rewind boundary. If a reorg reaches before that boundary, the host rebuilds
+the Names application from the authenticated activation checkpoint; it never
+uses the checkpoint as proof of canonical applicability. Generic Core and
+application snapshots remain independently validated and persisted by the
+host.
+
+For wallet records that should resolve directly to a shielded Unified Address,
+`PaymentRecord` provides the optional `N1UA` profile. It fixes a network
+discriminant, canonical Unified Address encoding, and a known Sapling or
+Orchard receiver; transparent, wrong-network, non-canonical, malformed, and
+oversized records are rejected. The profile is application-level and does not
+make Core an address parser. Other bounded record formats remain valid Names
+application data.
 
 ## 7. Zallet integration boundary
 

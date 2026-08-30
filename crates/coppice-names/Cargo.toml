@@ -23,3 +23,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 postcard.workspace = true
 sha2 = "0.10"
+zcash_address.workspace = true
+
+[dev-dependencies]
+zcash_protocol.workspace = true

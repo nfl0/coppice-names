@@ -1,6 +1,7 @@
 //! Deterministic v1 lease and reclaimability rules.
 
 use super::{state::StateData, state::StateError, state::StateStatus};
+use serde::{Deserialize, Serialize};
 
 /// Errors from Names v1 protocol-parameter validation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -9,6 +10,8 @@ pub enum LeaseParameterError {
     ZeroEpochSize,
     /// The activation height is not representable as an active chain start.
     ZeroActivationHeight,
+    /// An empty machine was initialized at or after its activation height.
+    InitialTipAfterActivation,
     /// A commitment could expire before the next name-derived reveal slot.
     CommitTtlTooShort,
     /// A lease could expire before a name reaches its next scheduled anchor.
@@ -28,7 +31,7 @@ pub enum LeaseParameterError {
 ///
 /// These values are explicit protocol parameters and are intentionally kept
 /// separate from generic Coppice runtime configuration.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct V1Parameters {
     /// First height at which v1 operations may be accepted.
     pub activation_height: u32,

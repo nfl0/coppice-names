@@ -232,6 +232,13 @@ impl V1StateMachine {
         self.heads.get(&name_id)
     }
 
+    /// Iterates the latest derived head of every known name in canonical name
+    /// identifier order. This is a wallet-directory view over replayed local
+    /// state; it is not a global commitment or an additional authority.
+    pub fn heads(&self) -> impl Iterator<Item = (&NameId, &NameState)> {
+        self.heads.iter()
+    }
+
     /// Returns the pending COMMIT reference, if present.
     pub fn pending(&self, commitment: [u8; 32]) -> Option<CommitRef> {
         self.pending.get(&commitment).copied()

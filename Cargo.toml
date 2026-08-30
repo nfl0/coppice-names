@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/coppice-names"]
+members = ["crates/coppice-names", "crates/coppice-names-wallet"]
 
 [workspace.package]
 edition = "2024"
@@ -14,6 +14,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(zcash_unstable, values("nu
 [workspace.dependencies]
 coppice = { package = "coppice", git = "https://github.com/nfl0/coppice.git", rev = "059a8dd28caf18bb6ff769bf43681ab7cbe493a4" }
 coppice-names = { package = "coppice-names", path = "crates/coppice-names" }
+anyhow = "1"
 blake2b_simd = "1"
 halo2_gadgets = { package = "zakura-halo2-gadgets", version = "=1.0.0", default-features = false }
 halo2_proofs = { package = "zakura-halo2-proofs", version = "=1.0.0" }
@@ -22,6 +23,7 @@ incrementalmerkletree = { version = "0.8.2", features = ["legacy-api"] }
 orchard = { package = "zakura-orchard", version = "=1.0.0", features = ["std", "state-note"] }
 pasta_curves = { package = "zakura-pasta-curves", version = "=1.0.0" }
 rand_chacha = "0.10"
+rand = "0.10"
 rand_core = "0.10"
 sapling = { package = "zakura-sapling-crypto", version = "=1.0.0" }
 serde = { version = "1", features = ["derive"] }
@@ -37,6 +39,7 @@ zcash_client_backend = { package = "zakura-client-backend", version = "=0.1.0-rc
 zcash_keys = { package = "zakura-keys", version = "=1.0.0" }
 zcash_primitives = { package = "zakura-primitives", version = "=1.0.0", features = ["std"] }
 zcash_protocol = { version = "=0.10.5", features = ["std", "local-consensus"] }
+pczt = { package = "zakura-pczt", version = "=0.1.0-rc2", features = ["io-finalizer", "orchard", "prover", "signer", "spend-finalizer", "tx-extractor", "zcp-builder"] }
 zip321 = "=0.9.0"
 zip32 = "0.2.1"
 

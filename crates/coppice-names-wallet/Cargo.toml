@@ -1,0 +1,32 @@
+[package]
+name = "coppice-names-wallet"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.91"
+license = "Apache-2.0"
+repository = "https://github.com/nfl0/coppice-names"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+coppice.workspace = true
+coppice-names.workspace = true
+orchard.workspace = true
+pczt.workspace = true
+rand.workspace = true
+rand_core.workspace = true
+zcash_address.workspace = true
+zcash_client_backend.workspace = true
+zcash_keys.workspace = true
+zcash_primitives.workspace = true
+zcash_protocol.workspace = true
+zip321.workspace = true
+
+[dev-dependencies]
+hex.workspace = true
+incrementalmerkletree.workspace = true
+rand_chacha.workspace = true
+shardtree.workspace = true

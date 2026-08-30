@@ -172,6 +172,12 @@ where
         self.machine.head(name_id)
     }
 
+    /// Iterates replay-derived current heads for wallet directory and
+    /// ownership presentation.
+    pub fn heads(&self) -> impl Iterator<Item = (&NameId, &NameState)> {
+        self.machine.heads()
+    }
+
     pub fn pending(&self, commitment: [u8; 32]) -> Option<CommitRef> {
         self.machine.pending(commitment)
     }

@@ -1546,7 +1546,6 @@ fn value_sum_parts(value_balance: i64) -> Result<(u64, bool)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use coppice_names::v1::names_application_id;
     use coppice_names::v1::{
         CommitRef, GenesisStatement, IronwoodActionRef, NameState, OrchardV1ProofProver,
         ProducerPosition, RegistrationIntent, StateData, StateRef, StateStatus, V1Operation,
@@ -2551,17 +2550,17 @@ mod tests {
         assert_eq!(footprint.operation_bytes, encoded_reveal.len());
         assert_eq!(footprint.proof_bytes, genesis_proof.len());
 
-        let names_application_id = names_application_id().to_bytes();
+        let core_runtime_id = [0x31; 32];
         let cpv1_frames =
-            coppice::transport::encode_frames(names_application_id, &encoded_reveal).unwrap();
+            coppice::transport::encode_frames(core_runtime_id, &encoded_reveal).unwrap();
         assert_eq!(cpv1_frames.len(), footprint.cpv1_frames);
         let reconstructed_reveal =
-            coppice::transport::reconstruct_frames(&cpv1_frames, names_application_id).unwrap();
+            coppice::transport::reconstruct_frames(&cpv1_frames, core_runtime_id).unwrap();
         assert_eq!(reconstructed_reveal, encoded_reveal);
         assert_eq!(decode_operation(&reconstructed_reveal).unwrap(), reveal);
         assert!(
             coppice::transport::reconstruct_frames(&cpv1_frames, [0x42; 32]).is_err(),
-            "CPV1 frames must be bound to the Names application ID"
+            "CPV1 frames must be bound to the Core runtime ID"
         );
 
         let rendezvous_recipient = names_fvk.address_at(99u32, Scope::External);
@@ -2626,7 +2625,7 @@ mod tests {
 
         eprintln!(
             "Names v1 semantic REVEAL: app_id={}, operation_bytes={}, proof_bytes={}, cpv1_frames={}, minimum_actions={}, actions={}, real_spends={}, outputs={}, value_balance={}, proving_elapsed_ms={}, registration_nf={}, successor_cmx={}, successor_future_nf={}",
-            hex::encode(names_application_id),
+            hex::encode(coppice_names::v1::names_application_id().to_bytes()),
             footprint.operation_bytes,
             footprint.proof_bytes,
             footprint.cpv1_frames,

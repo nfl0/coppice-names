@@ -1152,6 +1152,14 @@ mod tests {
         );
         let reconstructed = reconstruct_frames(prepared.frames(), TEST_CORE_RUNTIME_ID).unwrap();
         assert_eq!(reconstructed, prepared.encoded());
+        assert!(
+            reconstruct_frames(
+                prepared.frames(),
+                coppice_names::v1::names_application_id().to_bytes(),
+            )
+            .is_err(),
+            "CPV1 frames must be bound to Core, not the Names application ID"
+        );
         assert_eq!(
             decode_operation(&reconstructed).unwrap(),
             *prepared.operation()

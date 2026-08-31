@@ -31,7 +31,6 @@
 
 use anyhow::{Context, Result, ensure};
 use coppice::transport::{encode_frames, reconstruct_frames};
-use coppice_names::v1::names_application_id;
 use coppice_names::v1::schedule::is_anchor_height;
 use coppice_names::v1::wire::OperationFootprint;
 use coppice_names::v1::{
@@ -71,7 +70,10 @@ pub struct PreparedCommit {
 /// The returned value already carries the final CNV1 bytes and CPV1 frames;
 /// the caller broadcasts them by ordinary carrier outputs and later locates
 /// the canonical [`CommitRef`] in the chain for the REVEAL it enables.
-pub fn prepare_commit(intent: &RegistrationIntent) -> Result<PreparedCommit> {
+pub fn prepare_commit(
+    intent: &RegistrationIntent,
+    core_runtime_id: [u8; 32],
+) -> Result<PreparedCommit> {
     let commitment = intent
         .commitment()
         .map_err(|error| anyhow::anyhow!("derive Names v1 COMMIT commitment: {error:?}"))?;
@@ -84,7 +86,7 @@ pub fn prepare_commit(intent: &RegistrationIntent) -> Result<PreparedCommit> {
         decoded == operation,
         "Names v1 COMMIT wire round-trip mismatch"
     );
-    let frames = encode_frames(names_application_id().to_bytes(), &encoded)
+    let frames = encode_frames(core_runtime_id, &encoded)
         .map_err(|error| anyhow::anyhow!("frame Names v1 COMMIT operation: {error:?}"))?;
     Ok(PreparedCommit {
         commitment,
@@ -325,7 +327,11 @@ impl RevealPreparation {
 
     /// Attaches the generated genesis proof and completes the canonical
     /// REVEAL operation, its CNV1 bytes, and its CPV1 frames.
-    pub fn finalize(self, genesis_proof: Vec<u8>) -> Result<FinalizedOperation> {
+    pub fn finalize(
+        self,
+        genesis_proof: Vec<u8>,
+        core_runtime_id: [u8; 32],
+    ) -> Result<FinalizedOperation> {
         ensure!(!genesis_proof.is_empty(), "Names v1 genesis proof is empty");
         let operation = V1Operation::Reveal {
             intent: Box::new(self.intent),
@@ -343,6 +349,7 @@ impl RevealPreparation {
             self.registration_note,
             self.successor_note,
             self.operation_height,
+            core_runtime_id,
         )
     }
 }
@@ -479,7 +486,11 @@ impl TransitionPreparation {
 
     /// Attaches the generated transition proof and completes the canonical
     /// operation, its CNV1 bytes, and its CPV1 frames.
-    pub fn finalize(self, transition_proof: Vec<u8>) -> Result<FinalizedOperation> {
+    pub fn finalize(
+        self,
+        transition_proof: Vec<u8>,
+        core_runtime_id: [u8; 32],
+    ) -> Result<FinalizedOperation> {
         ensure!(
             !transition_proof.is_empty(),
             "Names v1 transition proof is empty"
@@ -516,6 +527,7 @@ impl TransitionPreparation {
             self.predecessor_note,
             self.successor_note,
             self.operation_height,
+            core_runtime_id,
         )
     }
 }
@@ -937,6 +949,7 @@ fn finalize_operation(
     designated_note: Note,
     successor_note: Note,
     operation_height: u32,
+    core_runtime_id: [u8; 32],
 ) -> Result<FinalizedOperation> {
     let encoded = encode_operation(&operation)
         .map_err(|error| anyhow::anyhow!("encode Names v1 operation: {error:?}"))?;
@@ -945,10 +958,9 @@ fn finalize_operation(
     ensure!(decoded == operation, "Names v1 wire round-trip mismatch");
     let footprint = operation_footprint(&operation)
         .map_err(|error| anyhow::anyhow!("measure Names v1 operation: {error:?}"))?;
-    let app_id = names_application_id().to_bytes();
-    let frames = encode_frames(app_id, &encoded)
+    let frames = encode_frames(core_runtime_id, &encoded)
         .map_err(|error| anyhow::anyhow!("frame Names v1 operation: {error:?}"))?;
-    let reconstructed = reconstruct_frames(&frames, app_id)
+    let reconstructed = reconstruct_frames(&frames, core_runtime_id)
         .map_err(|error| anyhow::anyhow!("reconstruct Names v1 frames: {error:?}"))?;
     ensure!(
         reconstructed == encoded,
@@ -1124,7 +1136,7 @@ mod tests {
     fn commit_preparation_matches_intent_and_round_trips() {
         let (_, ask) = key_material(7);
         let intent = test_intent(&ask, 3, 5);
-        let prepared = prepare_commit(&intent).unwrap();
+        let prepared = prepare_commit(&intent, TEST_CORE_RUNTIME_ID).unwrap();
         let expected_commitment = intent.commitment().unwrap();
 
         assert_eq!(prepared.commitment(), expected_commitment);
@@ -1138,8 +1150,7 @@ mod tests {
             decode_operation(prepared.encoded()).unwrap(),
             *prepared.operation()
         );
-        let app_id = names_application_id().to_bytes();
-        let reconstructed = reconstruct_frames(prepared.frames(), app_id).unwrap();
+        let reconstructed = reconstruct_frames(prepared.frames(), TEST_CORE_RUNTIME_ID).unwrap();
         assert_eq!(reconstructed, prepared.encoded());
         assert_eq!(
             decode_operation(&reconstructed).unwrap(),
@@ -1204,7 +1215,9 @@ mod tests {
         let successor_future_nullifier = statement.state_nullifier;
         let lease_expiry = statement.lease_expiry;
         let dummy_proof = vec![0x5A; 1_920];
-        let finalized = preparation.finalize(dummy_proof.clone()).unwrap();
+        let finalized = preparation
+            .finalize(dummy_proof.clone(), TEST_CORE_RUNTIME_ID)
+            .unwrap();
 
         // The manual composition below reproduces the pre-extraction live
         // construction from the same typed inputs; CNV1 bytes must be
@@ -1255,9 +1268,8 @@ mod tests {
             }
             other => panic!("unexpected operation kind: {other:?}"),
         }
-        let app_id = names_application_id().to_bytes();
         assert_eq!(
-            reconstruct_frames(finalized.frames(), app_id).unwrap(),
+            reconstruct_frames(finalized.frames(), TEST_CORE_RUNTIME_ID).unwrap(),
             finalized.encoded()
         );
         let footprint = finalized.footprint();
@@ -1296,11 +1308,11 @@ mod tests {
 
         let first = prepare_reveal(inputs(None), params)
             .unwrap()
-            .finalize(vec![0x5A; 64])
+            .finalize(vec![0x5A; 64], TEST_CORE_RUNTIME_ID)
             .unwrap();
         let replacement = prepare_reveal(inputs(Some(prior_terminal)), params)
             .unwrap()
-            .finalize(vec![0x5A; 64])
+            .finalize(vec![0x5A; 64], TEST_CORE_RUNTIME_ID)
             .unwrap();
         for (finalized, expected_predecessor) in [
             (&first, None::<StateRef>),
@@ -1385,7 +1397,9 @@ mod tests {
         )
         .unwrap();
         let predecessor_note = reveal_preparation.successor_note().clone();
-        let reveal_finalized = reveal_preparation.finalize(vec![0x5A; 1_920]).unwrap();
+        let reveal_finalized = reveal_preparation
+            .finalize(vec![0x5A; 1_920], TEST_CORE_RUNTIME_ID)
+            .unwrap();
         let predecessor = accepted_head(reveal_finalized.operation(), reveal_height, [7; 32]);
 
         let update_record = vec![6; 40];
@@ -1435,7 +1449,9 @@ mod tests {
         let successor_commitment = statement.successor_commitment;
         let successor_future_nullifier = statement.successor_nullifier;
         let dummy_proof = vec![0xA5; 1_920];
-        let finalized = update_preparation.finalize(dummy_proof.clone()).unwrap();
+        let finalized = update_preparation
+            .finalize(dummy_proof.clone(), TEST_CORE_RUNTIME_ID)
+            .unwrap();
 
         let manual = V1Operation::Update {
             predecessor: predecessor.state_ref,
@@ -1525,7 +1541,9 @@ mod tests {
         )
         .unwrap();
         let predecessor_note = reveal_preparation.successor_note().clone();
-        let reveal_finalized = reveal_preparation.finalize(vec![0x5A; 1_920]).unwrap();
+        let reveal_finalized = reveal_preparation
+            .finalize(vec![0x5A; 1_920], TEST_CORE_RUNTIME_ID)
+            .unwrap();
         let predecessor = accepted_head(reveal_finalized.operation(), reveal_height, [7; 32]);
 
         let inputs = |operation_height, designated_action_index| TransitionInputs {
@@ -1574,7 +1592,9 @@ mod tests {
         let successor_commitment = statement.successor_commitment;
         let successor_future_nullifier = statement.successor_nullifier;
         let successor_lease_expiry = statement.successor_lease_expiry;
-        let finalized = renew_preparation.finalize(vec![0xA5; 1_920]).unwrap();
+        let finalized = renew_preparation
+            .finalize(vec![0xA5; 1_920], TEST_CORE_RUNTIME_ID)
+            .unwrap();
         let manual = V1Operation::Renew {
             predecessor: predecessor.state_ref,
             state: StateData {
@@ -1636,7 +1656,9 @@ mod tests {
         )
         .unwrap();
         let predecessor_note = reveal_preparation.successor_note().clone();
-        let reveal_finalized = reveal_preparation.finalize(vec![0x5A; 1_920]).unwrap();
+        let reveal_finalized = reveal_preparation
+            .finalize(vec![0x5A; 1_920], TEST_CORE_RUNTIME_ID)
+            .unwrap();
         let predecessor = accepted_head(reveal_finalized.operation(), reveal_height, [7; 32]);
 
         let release_height = reveal_height + 1;
@@ -1679,7 +1701,9 @@ mod tests {
 
         let successor_commitment = statement.successor_commitment;
         let successor_future_nullifier = statement.successor_nullifier;
-        let finalized = release_preparation.finalize(vec![0xA5; 1_920]).unwrap();
+        let finalized = release_preparation
+            .finalize(vec![0xA5; 1_920], TEST_CORE_RUNTIME_ID)
+            .unwrap();
         let manual = V1Operation::Release {
             predecessor: predecessor.state_ref,
             state: StateData {
@@ -1753,7 +1777,9 @@ mod tests {
         .unwrap();
         let predecessor_note = reveal_preparation.successor_note().clone();
         let predecessor_nullifier = predecessor_note.nullifier(&fvk).to_bytes();
-        let reveal_finalized = reveal_preparation.finalize(vec![0x5A; 1_920]).unwrap();
+        let reveal_finalized = reveal_preparation
+            .finalize(vec![0x5A; 1_920], TEST_CORE_RUNTIME_ID)
+            .unwrap();
         let predecessor = accepted_head(reveal_finalized.operation(), reveal_height, [7; 32]);
 
         let update_height = reveal_height + 1;
@@ -1772,7 +1798,9 @@ mod tests {
             params,
         )
         .unwrap();
-        let finalized = update_preparation.finalize(vec![0xA5; 1_920]).unwrap();
+        let finalized = update_preparation
+            .finalize(vec![0xA5; 1_920], TEST_CORE_RUNTIME_ID)
+            .unwrap();
 
         let funding_note = bond_note(&fvk, 60_000, 6, 7);
         let carrier_recipient = key_material(30).0.address_at(0u32, Scope::External);
@@ -1900,7 +1928,9 @@ mod tests {
             params,
         )
         .unwrap();
-        let finalized = reveal_preparation.finalize(vec![0x5A; 320]).unwrap();
+        let finalized = reveal_preparation
+            .finalize(vec![0x5A; 320], TEST_CORE_RUNTIME_ID)
+            .unwrap();
         assert!(finalized.frames().len() >= 1);
         let zero_funding = plan_state_operation(
             &consensus_params,
@@ -2100,7 +2130,9 @@ mod tests {
         )
         .unwrap();
         assert_eq!(preparation.operation_height(), reveal_height);
-        let finalized = preparation.finalize(vec![0x5A; 1_920]).unwrap();
+        let finalized = preparation
+            .finalize(vec![0x5A; 1_920], TEST_CORE_RUNTIME_ID)
+            .unwrap();
         assert_eq!(finalized.operation_height(), reveal_height);
 
         // Fee planning carries no height argument: it plans at exactly the
@@ -2220,3 +2252,5 @@ mod tests {
         assert!(aligned.is_ok());
     }
 }
+#[cfg(test)]
+const TEST_CORE_RUNTIME_ID: [u8; 32] = [0x42; 32];

@@ -145,14 +145,14 @@ fn realistic_proof_operations_fit_frozen_cpv1() {
             OperationFootprint {
                 operation_bytes: 4_950,
                 proof_bytes: 4_640,
-                cpv1_frames: 10,
-                minimum_ironwood_actions: 11,
+                cpv1_frames: 11,
+                minimum_ironwood_actions: 12,
             },
             OperationFootprint {
                 operation_bytes: 4_949,
                 proof_bytes: 4_640,
-                cpv1_frames: 10,
-                minimum_ironwood_actions: 11,
+                cpv1_frames: 11,
+                minimum_ironwood_actions: 12,
             },
         ]
     );

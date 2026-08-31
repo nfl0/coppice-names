@@ -1860,15 +1860,15 @@ mod tests {
         let update_footprint = operation_footprint(&update).unwrap();
         assert_eq!(update_footprint.operation_bytes, 4_950);
         assert_eq!(update_footprint.proof_bytes, 4_640);
-        assert_eq!(update_footprint.cpv1_frames, 10);
+        assert_eq!(update_footprint.cpv1_frames, 11);
 
         let update_shape =
             names_v1_ironwood_shape_from_counts(2, update_footprint.cpv1_frames, 1, 0).unwrap();
         assert_eq!(update_shape.real_spend_count, 2);
-        assert_eq!(update_shape.requested_output_count, 12);
-        assert_eq!(update_shape.carrier_output_count, 10);
+        assert_eq!(update_shape.requested_output_count, 13);
+        assert_eq!(update_shape.carrier_output_count, 11);
         assert_eq!(update_shape.change_output_count, 1);
-        assert_eq!(update_shape.action_count, 12);
+        assert_eq!(update_shape.action_count, 13);
         assert_eq!(
             required_zip317_fee_for_names_v1(
                 &local_v6_params(),
@@ -1876,7 +1876,7 @@ mod tests {
                 update_shape,
             )
             .unwrap(),
-            Zatoshis::from_u64(60_000).unwrap()
+            Zatoshis::from_u64(65_000).unwrap()
         );
     }
 
@@ -2551,13 +2551,26 @@ mod tests {
         assert_eq!(footprint.proof_bytes, genesis_proof.len());
 
         let core_runtime_id = [0x31; 32];
-        let cpv1_frames =
-            coppice::transport::encode_frames(core_runtime_id, &encoded_reveal).unwrap();
+        let envelope = coppice::application::ApplicationEnvelopeV1::new(
+            coppice::application::ApplicationKey::new(
+                coppice_names::v1::names_application_id(),
+                coppice_names::v1::NAMES_APPLICATION_VERSION,
+            ),
+            encoded_reveal.clone(),
+        )
+        .unwrap()
+        .encode();
+        let cpv1_frames = coppice::transport::encode_frames(core_runtime_id, &envelope).unwrap();
         assert_eq!(cpv1_frames.len(), footprint.cpv1_frames);
         let reconstructed_reveal =
             coppice::transport::reconstruct_frames(&cpv1_frames, core_runtime_id).unwrap();
-        assert_eq!(reconstructed_reveal, encoded_reveal);
-        assert_eq!(decode_operation(&reconstructed_reveal).unwrap(), reveal);
+        let reconstructed_reveal =
+            coppice::application::ApplicationEnvelopeV1::decode(&reconstructed_reveal).unwrap();
+        assert_eq!(reconstructed_reveal.payload(), encoded_reveal);
+        assert_eq!(
+            decode_operation(reconstructed_reveal.payload()).unwrap(),
+            reveal
+        );
         assert!(
             coppice::transport::reconstruct_frames(&cpv1_frames, [0x42; 32]).is_err(),
             "CPV1 frames must be bound to the Core runtime ID"

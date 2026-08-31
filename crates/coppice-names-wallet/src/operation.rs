@@ -30,13 +30,17 @@
 //! canonical: they are bound into the operation and its proof.
 
 use anyhow::{Context, Result, ensure};
-use coppice::transport::{encode_frames, reconstruct_frames};
+use coppice::{
+    application::{ApplicationEnvelopeV1, ApplicationKey},
+    transport::{encode_frames, reconstruct_frames},
+};
 use coppice_names::v1::schedule::is_anchor_height;
 use coppice_names::v1::wire::OperationFootprint;
 use coppice_names::v1::{
-    CommitRef, GenesisStatement, IronwoodActionRef, NameState, OperationKind, ProducerPosition,
-    RegistrationIntent, StateData, StateRef, StateStatus, TransitionStatement, V1Operation,
-    V1Parameters, decode_operation, encode_operation, operation_footprint,
+    CommitRef, GenesisStatement, IronwoodActionRef, NAMES_APPLICATION_VERSION, NameState,
+    OperationKind, ProducerPosition, RegistrationIntent, StateData, StateRef, StateStatus,
+    TransitionStatement, V1Operation, V1Parameters, decode_operation, encode_operation,
+    names_application_id, operation_footprint,
 };
 use orchard::circuit::state_note_binding::{
     GenesisWitness, TransitionWitness, spend_auth_owner_key_bytes,
@@ -86,7 +90,8 @@ pub fn prepare_commit(
         decoded == operation,
         "Names v1 COMMIT wire round-trip mismatch"
     );
-    let frames = encode_frames(core_runtime_id, &encoded)
+    let envelope = names_application_envelope(encoded.clone())?;
+    let frames = encode_frames(core_runtime_id, &envelope)
         .map_err(|error| anyhow::anyhow!("frame Names v1 COMMIT operation: {error:?}"))?;
     Ok(PreparedCommit {
         commitment,
@@ -958,15 +963,20 @@ fn finalize_operation(
     ensure!(decoded == operation, "Names v1 wire round-trip mismatch");
     let footprint = operation_footprint(&operation)
         .map_err(|error| anyhow::anyhow!("measure Names v1 operation: {error:?}"))?;
-    let frames = encode_frames(core_runtime_id, &encoded)
+    let envelope = names_application_envelope(encoded.clone())?;
+    let frames = encode_frames(core_runtime_id, &envelope)
         .map_err(|error| anyhow::anyhow!("frame Names v1 operation: {error:?}"))?;
     let reconstructed = reconstruct_frames(&frames, core_runtime_id)
         .map_err(|error| anyhow::anyhow!("reconstruct Names v1 frames: {error:?}"))?;
+    let reconstructed = ApplicationEnvelopeV1::decode(&reconstructed).map_err(|error| {
+        anyhow::anyhow!("decode reconstructed Names application envelope: {error:?}")
+    })?;
     ensure!(
-        reconstructed == encoded,
-        "CPV1 reconstruction changed the CNV1 bytes"
+        reconstructed.key()
+            == ApplicationKey::new(names_application_id(), NAMES_APPLICATION_VERSION),
+        "CPV1 reconstruction changed the Names application key"
     );
-    let reconstructed_operation = decode_operation(&reconstructed)
+    let reconstructed_operation = decode_operation(reconstructed.payload())
         .map_err(|error| anyhow::anyhow!("decode reconstructed Names v1 operation: {error:?}"))?;
     ensure!(
         reconstructed_operation == operation,
@@ -986,6 +996,15 @@ fn finalize_operation(
         successor_note,
         operation_height,
     })
+}
+
+fn names_application_envelope(payload: Vec<u8>) -> Result<Vec<u8>> {
+    Ok(ApplicationEnvelopeV1::new(
+        ApplicationKey::new(names_application_id(), NAMES_APPLICATION_VERSION),
+        payload,
+    )
+    .map_err(|error| anyhow::anyhow!("encode Names application envelope: {error:?}"))?
+    .encode())
 }
 
 #[cfg(test)]
@@ -1151,7 +1170,12 @@ mod tests {
             *prepared.operation()
         );
         let reconstructed = reconstruct_frames(prepared.frames(), TEST_CORE_RUNTIME_ID).unwrap();
-        assert_eq!(reconstructed, prepared.encoded());
+        let reconstructed = ApplicationEnvelopeV1::decode(&reconstructed).unwrap();
+        assert_eq!(
+            reconstructed.key(),
+            ApplicationKey::new(names_application_id(), NAMES_APPLICATION_VERSION)
+        );
+        assert_eq!(reconstructed.payload(), prepared.encoded());
         assert!(
             reconstruct_frames(
                 prepared.frames(),
@@ -1161,7 +1185,7 @@ mod tests {
             "CPV1 frames must be bound to Core, not the Names application ID"
         );
         assert_eq!(
-            decode_operation(&reconstructed).unwrap(),
+            decode_operation(reconstructed.payload()).unwrap(),
             *prepared.operation()
         );
     }
@@ -1276,10 +1300,9 @@ mod tests {
             }
             other => panic!("unexpected operation kind: {other:?}"),
         }
-        assert_eq!(
-            reconstruct_frames(finalized.frames(), TEST_CORE_RUNTIME_ID).unwrap(),
-            finalized.encoded()
-        );
+        let reconstructed = reconstruct_frames(finalized.frames(), TEST_CORE_RUNTIME_ID).unwrap();
+        let reconstructed = ApplicationEnvelopeV1::decode(&reconstructed).unwrap();
+        assert_eq!(reconstructed.payload(), finalized.encoded());
         let footprint = finalized.footprint();
         assert_eq!(footprint.operation_bytes, finalized.encoded().len());
         assert_eq!(footprint.proof_bytes, dummy_proof.len());

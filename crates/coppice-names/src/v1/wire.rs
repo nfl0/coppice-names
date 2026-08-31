@@ -1,6 +1,8 @@
 //! Canonical Names v1 application-envelope encoding.
 
 use super::operation::{V1Operation, operations_have_canonical_order};
+use super::{NAMES_APPLICATION_VERSION, names_application_id};
+use coppice::application::{ApplicationEnvelopeV1, ApplicationKey};
 
 const MAGIC: &[u8; 4] = b"CNV1";
 /// Names v1 envelope revision.
@@ -92,8 +94,14 @@ pub fn operation_footprint(operation: &V1Operation) -> Result<OperationFootprint
         | V1Operation::Renew { proof, .. }
         | V1Operation::Release { proof, .. } => proof.len(),
     };
+    let envelope = ApplicationEnvelopeV1::new(
+        ApplicationKey::new(names_application_id(), NAMES_APPLICATION_VERSION),
+        bytes.clone(),
+    )
+    .map_err(|_| WireError::TooLarge)?
+    .encode();
     let cpv1_frames =
-        coppice::transport::required_frames(bytes.len()).map_err(|_| WireError::TooLarge)?;
+        coppice::transport::required_frames(envelope.len()).map_err(|_| WireError::TooLarge)?;
     // Every CPV1 memo frame requires a distinct rendezvous output. State
     // operations add one successor state-note output; their one designated
     // spend can share that action when cross-address pairing is enabled.

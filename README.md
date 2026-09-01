@@ -1,7 +1,7 @@
 # Coppice Names
 
 Coppice Names is the deterministic Names application for the generic
-[Coppice runtime](../coppice/). It owns the Names state-note lineage,
+[Coppice runtime](https://github.com/nfl0/coppice/). It owns the Names state-note lineage,
 COMMIT/REVEAL registration, local transition proofs, canonical applicability,
 and fresh resolution.
 

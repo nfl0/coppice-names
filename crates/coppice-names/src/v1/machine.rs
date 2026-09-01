@@ -56,6 +56,8 @@ pub enum ApplyError {
     ActionAlreadyClaimed,
     /// A state proof did not verify.
     InvalidStateProof,
+    /// The declared operation height cannot be included at this block height.
+    OperationOutsideValidityWindow,
     /// The selected action commitment is not the declared successor commitment.
     ActionCommitmentMismatch,
     /// The selected action does not spend the accepted head's authenticated future nullifier.
@@ -586,8 +588,18 @@ impl V1StateMachine {
             *state_nullifier,
         );
         let name_state = NameState::new(state.clone(), *state_commitment, state_ref)?;
+        let proof_height = self
+            .params
+            .anchor_height(state.lease_expiry)
+            .ok_or(ApplyError::ArithmeticOverflow)?;
+        if proof_height <= pending.position.height
+            || proof_height > block.height
+            || proof_height > expiry_height
+        {
+            return Err(ApplyError::OperationOutsideValidityWindow);
+        }
         let statement =
-            GenesisStatement::from_reveal(intent, &name_state, action, block.height, self.params)?;
+            GenesisStatement::from_reveal(intent, &name_state, action, proof_height, self.params)?;
         if !proofs.verify_genesis(&statement, proof) {
             return Err(ApplyError::InvalidStateProof);
         }
@@ -663,6 +675,15 @@ impl V1StateMachine {
             *state_nullifier,
         );
         let successor = NameState::new(state.clone(), *state_commitment, state_ref)?;
+        if kind == OperationKind::Renew {
+            let proof_height = self
+                .params
+                .anchor_height(successor.data.lease_expiry)
+                .ok_or(ApplyError::ArithmeticOverflow)?;
+            if proof_height > block.height || block.height >= current.data.lease_expiry {
+                return Err(ApplyError::OperationOutsideValidityWindow);
+            }
+        }
         let statement = TransitionStatement::from_states(
             &current,
             &successor,

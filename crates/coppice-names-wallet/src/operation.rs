@@ -34,7 +34,6 @@ use coppice::{
     application::{ApplicationEnvelopeV1, ApplicationKey},
     transport::{encode_frames, reconstruct_frames},
 };
-use coppice_names::v1::schedule::is_anchor_height;
 use coppice_names::v1::wire::OperationFootprint;
 use coppice_names::v1::{
     CommitRef, GenesisStatement, IronwoodActionRef, NAMES_APPLICATION_VERSION, NameState,
@@ -182,7 +181,7 @@ pub struct RevealPreparation {
 /// Locally enforces the typed binding between `inputs.intent` and
 /// `inputs.commit` via the authoritative [`RegistrationIntent::commitment`]:
 /// a reference to a different intent fails before any proof work. Canonical
-/// COMMIT authenticity, maturity, TTL, anchoring, and reset eligibility
+/// COMMIT authenticity, maturity, TTL, canonical inclusion, and reset eligibility
 /// remain the caller's replay/state-machine responsibility.
 ///
 /// Binds the intent, the exact COMMIT reference, the optional replacement
@@ -218,7 +217,7 @@ pub fn prepare_reveal(inputs: RevealInputs, params: V1Parameters) -> Result<Reve
         .name_id()
         .map_err(|error| anyhow::anyhow!("derive REVEAL name id: {error:?}"))?;
     // Local typed height bindings only: the intended REVEAL height must land
-    // inside this COMMIT's lifetime at the name's scheduled anchor. Canonical
+    // inside this COMMIT's lifetime. Canonical
     // COMMIT authenticity, reorg state, name availability, replacement
     // validity, and reset eligibility remain replay/state-machine checks.
     ensure!(
@@ -233,10 +232,6 @@ pub fn prepare_reveal(inputs: RevealInputs, params: V1Parameters) -> Result<Reve
                 .checked_add(params.commit_ttl_blocks)
                 .context("Names v1 COMMIT lifetime overflow")?,
         "intended REVEAL height is beyond the canonical COMMIT lifetime"
-    );
-    ensure!(
-        is_anchor_height(name_id, operation_height, params),
-        "intended REVEAL height is not the name's scheduled anchor height"
     );
     let registration_nullifier = registration_note.nullifier(&fvk).to_bytes();
     let successor_note = successor_state_note(
@@ -375,8 +370,7 @@ pub struct TransitionInputs {
     /// Spend authorizing key backing `fvk`; used by the transition witness.
     pub ask: SpendAuthorizingKey,
     /// Height at which the operation will be mined. It must precede the
-    /// predecessor lease, and for RENEW it must be the name's scheduled
-    /// anchor height.
+    /// predecessor lease, and for RENEW it must be inside the renewal window.
     pub operation_height: u32,
     /// Exact Ironwood action index designated for this operation. It is
     /// encoded in the operation and must be occupied by the designated
@@ -424,17 +418,20 @@ pub fn prepare_update(
 ///
 /// The successor preserves the predecessor record and owner, stays Active
 /// with zero terminal height, increases the sequence by one, and extends the
-/// lease to the authoritative value for the name's scheduled anchor height
-/// at `inputs.operation_height`. Construction fails if that height is not a
-/// scheduled anchor or would not strictly extend the lease.
+/// lease to the authoritative value for the operation height. Construction
+/// fails outside the renewal window or if it would not strictly extend the
+/// lease.
 pub fn prepare_renew(
     inputs: TransitionInputs,
     params: V1Parameters,
 ) -> Result<TransitionPreparation> {
-    let name_id = inputs.predecessor.data.name_id;
+    let opening = params
+        .renewal_opening(inputs.predecessor.data.lease_expiry)
+        .context("Names v1 renewal opening underflow")?;
     ensure!(
-        is_anchor_height(name_id, inputs.operation_height, params),
-        "RENEW must be constructed at the name's scheduled anchor height"
+        inputs.operation_height >= opening
+            && inputs.operation_height < inputs.predecessor.data.lease_expiry,
+        "RENEW height is outside the renewal window"
     );
     let lease_expiry = params
         .lease_expiry(inputs.operation_height)
@@ -1548,12 +1545,11 @@ mod tests {
     }
 
     #[test]
-    fn renew_preserves_record_and_extends_lease_at_scheduled_height() {
+    fn renew_preserves_record_and_extends_lease_inside_the_window() {
         let params = V1Parameters::testing();
         let (fvk, ask) = key_material(14);
         let registration_note = bond_note(&fvk, 40_000, 3, 4);
         let intent = test_intent(&ask, 5, 7);
-        let name_id = intent.name_id().unwrap();
         let (commit, reveal_height) = reveal_commit_and_height(&intent, params);
         let reveal_preparation = prepare_reveal(
             RevealInputs {
@@ -1588,8 +1584,9 @@ mod tests {
             successor_seed: [10; 32],
         };
 
-        // RENEW is only constructible at the name's scheduled anchor height.
-        let renew_height = next_anchor_height(name_id, reveal_height + 1, params).unwrap();
+        let renew_height = params
+            .renewal_opening(predecessor.data.lease_expiry)
+            .unwrap();
         assert!(renew_height < predecessor.data.lease_expiry);
         let renew_preparation = prepare_renew(inputs(renew_height, 1), params).unwrap();
 
@@ -1657,10 +1654,9 @@ mod tests {
             predecessor_note.nullifier(&fvk).to_bytes()
         );
 
-        let non_anchor_height = (reveal_height + 1..predecessor.data.lease_expiry)
-            .find(|height| !coppice_names::v1::schedule::is_anchor_height(name_id, *height, params))
-            .unwrap();
-        assert!(prepare_renew(inputs(non_anchor_height, 1), params).is_err());
+        assert!(prepare_renew(inputs(renew_height - 1, 1), params).is_err());
+        assert!(prepare_renew(inputs(renew_height + 1, 1), params).is_ok());
+        assert!(prepare_renew(inputs(predecessor.data.lease_expiry, 1), params).is_err());
     }
 
     #[test]
@@ -2076,21 +2072,18 @@ mod tests {
     }
 
     #[test]
-    fn reveal_rejects_heights_outside_the_commit_lifetime_or_schedule() {
+    fn reveal_accepts_any_declared_height_inside_the_commit_lifetime() {
         let params = V1Parameters::testing();
         let (fvk, ask) = key_material(19);
         let registration_note = bond_note(&fvk, 40_000, 12, 13);
         let intent = test_intent(&ask, 5, 7);
-        let name_id = intent.name_id().unwrap();
         let commit_height = 30;
         let commit = CommitRef::new(
             ProducerPosition::new(commit_height, 1, [3; 32]),
             0,
             intent.commitment().unwrap(),
         );
-        let legal_height = next_anchor_height(name_id, commit_height + 1, params).unwrap();
-        assert!(legal_height > commit_height);
-        assert!(legal_height <= commit_height + params.commit_ttl_blocks);
+        let legal_height = commit_height + 3;
 
         let inputs = |operation_height| RevealInputs {
             intent: intent.clone(),
@@ -2121,23 +2114,14 @@ mod tests {
                 .to_string()
                 .contains("beyond the canonical COMMIT lifetime")
         );
-        // Inside the lifetime but off the name's scheduled anchor: rejected.
-        let non_anchor = (commit_height + 1..legal_height)
-            .find(|height| !coppice_names::v1::schedule::is_anchor_height(name_id, *height, params))
-            .expect("a scheduled anchor window contains non-anchor heights");
-        assert!(
-            prepare_reveal(inputs(non_anchor), params)
-                .err()
-                .unwrap()
-                .to_string()
-                .contains("scheduled anchor height")
-        );
-        // The legal scheduled height prepares.
+        // Any declared lease-start height inside the COMMIT lifetime prepares.
+        assert!(prepare_reveal(inputs(commit_height + 1), params).is_ok());
         assert!(prepare_reveal(inputs(legal_height), params).is_ok());
+        assert!(prepare_reveal(inputs(commit_height + params.commit_ttl_blocks), params).is_ok());
     }
 
     #[test]
-    fn finalized_operation_binds_fee_planning_and_pczt_expiry_to_its_height() {
+    fn finalized_operation_allows_pczt_expiry_after_its_declared_height() {
         let params = V1Parameters::testing();
         let consensus_params = local_v6_params();
         let (fvk, ask) = key_material(20);
@@ -2221,9 +2205,8 @@ mod tests {
         let built = build_names_v1_bundle(planned.plan, StdRng::from_seed([80; 32])).unwrap();
         assert_eq!(built.operation_height, reveal_height);
 
-        // A PCZT expiry height different from the Names operation height is
-        // rejected before any PCZT construction. Each rebuilt bundle pairs its
-        // own designated spend with a successor whose rho derives from it.
+        // Each rebuilt bundle pairs its own designated spend with a successor
+        // whose rho derives from it.
         let rebuilt = |operation_height, rho_byte: u8, seed_byte: u8| {
             let designated = bond_note(&fvk, 60_000, rho_byte, seed_byte);
             let successor = successor_state_note(
@@ -2260,7 +2243,7 @@ mod tests {
             )
             .unwrap()
         };
-        let mismatched = build_names_v1_pczt(NamesV1PcztPlan {
+        let later_expiry = build_names_v1_pczt(NamesV1PcztPlan {
             ironwood: rebuilt(reveal_height, 20, 21),
             params: consensus_params.clone(),
             consensus_branch_id: BranchId::Nu6_3,
@@ -2268,19 +2251,18 @@ mod tests {
             fallback_lock_time: 0,
         });
         assert!(
-            mismatched.is_err(),
-            "PCZT expiry height must equal the Names operation height"
+            later_expiry.is_ok(),
+            "PCZT may remain mineable after the declared operation height"
         );
 
-        // The exact operation height builds the complete PCZT.
-        let aligned = build_names_v1_pczt(NamesV1PcztPlan {
+        let preceding_expiry = build_names_v1_pczt(NamesV1PcztPlan {
             ironwood: rebuilt(reveal_height, 22, 23),
             params: consensus_params,
             consensus_branch_id: BranchId::Nu6_3,
-            expiry_height: BlockHeight::from_u32(reveal_height),
+            expiry_height: BlockHeight::from_u32(reveal_height - 1),
             fallback_lock_time: 0,
         });
-        assert!(aligned.is_ok());
+        assert!(preceding_expiry.is_err());
     }
 }
 #[cfg(test)]

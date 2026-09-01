@@ -4,7 +4,6 @@ use super::{
     lease::V1Parameters,
     operation::{IronwoodActionRef, OperationKind},
     registration::RegistrationIntent,
-    schedule,
     state::{
         NameId, NameState, OwnerKey, StateError, canonical_field, name_id_field, owner_key_field,
         record_digest_field,
@@ -76,12 +75,13 @@ pub struct TransitionStatement {
     pub predecessor_terminal_height: u32,
     /// Successor terminal height, zero while active.
     pub successor_terminal_height: u32,
-    /// Canonical block height of this operation.
+    /// Declared lease-start height for RENEW; canonical inclusion height for
+    /// UPDATE and RELEASE.
     pub operation_height: u32,
     /// Canonical lease duration used by the RENEW branch.
     pub lease_duration_blocks: u32,
-    /// Canonically-derived name schedule predicate at `operation_height`.
-    pub scheduled: bool,
+    /// Whether this operation satisfies its timing rule.
+    pub timing_valid: bool,
     /// Digest of the exact predecessor producer position.
     pub predecessor_state_digest: [u8; 32],
     /// Digest of the exact successor state.
@@ -115,6 +115,13 @@ impl TransitionStatement {
         {
             return Err(StatementError::InvalidField);
         }
+        let proof_height = if operation == OperationKind::Renew {
+            params
+                .anchor_height(successor.data.lease_expiry)
+                .ok_or(StatementError::InvalidField)?
+        } else {
+            operation_height
+        };
         Ok(Self {
             name_id: predecessor.data.name_id,
             owner_pk: predecessor.data.owner_pk,
@@ -136,13 +143,14 @@ impl TransitionStatement {
             successor_status: successor.data.status.code(),
             predecessor_terminal_height: predecessor.data.terminal_height,
             successor_terminal_height: successor.data.terminal_height,
-            operation_height,
+            operation_height: proof_height,
             lease_duration_blocks: params.lease_duration_blocks,
-            scheduled: schedule::is_anchor_height(
-                predecessor.data.name_id,
-                operation_height,
-                params,
-            ),
+            timing_valid: operation != OperationKind::Renew
+                || params
+                    .renewal_opening(predecessor.data.lease_expiry)
+                    .is_some_and(|opening| {
+                        proof_height >= opening && proof_height < predecessor.data.lease_expiry
+                    }),
             predecessor_state_digest: predecessor_digest,
             successor_state_digest: successor_digest,
             predecessor_ref_digest: predecessor.state_ref.digest(),
@@ -209,7 +217,7 @@ impl TransitionStatement {
             name_id_field(self.successor_name_id),
             successor_owner,
             pallas::Base::from(u64::from(self.lease_duration_blocks)),
-            pallas::Base::from(u64::from(self.scheduled)),
+            pallas::Base::from(u64::from(self.timing_valid)),
             predecessor_future_nullifier,
         ]))
     }
@@ -248,12 +256,15 @@ pub struct GenesisStatement {
     pub intent_owner_pk: OwnerKey,
     /// Canonical record digest disclosed by the REVEAL intent.
     pub intent_record_digest: [u8; 32],
-    /// Actual canonical height of the REVEAL.
+    /// Declared lease-start height of the REVEAL.
+    ///
+    /// Canonical inclusion may occur later while the referenced COMMIT is
+    /// still live. The state machine authenticates that inclusion window.
     pub operation_height: u32,
     /// Canonical lease duration used to form the initial state.
     pub lease_duration_blocks: u32,
-    /// Canonically-derived name schedule predicate at `operation_height`.
-    pub scheduled: bool,
+    /// Whether this REVEAL satisfies its timing rule.
+    pub timing_valid: bool,
 }
 
 impl GenesisStatement {
@@ -292,7 +303,9 @@ impl GenesisStatement {
             intent_record_digest: record_digest_field(&intent.record).to_repr(),
             operation_height,
             lease_duration_blocks: params.lease_duration_blocks,
-            scheduled: schedule::is_anchor_height(intent_name_id, operation_height, params),
+            // REVEAL timing is checked against the canonical COMMIT by the
+            // state machine; retain the public slot for circuit compatibility.
+            timing_valid: true,
         })
     }
 
@@ -329,7 +342,7 @@ impl GenesisStatement {
             intent_record,
             pallas::Base::from(u64::from(self.operation_height)),
             pallas::Base::from(u64::from(self.lease_duration_blocks)),
-            pallas::Base::from(u64::from(self.scheduled)),
+            pallas::Base::from(u64::from(self.timing_valid)),
         ]))
     }
 }

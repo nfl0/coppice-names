@@ -12,7 +12,7 @@ pub enum LeaseParameterError {
     ZeroActivationHeight,
     /// An empty machine was initialized at or after its activation height.
     InitialTipAfterActivation,
-    /// A commitment could expire before the next name-derived reveal slot.
+    /// A commitment has no post-COMMIT block in which it can be revealed.
     CommitTtlTooShort,
     /// A lease could expire before a name reaches its next scheduled anchor.
     LeaseDurationTooShort,
@@ -81,22 +81,19 @@ impl V1Parameters {
         if self.epoch_size == 0 {
             return Err(LeaseParameterError::ZeroEpochSize);
         }
+        if self.commit_ttl_blocks == 0 {
+            return Err(LeaseParameterError::CommitTtlTooShort);
+        }
         if self.grace_period_blocks == 0 || self.reuse_delay_blocks == 0 {
             return Err(LeaseParameterError::ZeroTerminalInterval);
         }
         if self.minimum_bond_zatoshis == 0 {
             return Err(LeaseParameterError::ZeroMinimumBond);
         }
-        if self.max_anchor_gap()? > self.commit_ttl_blocks {
-            return Err(LeaseParameterError::CommitTtlTooShort);
-        }
-        if self.refresh_deadline_blocks < self.max_anchor_gap()? {
+        if self.refresh_deadline_blocks == 0
+            || self.refresh_deadline_blocks >= self.lease_duration_blocks
+        {
             return Err(LeaseParameterError::RefreshDeadlineTooShort);
-        }
-        // This gives an owner that misses one scheduled opportunity another
-        // scheduled opportunity before the lease itself expires.
-        if self.lease_duration_blocks <= self.max_two_slot_gap()? {
-            return Err(LeaseParameterError::LeaseDurationTooShort);
         }
         self.lease_expiry(self.activation_height)
             .ok_or(LeaseParameterError::ArithmeticOverflow)?;
@@ -143,6 +140,11 @@ impl V1Parameters {
     /// Recovers an anchor height from the deterministic lease encoding.
     pub fn anchor_height(self, lease_expiry: u32) -> Option<u32> {
         lease_expiry.checked_sub(self.lease_duration_blocks)
+    }
+
+    /// First height at which an active state may be renewed.
+    pub fn renewal_opening(self, lease_expiry: u32) -> Option<u32> {
+        lease_expiry.checked_sub(self.refresh_deadline_blocks)
     }
 
     /// Returns whether an active state has a current discovery anchor.

@@ -456,8 +456,8 @@ pub fn build_names_v1_pczt<P: Parameters>(plan: NamesV1PcztPlan<P>) -> Result<Na
         operation_height,
     } = ironwood;
     ensure!(
-        expiry_height == BlockHeight::from_u32(operation_height),
-        "Names v1 PCZT expiry height {expiry_height} does not equal the operation's intended height {operation_height}"
+        expiry_height >= BlockHeight::from_u32(operation_height),
+        "Names v1 PCZT expiry height {expiry_height} precedes the operation's declared height {operation_height}"
     );
     let designated_action_index = u32::try_from(designated_action_index)
         .context("convert designated Names action index to CNV1 u32")?;

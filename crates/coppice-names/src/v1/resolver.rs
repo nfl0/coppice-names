@@ -5,7 +5,6 @@ use super::{
     machine::ResolutionStatus,
     operation::{CanonicalBlock, CanonicalTransaction, ChainTip, OperationKind, V1Operation},
     registration::{CommitRef, RegistrationIntent},
-    schedule,
     state::{NameId, NameState, StateData, StateRef, StateStatus},
     transition::{GenesisStatement, TransitionStatement, V1StateProofVerifier},
 };
@@ -58,7 +57,7 @@ pub enum ResolveError {
 /// Acquisition and verification counts returned with one fresh lookup.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ResolutionStats {
-    /// Candidate scheduled block bodies probed for REVEAL/RENEW anchors.
+    /// Candidate block bodies probed for REVEAL/RENEW timing anchors.
     pub candidate_block_probes: u32,
     /// Blocks after the selected anchor scanned for arbitrary-height updates.
     pub tail_blocks_scanned: u32,
@@ -266,13 +265,11 @@ where
                 return Err(ResolveError::InvalidLineage);
             }
             previous_hash = Some(block.block_hash);
-            if schedule::is_anchor_height(name_id, height, self.params) {
-                self.stats.candidate_block_probes = self
-                    .stats
-                    .candidate_block_probes
-                    .checked_add(1)
-                    .ok_or(ResolveError::ArithmeticOverflow)?;
-            }
+            self.stats.candidate_block_probes = self
+                .stats
+                .candidate_block_probes
+                .checked_add(1)
+                .ok_or(ResolveError::ArithmeticOverflow)?;
             if height > start_height {
                 self.stats.tail_blocks_scanned = self
                     .stats
@@ -593,8 +590,18 @@ where
         );
         let name_state = NameState::new(state.clone(), *state_commitment, state_ref)
             .map_err(|_| ResolveError::InvalidOperation)?;
+        let proof_height = self
+            .params
+            .anchor_height(state.lease_expiry)
+            .ok_or(ResolveError::InvalidOperation)?;
+        if proof_height <= commit.position.height
+            || proof_height > block.height
+            || proof_height > expiry
+        {
+            return Err(ResolveError::InvalidOperation);
+        }
         let statement =
-            GenesisStatement::from_reveal(intent, &name_state, action, block.height, self.params)
+            GenesisStatement::from_reveal(intent, &name_state, action, proof_height, self.params)
                 .map_err(|_| ResolveError::InvalidOperation)?;
         if !self.proofs.verify_genesis(&statement, proof) {
             return Err(ResolveError::InvalidOperation);
@@ -777,17 +784,11 @@ where
             .params
             .reset_horizon()
             .map_err(|_| ResolveError::InvalidParameters)?;
-        let candidates = schedule::candidate_anchor_heights_with_age(
-            name_id,
-            commit_height,
-            self.params,
-            horizon,
-        );
         let harmless_at_or_before = commit_height.saturating_sub(horizon);
-        for height in candidates {
-            if height < self.params.activation_height || height <= harmless_at_or_before {
-                continue;
-            }
+        let activation_height = self.params.activation_height;
+        for height in (commit_height.saturating_sub(horizon)..=commit_height)
+            .filter(|height| *height >= activation_height && *height > harmless_at_or_before)
+        {
             self.stats.candidate_block_probes = self
                 .stats
                 .candidate_block_probes
@@ -886,6 +887,15 @@ where
         );
         let successor = NameState::new(state.clone(), *state_commitment, state_ref)
             .map_err(|_| ResolveError::InvalidOperation)?;
+        if kind == OperationKind::Renew {
+            let proof_height = self
+                .params
+                .anchor_height(successor.data.lease_expiry)
+                .ok_or(ResolveError::InvalidOperation)?;
+            if proof_height > block.height || block.height >= predecessor.data.lease_expiry {
+                return Err(ResolveError::InvalidOperation);
+            }
+        }
         let statement = TransitionStatement::from_states(
             &predecessor,
             &successor,

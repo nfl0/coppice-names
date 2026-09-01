@@ -21,7 +21,7 @@ impl V1StateProofVerifier for AcceptingProofs {
             && statement.sequence == 0
             && statement.status == StateStatus::Active.code()
             && statement.terminal_height == 0
-            && statement.scheduled
+            && statement.timing_valid
             && statement
                 .operation_height
                 .checked_add(statement.lease_duration_blocks)
@@ -46,7 +46,7 @@ impl V1StateProofVerifier for AcceptingProofs {
                 }
                 OperationKind::Renew => {
                     statement.successor_record_digest == statement.predecessor_record_digest
-                        && statement.scheduled
+                        && statement.timing_valid
                         && statement
                             .operation_height
                             .checked_add(statement.lease_duration_blocks)
@@ -1634,7 +1634,9 @@ fn fresh_resolution_rejects_cryptographically_valid_shadow_reveal_lineage() {
 
     let renew_height =
         schedule::next_anchor_height(name_id, machine.tip().height + 1, params).unwrap();
-    advance_to(&mut machine, &mut source, renew_height - 1);
+    // The proof declares `renew_height`, but ordinary mempool inclusion may
+    // occur in a later block while the predecessor lease remains active.
+    advance_to(&mut machine, &mut source, renew_height + 1);
     let shadow_update = NameState::new(
         shadow_update_state,
         shadow_update_commitment,
@@ -1947,7 +1949,7 @@ fn vertical_slice_registers_updates_renews_and_releases_one_name() {
     let state2 = machine.head(name_id).unwrap().clone();
 
     let renew_height =
-        schedule::next_anchor_height(name_id, machine.tip().height + 1, params).unwrap();
+        (state2.data.lease_expiry - params.refresh_deadline_blocks).max(machine.tip().height + 1);
     assert!(renew_height < state2.data.lease_expiry);
     advance_to(&mut machine, &mut source, renew_height - 1);
     let state3 = state_after(
@@ -1984,7 +1986,7 @@ fn vertical_slice_registers_updates_renews_and_releases_one_name() {
     assert_eq!(state3.data.record, b"record-2");
     assert!(state3.data.lease_expiry > state2.data.lease_expiry);
 
-    let update_height = renew_height + 1;
+    let update_height = machine.tip().height + 1;
     advance_to(&mut machine, &mut source, update_height - 1);
     let state4 = state_after(
         &state3,
@@ -2378,13 +2380,13 @@ fn registration_preserves_two_stage_maturity_slot_and_reclaim_boundaries() {
         20,
     );
     let outside_name = outside_intent.name_id().unwrap();
-    let outside_height = (2..=16)
+    let outside_height = (2..=14)
         .find(|height| !schedule::is_anchor_height(outside_name, *height, params))
         .unwrap();
     advance_to(
         &mut outside_machine,
         &mut outside_source,
-        outside_height - 1,
+        outside_height + 1,
     );
     let outside_state = StateData {
         name_id: outside_name,
@@ -2416,7 +2418,16 @@ fn registration_preserves_two_stage_maturity_slot_and_reclaim_boundaries() {
         )],
     )
     .unwrap();
-    assert_rejected(&outside_result, ApplyError::InvalidStateProof);
+    assert!(matches!(
+        outside_result
+            .operations
+            .last()
+            .map(|operation| &operation.result),
+        Some(AppliedOperationResult::Accepted(Some((
+            _,
+            AppliedOperationKind::Reveal
+        ))))
+    ));
 
     let mut unavailable_machine = V1StateMachine::new(params).unwrap();
     let mut unavailable_source = BTreeMap::new();

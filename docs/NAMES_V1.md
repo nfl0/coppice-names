@@ -70,18 +70,24 @@ per frame, 16,093-byte maximum payload.
   `coppice-names`; no wallet or harness duplicates it.
 - Operation tags: `Commit` (no action), `Reveal` (genesis), and
   `Update`/`Renew`/`Release` (transition codes 1/2/3 in the circuit).
-- Schedule, lease, claimability, reset-horizon, and abandonment rules are the
-  qualified ones in `coppice-names::v1::{lease, schedule}` and
-  `v1::machine`: exactly one deterministic anchor per epoch; REVEAL/RENEW
-  only at the anchor; lease extension only by renewal at a scheduled slot;
-  expired claimability at `lease_expiry + grace`; released claimability at
-  `terminal_height + reuse_delay`; abandoned claimability at
+- Lease, claimability, reset-horizon, and abandonment rules are the qualified
+  ones in `coppice-names::v1::{lease, schedule}` and `v1::machine`.
+  REVEAL declares a lease-start/proof height strictly after the canonical
+  COMMIT height and no later than the inclusive COMMIT TTL; the REVEAL
+  transaction may be canonically included later, provided that declared
+  height remains within that window. RENEW declares a height in the
+  predecessor's renewal window (`renewal_opening <= height < lease_expiry`)
+  and may likewise be included later, but before the predecessor's exclusive
+  lease expiry. Exact name-derived scheduling is not a validity rule. The
+  transaction expiry used for each operation must cover its declaration and
+  canonical-inclusion window. Expired claimability remains at
+  `lease_expiry + grace`; released claimability at `terminal_height +
+  reuse_delay`; abandoned claimability at
   `min(spend_height + reuse_delay, lease_expiry + grace)`; reset horizon
-  `H = max(D + G, D - 1 + R)` evaluated at the COMMIT's own height. The
-  local rules (anchor-restricted REVEAL/RENEW and lease extension) are
-  enforced by the proofs; the runtime derives the anchor and lease parameters
-  deterministically and enforces only history/applicability (claimability,
-  reset, abandonment).
+  `H = max(D + G, D - 1 + R)` is evaluated at the COMMIT's own height.
+  Proofs enforce the local declaration and lease predicates; runtime/replay
+  enforces canonical history and applicability (claimability, reset,
+  abandonment, and the inclusion bounds).
 
 The reset invalidates the former CNV2 vector identity. The final CNV1 vector-set
 identity (SHA-256 over length-prefixed canonical envelopes in family order) is
@@ -105,29 +111,31 @@ already establishes.
 The genesis public inputs are: name id, owner `ak`, successor commitment,
 sequence, record digest, lease expiry, status, terminal height, state digest,
 registration-input nullifier, successor future nullifier, minimum bond, the
-disclosed intent's name id, owner `ak`, and record digest, the actual REVEAL
-height, the protocol lease duration, and the canonically derived schedule
+disclosed intent's name id, owner `ak`, and record digest, the declared REVEAL
+lease-start/proof height, the protocol lease duration, and the lease
 predicate. The transition public inputs are: name and owner, predecessor
 commitment and action nullifier, successor commitment, operation code, both
 sequences, both record digests, both lease expiries, both statuses, both
 terminal heights, operation height, both state digests, the predecessor
 `StateRef` digest, the transition binding, the successor future nullifier, the
-successor name id and owner key, the protocol lease duration, the schedule
-predicate, and the predecessor head's proof-authenticated future nullifier.
+successor name id and owner key, the protocol lease duration, the renewal
+window predicate, and the predecessor head's proof-authenticated future
+nullifier.
 
 Both circuits prove the successor recipient derives from the predecessor's
 full-viewing-key authority and `rho_successor = nullifier_predecessor`; the
 transition circuit additionally proves exact hidden bond-value preservation
 from the predecessor note opening, which is retained in the witness solely for
 that relation. UPDATE/RENEW/RELEASE local legality, REVEAL/genesis formation,
-name/owner continuity, sequence increments, and the schedule predicate are
+name/owner continuity, sequence increments, and the lease-window predicates are
 enforced by the circuits, not by runtime validation. The runtime authenticates
 the canonical action facts before proof verification (exact accepted
 predecessor, successor commitment, and action nullifier equal to the head's
 proof-authenticated future nullifier); a canonical spend whose Names successor
-fails verification becomes abandonment. The schedule predicate and lease
+fails verification becomes abandonment. The lease-window predicate and lease
 duration are canonical deterministic statement preprocessing derived by the
-runtime from `name_id`, the operation height, and the protocol parameters.
+runtime from the declared operation height and the protocol parameters; exact
+name-derived scheduling is not a validity rule.
 
 The circuits live in the `state-note` feature of the `zakura-port` branch of
 `orchard-coppice` and are derived deterministically from the pinned params
@@ -155,11 +163,11 @@ builder `zcash-devtool::names_v1_builder`. A wallet host drives:
    `prepare_update` / `prepare_renew` / `prepare_release(TransitionInputs)`
    — binds the intent↔COMMIT commitment, the exact canonical references, the
    exact successor note (rho = spent nullifier, value preserved, recipient
-   derived from the owner key at the supplied scope), the authoritative
-   lease/schedule values, and the statement plus witness. Failures here are
-   local typed-binding failures (wrong intent/COMMIT pairing, mismatched
-   predecessor note, inactive or expired predecessor, non-scheduled RENEW
-   height, unchanged UPDATE record).
+   derived from the owner key at the supplied scope), the authoritative lease
+   values, and the statement plus witness. Failures here are local typed-binding
+   failures (wrong intent/COMMIT pairing, mismatched predecessor note, inactive
+   or expired predecessor, declaration outside its validity window, unchanged
+   UPDATE record).
 3. Host proving with `OrchardV1ProofProver` under the host RNG, then
    `finalize(proof)` — the complete proof-carrying operation, CNV1 bytes,
    CPV1 frames, footprint, and the exact successor note opening.
@@ -291,11 +299,10 @@ Ironwood consensus costs. Proof-size and performance optimization remains a
 separate post-regeneration campaign, including evaluation of the Zakura Common
 cryptography stack; it is not part of this compatibility migration or the
 final v1 release gate.
-FreshResolver cost is bounded by the discovery window: only the name's
-visible operations in the bounded anchor tail are replayed, and only
-scheduled anchor blocks are probed for reset eligibility; no global index or
-lookup RPC is required. No trusted provider is introduced to improve any of
-these costs.
+FreshResolver cost is bounded by its block-window discovery: only the name's
+visible operations in the bounded probe window are replayed, with bounded
+block probing for reset eligibility; no global index or lookup RPC is required.
+No trusted provider is introduced to improve any of these costs.
 
 ## 10. Consensus-version handling
 

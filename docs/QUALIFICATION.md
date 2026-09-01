@@ -134,3 +134,48 @@ proofs, 5,118-byte CNV1 REVEAL envelopes, 5,011-byte CNV1 UPDATE/RENEW/RELEASE
 envelopes, and 11 CPV1 frames for each state operation. These are recorded
 qualification observations; proof-size and performance optimization remains
 outside this release-finalization campaign.
+
+## Current qualification: validity-window protocol update (2026-09-01)
+
+The post-release validity-window update is now the current source behavior;
+the historical runs above are retained unchanged and their scheduled-height
+wording describes those old runs only. A REVEAL declares a lease-start/proof
+height strictly after its canonical COMMIT and within the inclusive COMMIT TTL,
+while canonical inclusion may occur later through that TTL. A RENEW declares a
+height inside the predecessor renewal window and may be included later before
+the predecessor lease expires. Transaction expiry must cover the corresponding
+declaration and inclusion windows. Exact name-derived scheduling is no longer
+a validity rule; `FreshResolver` uses bounded block-window probing.
+
+The protocol workspace test suite and the devtool all-target suite passed, and
+the complete Zakura/Zaino lifecycle was qualified with deliberately delayed
+REVEAL and RENEW inclusion. The proof public-input layout and frozen
+verifying-key identities remain unchanged.
+
+The live run used
+`zcash-devtool/scripts/live-qualification.sh --phase 2 --keep-state` with:
+
+- `coppice-names` protocol revision: `edee95b8cf7b78469d705f6f49688930728819b2`;
+- preserved evidence: `/tmp/coppice-names-v1-live.anarLs`.
+
+Canonical lifecycle evidence (every verification step reported
+`NAMES_FULL_FRESH_MATCH=yes`):
+
+- COMMIT `cfec3d0a76f82c5004311485cc50bf42defc144d735e86dff2373186d7720d74`
+  was accepted at height 14;
+- REVEAL `5acd25e32ed069e34790eb48523493b22946398462c49dd7221d5f72665cc6be`
+  declared height 15, was constructed and canonically accepted at height 17,
+  and remained valid through height 29;
+- UPDATE `0926248d3391bc6ce820d47601a2a631156329ac6a29a84f36fd225e1cb967ac`
+  was accepted at height 18;
+- RENEW `bb3bc6883b2b45101e588ffa245766e27d9a36bb266fd15399874c302212e2c2`
+  declared height 31, was constructed and canonically accepted at height 33,
+  and remained valid through height 46;
+- RELEASE `77b6f2aab7e8d2cfd12fd297e6a9c71ebf9a32b02a3e67cce8ccdfa45f35f2cd`
+  was accepted at height 34.
+
+The exact claimability edge also passed: replay and FreshResolver both
+returned `Released` at height 37 and `Expired` at height 38, with the canonical
+state and fresh anchor unchanged across the edge. This qualifies later
+canonical inclusion than the declared proof height for both REVEAL and RENEW;
+it does not claim validity beyond their respective expiry bounds.

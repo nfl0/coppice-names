@@ -494,20 +494,88 @@ pub fn recover_name_fvk(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::builder::build_names_v1_bundle;
-    use coppice::identity::CoreRuntimeId;
-    use coppice_names::{
-        proof::keygen, protocol::Network, publication::PublicationRoute, reducer::ProofVerifier,
+    use crate::builder::{
+        ChangeOutput, FundingSpend, NamesV1IronwoodSigningKey, NamesV1IronwoodWitness,
+        NamesV1PcztPlan, NamesV1SigningPlan, NamesV1WitnessPlan, build_names_v1_bundle,
+        build_names_v1_pczt, extract_names_v1_transaction, finalize_names_v1_pczt_io,
+        install_names_v1_ironwood_witnesses, prove_names_v1_ironwood_pczt,
+        sign_names_v1_ironwood_pczt,
     };
+    use coppice::{
+        identity::{CoreRuntimeId, CoreRuntimeParameters, ZcashNetwork},
+        replay::{
+            CoreCanonicalBlockInput, CoreCanonicalTransactionInput, CoreReplay,
+            CoreReplayActivationCheckpoint, CoreReplayConfiguration, FullTransactionAcquisition,
+            IronwoodFrontier,
+        },
+    };
+    use coppice_names::{
+        proof::keygen,
+        protocol::Network,
+        publication::PublicationRoute,
+        reducer::ProofVerifier,
+        transport::{NamesTransportStatus, inspect_name_transaction},
+    };
+    use incrementalmerkletree::{Marking, Position, Retention};
     use orchard::{
         NoteVersion,
-        keys::Scope,
+        bundle::BundleVersion,
+        keys::{Scope, SpendAuthorizingKey},
         note::{RandomSeed, Rho},
         value::NoteValue,
     };
     use rand_chacha::{ChaCha20Rng, rand_core::SeedableRng};
+    use shardtree::{ShardTree, store::memory::MemoryShardStore};
+    use zcash_protocol::{
+        consensus::{BlockHeight, BranchId},
+        local_consensus::LocalNetwork,
+    };
 
     const UA: &str = "uregtest1rxnn8qurdex552draeuvvvucggeknmmsxazg52mkatf0hrclhppe5jeqj6w7svqtxvxq320tw6ejsk4nm8zk8f35274vlwqerfx74904pydaxe27wnpq8llqxclaa0n04zg764ppzfruu4gsagmqw0mlvx";
+
+    fn runtime(activation_height: u32) -> coppice::identity::ValidatedCoreRuntimeParameters {
+        CoreRuntimeParameters {
+            runtime_protocol_id: b"coppice.runtime".to_vec(),
+            runtime_protocol_version: 1,
+            zcash_network_domain: b"coppice-runtime-regtest-v1".to_vec(),
+            zcash_network: ZcashNetwork::Regtest,
+            runtime_activation_height: activation_height,
+            carrier_protocol_id: b"CPV1".to_vec(),
+            rendezvous_ivk: hex::decode(
+                "65deb2b3ee7ac69020543f40f21122cb6dc1f4201a329fcdf9d5e3bb2dfbbabe29d542352fe36c3c7b24c2989dc9d0000b9e04f444e05dc4538bde395c0e6008",
+            )
+            .unwrap()
+            .try_into()
+            .unwrap(),
+            rendezvous_receiver: hex::decode(
+                "9ec59e4d447ba285086cc3456cadf62004a19b6a7989c726daaa9944a6cdbf25f7bfa51afa15b66da53881",
+            )
+            .unwrap()
+            .try_into()
+            .unwrap(),
+        }
+        .validate()
+        .unwrap()
+    }
+
+    fn local_v6_params() -> LocalNetwork {
+        let one = Some(BlockHeight::from_u32(1));
+        let two = Some(BlockHeight::from_u32(2));
+        LocalNetwork {
+            overwinter: one,
+            sapling: one,
+            blossom: one,
+            heartwood: one,
+            canopy: one,
+            nu5: two,
+            nu6: two,
+            nu6_1: two,
+            nu6_2: two,
+            nu6_3: two,
+            #[cfg(zcash_unstable = "nu7")]
+            nu7: two,
+        }
+    }
 
     #[test]
     fn recoverable_registration_and_refresh_prove_one_hidden_lineage() {
@@ -687,6 +755,250 @@ mod tests {
         assert_eq!(
             refresh_bundle.designated_commitment,
             refresh.statement().action_commitment.to_bytes()
+        );
+    }
+
+    #[test]
+    #[ignore = "generates replacement and Ironwood consensus proofs"]
+    fn replacement_reveal_round_trips_through_authenticated_core_transport() {
+        type TestTree = ShardTree<MemoryShardStore<orchard::tree::MerkleHashOrchard, u32>, 32, 4>;
+
+        let runtime = runtime(100);
+        let (prover, verifier) = keygen();
+        let deployment = DeploymentParameters {
+            core_runtime_id: runtime.core_runtime_id(),
+            activation_height: 100,
+            epoch_blocks: 1_152,
+            window_blocks: 24,
+            commit_maturity_blocks: 24,
+            commit_ttl_blocks: 192,
+            lease_blocks: 250_000,
+            cooldown_blocks: 1_152,
+            proof: verifier.identity(),
+        };
+        let deployment_id = deployment.deployment_id().unwrap();
+        let schedule = deployment.schedule(deployment_id);
+        let name = Name::parse("alice").unwrap();
+        let name_id = name.id().unwrap();
+        let reveal_height = (100 + 1_152..100 + 2 * 1_152)
+            .find(|height| schedule.accepts_operation(name_id, *height))
+            .unwrap();
+        let commit_height = reveal_height - deployment.commit_maturity_blocks;
+        let wallet_seed = [7; 64];
+        let commit = prepare_commit(&wallet_seed, deployment, &name, reveal_height).unwrap();
+        let commitment = match commit.publication().operation() {
+            Operation::Commit { commitment } => *commitment,
+            _ => unreachable!(),
+        };
+
+        let registration_key = SpendingKey::from_bytes([21; 32]).unwrap();
+        let registration_ask = SpendAuthorizingKey::from(&registration_key);
+        let registration_fvk = FullViewingKey::from(&registration_key);
+        let registration_rho = Rho::from_bytes(&[9; 32]).unwrap();
+        let registration_note = Note::from_parts(
+            registration_fvk.address_at(0u32, Scope::External),
+            NoteValue::from_raw(BOND_ZATOSHIS),
+            registration_rho,
+            RandomSeed::from_bytes([4; 32], &registration_rho).unwrap(),
+            NoteVersion::V3,
+        )
+        .unwrap();
+        let registration_commitment = ExtractedNoteCommitment::from(registration_note.commitment());
+        let registration_nullifier = registration_note.nullifier(&registration_fvk).to_bytes();
+        let reveal = prepare_reveal(
+            RevealInputs {
+                wallet_seed: &wallet_seed,
+                deployment,
+                name: name.clone(),
+                commit_ref: CommitRef {
+                    height: commit_height,
+                    tx_index: 2,
+                    txid: [4; 32],
+                },
+                ua: CanonicalUa::parse(Network::Regtest, UA).unwrap(),
+                operation_height: reveal_height,
+                designated_action_index: 0,
+                registration_fvk: &registration_fvk,
+                registration_note,
+            },
+            &prover,
+            ChaCha20Rng::from_seed([44; 32]),
+        )
+        .unwrap();
+        assert_eq!(reveal.statement().commitment, commitment);
+
+        let funding_key = SpendingKey::from_bytes([22; 32]).unwrap();
+        let funding_ask = SpendAuthorizingKey::from(&funding_key);
+        let funding_fvk = FullViewingKey::from(&funding_key);
+        let funding_rho = Rho::from_bytes(&[10; 32]).unwrap();
+        let funding_note = Note::from_parts(
+            funding_fvk.address_at(0u32, Scope::External),
+            NoteValue::from_raw(100_000),
+            funding_rho,
+            RandomSeed::from_bytes([5; 32], &funding_rho).unwrap(),
+            NoteVersion::V3,
+        )
+        .unwrap();
+        let funding_commitment = ExtractedNoteCommitment::from(funding_note.commitment());
+        let funding_nullifier = funding_note.nullifier(&funding_fvk).to_bytes();
+        let plan = reveal
+            .ironwood_plan(
+                registration_fvk,
+                registration_note,
+                vec![FundingSpend {
+                    fvk: funding_fvk.clone(),
+                    note: funding_note,
+                }],
+                vec![ChangeOutput {
+                    fvk: funding_fvk.clone(),
+                    ovk: None,
+                    recipient: funding_fvk.address_at(0u32, Scope::Internal),
+                    value: NoteValue::from_raw(35_000),
+                    memo: [0; 512],
+                }],
+            )
+            .unwrap();
+        let built = build_names_v1_bundle(plan, ChaCha20Rng::from_seed([46; 32])).unwrap();
+        assert_eq!(built.action_count, 13);
+        assert_eq!(built.ironwood_value_balance, 65_000);
+        assert_eq!(
+            built.designated_nullifier,
+            reveal.statement().action_nullifier.to_bytes()
+        );
+        assert_eq!(
+            built.designated_commitment,
+            reveal.statement().action_commitment.to_bytes()
+        );
+
+        let mut tree = TestTree::new(MemoryShardStore::empty(), 4);
+        tree.append(
+            orchard::tree::MerkleHashOrchard::from_cmx(&registration_commitment),
+            Retention::Checkpoint {
+                id: 0,
+                marking: Marking::Marked,
+            },
+        )
+        .unwrap();
+        tree.append(
+            orchard::tree::MerkleHashOrchard::from_cmx(&funding_commitment),
+            Retention::Checkpoint {
+                id: 1,
+                marking: Marking::Marked,
+            },
+        )
+        .unwrap();
+        let anchor: orchard::Anchor = tree.root_at_checkpoint_id(&1).unwrap().unwrap().into();
+        let registration_path: orchard::tree::MerklePath = tree
+            .witness_at_checkpoint_id(Position::from(0), &1)
+            .unwrap()
+            .unwrap()
+            .into();
+        let funding_path: orchard::tree::MerklePath = tree
+            .witness_at_checkpoint_id(Position::from(1), &1)
+            .unwrap()
+            .unwrap()
+            .into();
+
+        let pczt = build_names_v1_pczt(NamesV1PcztPlan {
+            ironwood: built,
+            params: local_v6_params(),
+            consensus_branch_id: BranchId::Nu6_3,
+            expiry_height: BlockHeight::from_u32(reveal_height),
+            fallback_lock_time: 0,
+        })
+        .unwrap();
+        let finalized = finalize_names_v1_pczt_io(pczt).unwrap();
+        let witnessed = install_names_v1_ironwood_witnesses(
+            finalized,
+            NamesV1WitnessPlan {
+                anchor,
+                spends: vec![
+                    NamesV1IronwoodWitness {
+                        nullifier: funding_nullifier,
+                        merkle_path: funding_path,
+                    },
+                    NamesV1IronwoodWitness {
+                        nullifier: registration_nullifier,
+                        merkle_path: registration_path,
+                    },
+                ],
+            },
+        )
+        .unwrap();
+        let proving_key =
+            orchard::circuit::ProvingKey::build(BundleVersion::ironwood_v3().circuit_version());
+        let proved = prove_names_v1_ironwood_pczt(witnessed, &proving_key).unwrap();
+        let signed = sign_names_v1_ironwood_pczt(
+            proved,
+            NamesV1SigningPlan {
+                spends: vec![
+                    NamesV1IronwoodSigningKey {
+                        nullifier: registration_nullifier,
+                        ask: registration_ask,
+                    },
+                    NamesV1IronwoodSigningKey {
+                        nullifier: funding_nullifier,
+                        ask: funding_ask,
+                    },
+                ],
+            },
+        )
+        .unwrap();
+        let extracted = extract_names_v1_transaction(signed).unwrap();
+        assert_eq!(extracted.action_count, 13);
+        assert_eq!(extracted.ironwood_value_balance, 65_000);
+        assert_eq!(extracted.designated_action_index, 0);
+
+        let ironwood = extracted.transaction.ironwood_bundle().unwrap();
+        let nullifiers = ironwood
+            .actions()
+            .iter()
+            .map(|action| action.nullifier().to_bytes())
+            .collect::<Vec<_>>();
+        let commitments = ironwood
+            .actions()
+            .iter()
+            .map(|action| action.cmx().to_bytes())
+            .collect::<Vec<_>>();
+        let mut transaction_bytes = Vec::new();
+        extracted.transaction.write(&mut transaction_bytes).unwrap();
+        let mut replay = CoreReplay::new(
+            CoreReplayConfiguration::new(reveal_height, 20).unwrap(),
+            CoreReplayActivationCheckpoint {
+                height: reveal_height - 1,
+                block_hash: [8; 32],
+                ironwood_frontier: IronwoodFrontier::empty(),
+                ironwood_tree_size: 0,
+            },
+        )
+        .unwrap();
+        let core_block = replay
+            .apply_block(&CoreCanonicalBlockInput {
+                height: reveal_height,
+                block_hash: [9; 32],
+                prev_block_hash: [8; 32],
+                branch_id: BranchId::Nu6_3,
+                transactions: vec![CoreCanonicalTransactionInput {
+                    tx_index: 7,
+                    txid: *extracted.txid.as_ref(),
+                    ironwood_nullifiers: nullifiers,
+                    ironwood_commitments: commitments,
+                    full_transaction_acquisition: FullTransactionAcquisition::ExtendedEffects,
+                    full_transaction: Some(transaction_bytes),
+                }],
+            })
+            .unwrap();
+        let decoded = inspect_name_transaction(
+            &core_block.transactions()[0],
+            &runtime,
+            deployment,
+            Network::Regtest,
+            &name,
+        )
+        .unwrap();
+        assert_eq!(
+            decoded,
+            NamesTransportStatus::Operation(reveal.publication().operation().clone())
         );
     }
 }

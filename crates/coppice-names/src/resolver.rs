@@ -27,6 +27,7 @@ struct StoredExactResolver {
 /// COMMITs remain until their bounded TTL because a later requested-name
 /// REVEAL can reference them. Proof-valid operations for other `NameId`s are
 /// discarded before proof verification and state construction.
+#[derive(Clone)]
 pub struct ExactResolver<V> {
     name: Name,
     name_id: NameId,
@@ -153,6 +154,7 @@ mod tests {
 
     const UA: &str = "uregtest1rxnn8qurdex552draeuvvvucggeknmmsxazg52mkatf0hrclhppe5jeqj6w7svqtxvxq320tw6ejsk4nm8zk8f35274vlwqerfx74904pydaxe27wnpq8llqxclaa0n04zg764ppzfruu4gsagmqw0mlvx";
 
+    #[derive(Clone)]
     struct AcceptProofs;
 
     impl ProofVerifier for AcceptProofs {
@@ -274,6 +276,17 @@ mod tests {
             })
         );
         assert_eq!(resolver.pending_commit(&commit_ref), Some(commitment));
+
+        let mut candidate = resolver.clone();
+        candidate.rollback_tip(hash(spend_height)).unwrap();
+        assert_eq!(
+            candidate.resolve(spend_height - 1).lifecycle,
+            Lifecycle::Active
+        );
+        assert_eq!(
+            resolver.resolve(spend_height).lifecycle,
+            Lifecycle::Cooldown
+        );
 
         let snapshot = resolver.save_snapshot().unwrap();
         let mut wrong_name: serde_json::Value = serde_json::from_slice(&snapshot).unwrap();

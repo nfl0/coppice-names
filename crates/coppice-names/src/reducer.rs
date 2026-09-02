@@ -193,6 +193,7 @@ struct StoredUndo {
     heads: Vec<([u8; 32], Option<StoredHead>)>,
 }
 
+#[derive(Clone)]
 struct Undo {
     height: u32,
     hash: [u8; 32],
@@ -205,6 +206,7 @@ struct Undo {
 
 /// Full canonical state. No global state root or externally trusted index is
 /// part of protocol authority.
+#[derive(Clone)]
 pub struct Reducer<V> {
     parameters: Parameters,
     verifier: V,

@@ -44,52 +44,52 @@ pub struct RefreshStatement {
 }
 
 impl RevealStatement {
+    pub(crate) fn fields(&self) -> [pallas::Base; 12] {
+        [
+            deployment_field(self.deployment_id),
+            pallas::Base::from(1),
+            self.name_id.field(),
+            pallas::Base::from(u64::from(self.inclusion_epoch)),
+            self.commitment.field(),
+            commit_ref_field(self.commit_ref),
+            ua_field(&self.ua),
+            pallas::Base::from(u64::from(self.action_index)),
+            self.action_nullifier.field(),
+            self.action_commitment.field(),
+            self.successor_future_nf.field(),
+            pallas::Base::from(BOND_ZATOSHIS),
+        ]
+    }
+
     /// Returns the one public field exposed by the REVEAL circuit.
     pub fn digest(&self) -> [u8; 32] {
-        fold(
-            REVEAL_DOMAIN,
-            [
-                deployment_field(self.deployment_id),
-                pallas::Base::from(1),
-                self.name_id.field(),
-                pallas::Base::from(u64::from(self.inclusion_epoch)),
-                self.commitment.field(),
-                commit_ref_field(self.commit_ref),
-                ua_field(&self.ua),
-                pallas::Base::from(u64::from(self.action_index)),
-                self.action_nullifier.field(),
-                self.action_commitment.field(),
-                self.successor_future_nf.field(),
-                pallas::Base::from(BOND_ZATOSHIS),
-            ],
-        )
-        .to_repr()
+        fold(REVEAL_DOMAIN, self.fields()).to_repr()
     }
 }
 
 impl RefreshStatement {
+    pub(crate) fn fields(&self) -> [pallas::Base; 14] {
+        [
+            deployment_field(self.deployment_id),
+            pallas::Base::from(2),
+            self.name_id.field(),
+            state_ref_field(self.predecessor_ref),
+            self.predecessor_commitment.field(),
+            self.predecessor_future_nf.field(),
+            pallas::Base::from(u64::from(self.predecessor_epoch)),
+            pallas::Base::from(u64::from(self.inclusion_epoch)),
+            ua_field(&self.ua),
+            pallas::Base::from(u64::from(self.action_index)),
+            self.action_nullifier.field(),
+            self.action_commitment.field(),
+            self.successor_future_nf.field(),
+            pallas::Base::from(BOND_ZATOSHIS),
+        ]
+    }
+
     /// Returns the one public field exposed by the REFRESH circuit.
     pub fn digest(&self) -> [u8; 32] {
-        fold(
-            REFRESH_DOMAIN,
-            [
-                deployment_field(self.deployment_id),
-                pallas::Base::from(2),
-                self.name_id.field(),
-                state_ref_field(self.predecessor_ref),
-                self.predecessor_commitment.field(),
-                self.predecessor_future_nf.field(),
-                pallas::Base::from(u64::from(self.predecessor_epoch)),
-                pallas::Base::from(u64::from(self.inclusion_epoch)),
-                ua_field(&self.ua),
-                pallas::Base::from(u64::from(self.action_index)),
-                self.action_nullifier.field(),
-                self.action_commitment.field(),
-                self.successor_future_nf.field(),
-                pallas::Base::from(BOND_ZATOSHIS),
-            ],
-        )
-        .to_repr()
+        fold(REFRESH_DOMAIN, self.fields()).to_repr()
     }
 }
 

@@ -337,6 +337,7 @@ dependencies = [
  "coppice",
  "hex",
  "postcard",
+ "rand_chacha",
  "rand_core 0.10.1",
  "serde",
  "serde_json",
@@ -2075,7 +2076,7 @@ dependencies = [
 [[package]]
 name = "zakura-orchard"
 version = "1.0.0"
-source = "git+https://github.com/nfl0/orchard-coppice.git?rev=0e09398970130b9510ce5011129acafc5039e79f#0e09398970130b9510ce5011129acafc5039e79f"
+source = "git+https://github.com/nfl0/orchard-coppice.git?rev=45499e4836912d1f0373295cf03f3b4faa7ec0a0#45499e4836912d1f0373295cf03f3b4faa7ec0a0"
 dependencies = [
  "aes",
  "bitvec",

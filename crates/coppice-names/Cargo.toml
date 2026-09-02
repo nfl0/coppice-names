@@ -26,4 +26,5 @@ sha2 = "0.10"
 zcash_address.workspace = true
 
 [dev-dependencies]
+rand_chacha.workspace = true
 zcash_protocol.workspace = true

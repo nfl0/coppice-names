@@ -2,6 +2,8 @@
 
 /// Exact manual operation codec for the replacement Names design.
 pub mod codec;
+/// Production Orchard proof adapters.
+pub mod proof;
 /// Canonical protocol values for the replacement Names design.
 pub mod protocol;
 /// Canonical accepted-state reducer.

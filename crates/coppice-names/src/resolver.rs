@@ -3,7 +3,10 @@
 use crate::{
     codec::Operation,
     protocol::{Name, NameId},
-    reducer::{Accepted, ApplyError, Block, ProofVerifier, Reducer, Resolution},
+    reducer::{
+        Accepted, ApplyError, Block, FinalizationError, ProofVerifier, Reducer, Resolution,
+        RollbackError,
+    },
     schedule::Parameters,
 };
 
@@ -58,6 +61,19 @@ impl<V: ProofVerifier> ExactResolver<V> {
     /// Resolves at an applied canonical height.
     pub fn resolve(&self, height: u32) -> Resolution {
         self.reducer.resolve(&self.name, height)
+    }
+
+    /// Reverts exactly the current canonical tip. Wallet hosts use this to
+    /// abort a speculative pre-scan application when their wallet database
+    /// rejects the corresponding block.
+    pub fn rollback_tip(&mut self, expected_hash: [u8; 32]) -> Result<(), RollbackError> {
+        self.reducer.rollback_tip(expected_hash)
+    }
+
+    /// Drops rollback journals only through a height the host has independently
+    /// finalized. This does not invent a Names finality rule.
+    pub fn finalize_through(&mut self, height: u32) -> Result<(), FinalizationError> {
+        self.reducer.finalize_through(height)
     }
 }
 
@@ -186,6 +202,37 @@ mod tests {
         assert_eq!(
             resolver.resolve(spend_height).lifecycle,
             Lifecycle::Cooldown
+        );
+
+        assert_eq!(
+            resolver.rollback_tip(hash(spend_height - 1)),
+            Err(RollbackError::WrongTipHash)
+        );
+        assert_eq!(
+            resolver.resolve(spend_height).lifecycle,
+            Lifecycle::Cooldown
+        );
+
+        resolver.rollback_tip(hash(spend_height)).unwrap();
+        assert_eq!(
+            resolver.resolve(spend_height - 1).lifecycle,
+            Lifecycle::Active
+        );
+
+        resolver
+            .apply_block(&Block {
+                height: spend_height,
+                hash: [40; 32],
+                prev_hash: hash(spend_height - 1),
+                transactions: vec![],
+            })
+            .unwrap();
+        assert_eq!(resolver.resolve(spend_height).lifecycle, Lifecycle::Active);
+
+        resolver.finalize_through(spend_height).unwrap();
+        assert_eq!(
+            resolver.rollback_tip([40; 32]),
+            Err(RollbackError::BeyondRetention)
         );
     }
 }

@@ -4,6 +4,10 @@
 pub mod codec;
 /// Canonical protocol values for the replacement Names design.
 pub mod protocol;
+/// Canonical accepted-state reducer.
+pub mod reducer;
+/// Deterministic height schedule and checked lifecycle arithmetic.
+pub mod schedule;
 /// Canonical one-public-field proof statements.
 pub mod statement;
 

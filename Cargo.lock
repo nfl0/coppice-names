@@ -308,7 +308,7 @@ checksum = "3d52eff69cd5e647efe296129160853a42795992097e8af39800e1060caeea9b"
 [[package]]
 name = "coppice"
 version = "0.1.0"
-source = "git+https://github.com/nfl0/coppice.git?rev=059a8dd28caf18bb6ff769bf43681ab7cbe493a4#059a8dd28caf18bb6ff769bf43681ab7cbe493a4"
+source = "git+https://github.com/nfl0/coppice.git?rev=7fce89d3839a76556df5dfc7825e998325a983c9#7fce89d3839a76556df5dfc7825e998325a983c9"
 dependencies = [
  "coppice-core",
  "zcash_protocol",
@@ -317,7 +317,7 @@ dependencies = [
 [[package]]
 name = "coppice-core"
 version = "0.1.0"
-source = "git+https://github.com/nfl0/coppice.git?rev=059a8dd28caf18bb6ff769bf43681ab7cbe493a4#059a8dd28caf18bb6ff769bf43681ab7cbe493a4"
+source = "git+https://github.com/nfl0/coppice.git?rev=7fce89d3839a76556df5dfc7825e998325a983c9#7fce89d3839a76556df5dfc7825e998325a983c9"
 dependencies = [
  "blake2b_simd",
  "incrementalmerkletree",

@@ -27,6 +27,8 @@ pub mod resolver;
 pub mod schedule;
 /// Canonical one-public-field proof statements.
 pub mod statement;
+/// Authenticated Core-to-Names transport boundary.
+pub mod transport;
 
 /// Transitional released implementation. This module is removed after its
 /// wallet and host dependents move to the replacement protocol.

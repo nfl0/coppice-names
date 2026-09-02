@@ -74,6 +74,43 @@ impl Parameters {
             .is_ok_and(|window| window.contains(height))
     }
 
+    /// Returns nonempty operation windows intersecting `[start, end)`, newest
+    /// first and clipped to the requested range.
+    ///
+    /// A resolver can scan compact action effects across its authenticated
+    /// range while restricting name-route trial decryption and full-transaction
+    /// acquisition to these windows. No candidate outside a returned window
+    /// can be accepted by the protocol.
+    pub fn operation_windows_descending(
+        self,
+        name_id: NameId,
+        start: u32,
+        end: u32,
+    ) -> Result<Vec<Window>, ScheduleError> {
+        self.validate()?;
+        if start >= end {
+            return Err(ScheduleError::InvalidRange);
+        }
+        let effective_start = start.max(self.activation_height);
+        if effective_start >= end {
+            return Ok(Vec::new());
+        }
+        let first_epoch = self.epoch(effective_start)?;
+        let last_epoch = self.epoch(end - 1)?;
+        let mut windows = Vec::new();
+        for epoch in (first_epoch..=last_epoch).rev() {
+            let window = self.window(name_id, epoch)?;
+            let clipped = Window {
+                start: window.start.max(effective_start),
+                end: window.end.min(end),
+            };
+            if clipped.start < clipped.end {
+                windows.push(clipped);
+            }
+        }
+        Ok(windows)
+    }
+
     pub fn accepts_commit(self, commit_height: u32, reveal_height: u32) -> bool {
         if commit_height < self.activation_height || reveal_height < commit_height {
             return false;
@@ -123,6 +160,7 @@ impl Window {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ScheduleError {
     InvalidParameters,
+    InvalidRange,
     BeforeActivation,
     Overflow,
 }
@@ -186,6 +224,39 @@ mod tests {
         assert_eq!(
             parameters.window(alice(), u32::MAX),
             Err(ScheduleError::Overflow)
+        );
+    }
+
+    #[test]
+    fn descending_acquisition_windows_are_clipped_and_complete() {
+        let parameters = synthetic();
+        let name_id = alice();
+        let windows = parameters
+            .operation_windows_descending(name_id, 120_090, 122_500)
+            .unwrap();
+        assert_eq!(windows.len(), 3);
+        assert_eq!(
+            windows[2],
+            Window {
+                start: 120_090,
+                end: 120_104
+            }
+        );
+        assert!(windows.windows(2).all(|pair| pair[0].start > pair[1].start));
+
+        for height in 120_090..122_500 {
+            assert_eq!(
+                parameters.accepts_operation(name_id, height),
+                windows.iter().any(|window| window.contains(height))
+            );
+        }
+        assert_eq!(
+            parameters.operation_windows_descending(name_id, 99_000, 100_000),
+            Ok(Vec::new())
+        );
+        assert_eq!(
+            parameters.operation_windows_descending(name_id, 100_000, 100_000),
+            Err(ScheduleError::InvalidRange)
         );
     }
 }

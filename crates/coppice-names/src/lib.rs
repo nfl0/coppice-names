@@ -19,6 +19,8 @@ pub mod deployment;
 pub mod proof;
 /// Canonical protocol values for the replacement Names design.
 pub mod protocol;
+/// Canonical outbound CA01/CPV1 publication construction.
+pub mod publication;
 /// Canonical accepted-state reducer.
 pub mod reducer;
 /// Exact arbitrary-name replay over authenticated canonical effects.

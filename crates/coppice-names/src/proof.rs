@@ -116,7 +116,10 @@ fn transcript<const N: usize>(fields: [pallas::Base; N]) -> [TranscriptField; N]
 mod tests {
     use super::*;
     use crate::{
+        codec::{CodecParameters, Operation, decode, encode},
         protocol::{CanonicalUa, CommitRef, Commitment, Name, Network},
+        reducer::{Action, Block, Lifecycle, Reducer, Transaction},
+        schedule::Parameters,
         statement::registration_commitment,
     };
     use orchard::{
@@ -260,5 +263,157 @@ mod tests {
         let mut wrong_statement = statement;
         wrong_statement.inclusion_epoch += 1;
         assert!(!verifier.verify_refresh(&wrong_statement, &proof));
+    }
+
+    #[test]
+    fn canonical_commit_reveal_fixture_resolves_through_real_proof() {
+        let spending_key = SpendingKey::from_bytes([7; 32]).unwrap();
+        let fvk = FullViewingKey::from(&spending_key);
+        let name = Name::parse("alice").unwrap();
+        let name_id = name.id().unwrap();
+        let parameters = Parameters {
+            deployment_id: [1; 32],
+            activation_height: 0,
+            epoch_blocks: 20,
+            window_blocks: 4,
+            commit_maturity_blocks: 4,
+            commit_ttl_blocks: 10,
+            lease_blocks: 50,
+            cooldown_blocks: 20,
+        };
+        let initial_window = (0..20)
+            .find(|height| parameters.accepts_operation(name_id, *height))
+            .unwrap();
+        let reveal_height = if initial_window < parameters.commit_maturity_blocks {
+            initial_window + parameters.epoch_blocks
+        } else {
+            initial_window
+        };
+        let commit_height = reveal_height - parameters.commit_maturity_blocks;
+        let commit_ref = CommitRef {
+            height: commit_height,
+            tx_index: 0,
+            txid: [10; 32],
+        };
+        let owner = FieldElement::from_bytes(owner_commitment(&spending_key).to_bytes()).unwrap();
+        let secret = FieldElement::from_bytes(pallas::Base::from(77).to_repr()).unwrap();
+        let commitment = Commitment::from_bytes(registration_commitment(
+            parameters.deployment_id,
+            name_id,
+            parameters.epoch(reveal_height).unwrap(),
+            owner,
+            secret,
+        ))
+        .unwrap();
+        let rho = Rho::from_bytes(&[9; 32]).unwrap();
+        let successor = Note::from_parts(
+            fvk.address_at(0u32, Scope::External),
+            NoteValue::from_raw(crate::protocol::BOND_ZATOSHIS),
+            rho,
+            RandomSeed::from_bytes([4; 32], &rho).unwrap(),
+            NoteVersion::V3,
+        )
+        .unwrap();
+        let action = Action {
+            action_index: 0,
+            nullifier: FieldElement::from_bytes(successor.rho().to_bytes()).unwrap(),
+            commitment: FieldElement::from_bytes(
+                ExtractedNoteCommitment::from(successor.commitment()).to_bytes(),
+            )
+            .unwrap(),
+        };
+        let successor_future_nf =
+            FieldElement::from_bytes(successor.nullifier(&fvk).to_bytes()).unwrap();
+        let statement = RevealStatement {
+            deployment_id: parameters.deployment_id,
+            name_id,
+            inclusion_epoch: parameters.epoch(reveal_height).unwrap(),
+            commitment,
+            commit_ref,
+            ua: CanonicalUa::parse(Network::Regtest, UA).unwrap(),
+            action_index: action.action_index,
+            action_nullifier: action.nullifier,
+            action_commitment: action.commitment,
+            successor_future_nf,
+        };
+        let (prover, verifier) = keygen();
+        let proof = prover
+            .prove_reveal(
+                &statement,
+                successor,
+                &spending_key,
+                secret,
+                ChaCha20Rng::from_seed([45; 32]),
+            )
+            .unwrap();
+        let codec = CodecParameters {
+            reveal_proof_bytes: orchard_names::REVEAL_PROOF_BYTES,
+            refresh_proof_bytes: orchard_names::REFRESH_PROOF_BYTES,
+        };
+        let commit_operation = Operation::Commit { commitment };
+        assert_eq!(
+            decode(
+                &encode(&commit_operation, codec).unwrap(),
+                Network::Regtest,
+                codec
+            ),
+            Ok(commit_operation.clone())
+        );
+        let reveal_operation = Operation::Reveal {
+            name: name.clone(),
+            commit: commit_ref,
+            ua: statement.ua.clone(),
+            action_index: action.action_index,
+            successor_future_nf,
+            proof,
+        };
+        assert_eq!(
+            decode(
+                &encode(&reveal_operation, codec).unwrap(),
+                Network::Regtest,
+                codec
+            ),
+            Ok(reveal_operation.clone())
+        );
+
+        let mut reducer = Reducer::new(parameters, [0; 32], verifier).unwrap();
+        for height in 0..=reveal_height {
+            let operation = if height == commit_height {
+                Some(commit_operation.clone())
+            } else if height == reveal_height {
+                Some(reveal_operation.clone())
+            } else {
+                None
+            };
+            let transactions = operation
+                .map(|operation| Transaction {
+                    tx_index: 0,
+                    txid: if height == commit_height {
+                        commit_ref.txid
+                    } else {
+                        [20; 32]
+                    },
+                    actions: if height == reveal_height {
+                        vec![action]
+                    } else {
+                        vec![]
+                    },
+                    operation: Some(operation),
+                })
+                .into_iter()
+                .collect();
+            reducer
+                .apply_block(&Block {
+                    height,
+                    hash: [u8::try_from(height + 1).unwrap(); 32],
+                    prev_hash: [u8::try_from(height).unwrap(); 32],
+                    transactions,
+                })
+                .unwrap();
+        }
+        let resolution = reducer.resolve(&name, reveal_height);
+        assert_eq!(resolution.lifecycle, Lifecycle::Active);
+        assert_eq!(resolution.ua, Some(statement.ua));
+        assert_eq!(resolution.head.unwrap().producer.txid, [20; 32]);
     }
 }

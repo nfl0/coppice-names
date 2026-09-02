@@ -1,6 +1,9 @@
 //! Deterministic canonical Names reducer.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::{
+    collections::{BTreeMap, VecDeque},
+    sync::Arc,
+};
 
 use crate::{
     codec::Operation,
@@ -44,6 +47,16 @@ pub struct Block {
 pub trait ProofVerifier {
     fn verify_reveal(&self, statement: &RevealStatement, proof: &[u8]) -> bool;
     fn verify_refresh(&self, statement: &RefreshStatement, proof: &[u8]) -> bool;
+}
+
+impl<V: ProofVerifier + ?Sized> ProofVerifier for Arc<V> {
+    fn verify_reveal(&self, statement: &RevealStatement, proof: &[u8]) -> bool {
+        (**self).verify_reveal(statement, proof)
+    }
+
+    fn verify_refresh(&self, statement: &RefreshStatement, proof: &[u8]) -> bool {
+        (**self).verify_refresh(statement, proof)
+    }
 }
 
 /// Current accepted state head for one name.
@@ -923,6 +936,15 @@ mod tests {
 
     fn field(value: u64) -> FieldElement {
         FieldElement::from_bytes(pallas::Base::from(value).to_repr()).unwrap()
+    }
+
+    #[test]
+    fn verifier_keys_can_be_shared_across_exact_reducers() {
+        let verifier = Arc::new(AcceptProofs);
+        let first = Reducer::new(parameters(), [0; 32], Arc::clone(&verifier)).unwrap();
+        let second = Reducer::new(parameters(), [0; 32], verifier).unwrap();
+        assert_eq!(first.tip(), None);
+        assert_eq!(second.tip(), None);
     }
 
     fn parameters() -> Parameters {

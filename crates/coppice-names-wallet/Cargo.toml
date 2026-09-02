@@ -12,9 +12,11 @@ workspace = true
 
 [dependencies]
 anyhow.workspace = true
+blake2b_simd.workspace = true
 coppice.workspace = true
 coppice-names.workspace = true
 orchard.workspace = true
+pasta_curves.workspace = true
 pczt.workspace = true
 rand.workspace = true
 rand_core.workspace = true
@@ -24,6 +26,7 @@ zcash_keys.workspace = true
 zcash_primitives.workspace = true
 zcash_protocol.workspace = true
 zip321.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
 hex.workspace = true

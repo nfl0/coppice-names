@@ -39,6 +39,7 @@ zcash_client_backend = { package = "zakura-client-backend", version = "=0.1.0-rc
 zcash_keys = { package = "zakura-keys", version = "=1.0.0" }
 zcash_primitives = { package = "zakura-primitives", version = "=1.0.0", features = ["std"] }
 zcash_protocol = { version = "=0.10.5", features = ["std", "local-consensus"] }
+zeroize = "1"
 pczt = { package = "zakura-pczt", version = "=0.1.0-rc2", features = ["io-finalizer", "orchard", "prover", "signer", "spend-finalizer", "tx-extractor", "zcp-builder"] }
 zip321 = "=0.9.0"
 zip32 = "0.2.1"

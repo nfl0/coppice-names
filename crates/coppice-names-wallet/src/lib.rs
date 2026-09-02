@@ -11,5 +11,6 @@
 pub mod bond;
 pub mod builder;
 pub mod operation;
+pub mod recovery;
 
 pub use bond::{BondInventoryDecision, REQUIRED_BOND_ZATOSHIS, classify_bond_inventory};

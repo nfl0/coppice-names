@@ -355,6 +355,7 @@ name = "coppice-names-wallet"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "blake2b_simd",
  "coppice",
  "coppice-names",
  "hex",
@@ -366,10 +367,12 @@ dependencies = [
  "zakura-client-backend",
  "zakura-keys",
  "zakura-orchard",
+ "zakura-pasta-curves",
  "zakura-pczt",
  "zakura-primitives",
  "zcash_address",
  "zcash_protocol",
+ "zeroize",
  "zip321",
 ]
 

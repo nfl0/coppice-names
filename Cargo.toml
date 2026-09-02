@@ -46,4 +46,4 @@ zip32 = "0.2.1"
 [patch.crates-io]
 # Replace the released Zakura Orchard package with the Coppice extension while
 # retaining one package/type family across Coppice Core and Names.
-zakura-orchard = { git = "https://github.com/nfl0/orchard-coppice.git", rev = "45499e4836912d1f0373295cf03f3b4faa7ec0a0" }
+zakura-orchard = { git = "https://github.com/nfl0/orchard-coppice.git", rev = "92f7e81f59d1d1760b780050095bd468d9fa64dc" }

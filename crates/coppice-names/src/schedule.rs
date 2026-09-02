@@ -29,6 +29,21 @@ impl Parameters {
         }
     }
 
+    /// Accelerated local-Regtest timing for qualification of the exact same
+    /// lifecycle and boundary rules as the production candidate.
+    pub const fn regtest(deployment_id: [u8; 32], activation_height: u32) -> Self {
+        Self {
+            deployment_id,
+            activation_height,
+            epoch_blocks: 32,
+            window_blocks: 4,
+            commit_maturity_blocks: 4,
+            commit_ttl_blocks: 24,
+            lease_blocks: 128,
+            cooldown_blocks: 32,
+        }
+    }
+
     pub fn validate(self) -> Result<Self, ScheduleError> {
         if self.window_blocks == 0
             || self.window_blocks > self.commit_maturity_blocks
@@ -178,6 +193,17 @@ mod tests {
                 .unwrap(),
             100_000,
         )
+    }
+
+    #[test]
+    fn regtest_profile_is_short_and_valid() {
+        let parameters = Parameters::regtest([7; 32], 2).validate().unwrap();
+        assert_eq!(parameters.epoch_blocks, 32);
+        assert_eq!(parameters.window_blocks, 4);
+        assert_eq!(parameters.commit_maturity_blocks, 4);
+        assert_eq!(parameters.commit_ttl_blocks, 24);
+        assert_eq!(parameters.lease_blocks, 128);
+        assert_eq!(parameters.cooldown_blocks, 32);
     }
 
     fn alice() -> NameId {

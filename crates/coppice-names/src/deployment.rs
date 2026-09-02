@@ -147,6 +147,48 @@ pub enum DeploymentError {
 }
 
 impl DeploymentParameters {
+    /// Builds the production-candidate deployment profile.
+    pub fn candidate(
+        core_runtime_id: CoreRuntimeId,
+        activation_height: u32,
+        proof: ProofIdentity,
+    ) -> Self {
+        let timing = Parameters::candidate([0; 32], activation_height);
+        Self::with_timing(core_runtime_id, timing, proof)
+    }
+
+    /// Builds the accelerated local-Regtest deployment profile.
+    ///
+    /// Timing fields remain identity-bearing, so this profile cannot be
+    /// confused with the production candidate even if every other input is
+    /// identical.
+    pub fn regtest(
+        core_runtime_id: CoreRuntimeId,
+        activation_height: u32,
+        proof: ProofIdentity,
+    ) -> Self {
+        let timing = Parameters::regtest([0; 32], activation_height);
+        Self::with_timing(core_runtime_id, timing, proof)
+    }
+
+    fn with_timing(
+        core_runtime_id: CoreRuntimeId,
+        timing: Parameters,
+        proof: ProofIdentity,
+    ) -> Self {
+        Self {
+            core_runtime_id,
+            activation_height: timing.activation_height,
+            epoch_blocks: timing.epoch_blocks,
+            window_blocks: timing.window_blocks,
+            commit_maturity_blocks: timing.commit_maturity_blocks,
+            commit_ttl_blocks: timing.commit_ttl_blocks,
+            lease_blocks: timing.lease_blocks,
+            cooldown_blocks: timing.cooldown_blocks,
+            proof,
+        }
+    }
+
     /// Validates the identity-bearing parameters.
     pub fn validate(self) -> Result<Self, DeploymentError> {
         if usize::from(self.proof.reveal_proof_bytes) > crate::codec::MAX_REVEAL_PROOF_BYTES
@@ -247,17 +289,25 @@ mod tests {
     use super::*;
 
     fn deployment() -> DeploymentParameters {
-        DeploymentParameters {
-            core_runtime_id: CoreRuntimeId::from_bytes([3; 32]),
-            activation_height: 100_000,
-            epoch_blocks: 1_152,
-            window_blocks: 24,
-            commit_maturity_blocks: 24,
-            commit_ttl_blocks: 192,
-            lease_blocks: 250_000,
-            cooldown_blocks: 1_152,
-            proof: ProofIdentity::derive(11, 4_704, 4_704, [1; 32], [2; 32]),
-        }
+        DeploymentParameters::candidate(
+            CoreRuntimeId::from_bytes([3; 32]),
+            100_000,
+            ProofIdentity::derive(11, 4_704, 4_704, [1; 32], [2; 32]),
+        )
+    }
+
+    #[test]
+    fn regtest_timing_changes_the_deployment_identity() {
+        let production = deployment();
+        let regtest = DeploymentParameters::regtest(
+            production.core_runtime_id,
+            production.activation_height,
+            production.proof,
+        );
+        assert!(regtest.validate().is_ok());
+        assert_ne!(production.deployment_id(), regtest.deployment_id());
+        assert_eq!(regtest.epoch_blocks, 32);
+        assert_eq!(regtest.lease_blocks, 128);
     }
 
     #[test]

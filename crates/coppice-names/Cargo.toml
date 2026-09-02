@@ -19,10 +19,10 @@ orchard = { workspace = true, features = ["std", "state-note"] }
 pasta_curves = { workspace = true }
 rand_core = { workspace = true }
 serde = { version = "1", features = ["derive"] }
+serde_json.workspace = true
 zcash_address.workspace = true
 
 [dev-dependencies]
 rand_chacha.workspace = true
-serde_json.workspace = true
 sha2.workspace = true
 zcash_protocol.workspace = true

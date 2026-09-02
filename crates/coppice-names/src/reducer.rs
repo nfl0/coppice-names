@@ -4,10 +4,13 @@ use std::collections::{BTreeMap, VecDeque};
 
 use crate::{
     codec::Operation,
-    protocol::{CanonicalUa, CommitRef, Commitment, FieldElement, Name, NameId, StateRef},
+    protocol::{CanonicalUa, CommitRef, Commitment, FieldElement, Name, NameId, Network, StateRef},
     schedule::Parameters,
     statement::{RefreshStatement, RevealStatement},
 };
+use serde::{Deserialize, Serialize};
+
+const REDUCER_SNAPSHOT_FORMAT_VERSION: u32 = 1;
 
 /// One authenticated Ironwood action in canonical transaction order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -112,6 +115,63 @@ pub enum RollbackError {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FinalizationError {
     BeyondTip,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SnapshotError {
+    Encoding,
+    UnsupportedFormat,
+    ParametersMismatch,
+    NameMismatch,
+    InvalidState,
+    InvalidHistory,
+}
+
+#[derive(Serialize, Deserialize)]
+struct StoredReducer {
+    format_version: u32,
+    parameters: StoredParameters,
+    next_height: Option<u32>,
+    tip_height: Option<u32>,
+    previous_hash: [u8; 32],
+    commits: Vec<(CommitRef, [u8; 32])>,
+    heads: Vec<([u8; 32], StoredHead)>,
+    history: Vec<StoredUndo>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+struct StoredParameters {
+    deployment_id: [u8; 32],
+    activation_height: u32,
+    epoch_blocks: u32,
+    window_blocks: u32,
+    commit_maturity_blocks: u32,
+    commit_ttl_blocks: u32,
+    lease_blocks: u32,
+    cooldown_blocks: u32,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct StoredHead {
+    name: String,
+    ua: String,
+    producer: StateRef,
+    commitment: [u8; 32],
+    future_nf: [u8; 32],
+    producer_epoch: u32,
+    expiry_height: u32,
+    terminal_height: Option<u32>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct StoredUndo {
+    height: u32,
+    hash: [u8; 32],
+    previous_hash: [u8; 32],
+    previous_next_height: Option<u32>,
+    previous_tip_height: Option<u32>,
+    commits: Vec<(CommitRef, Option<[u8; 32]>)>,
+    heads: Vec<([u8; 32], Option<StoredHead>)>,
 }
 
 struct Undo {
@@ -247,6 +307,98 @@ impl<V: ProofVerifier> Reducer<V> {
             self.history.pop_front();
         }
         Ok(())
+    }
+
+    /// Serializes deterministic replay state and retained rollback journals.
+    /// The bytes are derived cache data, not a consensus-authenticated state
+    /// commitment; hosts must integrity-protect them or replay on restore.
+    pub fn save_snapshot(&self) -> Result<Vec<u8>, SnapshotError> {
+        let stored = StoredReducer {
+            format_version: REDUCER_SNAPSHOT_FORMAT_VERSION,
+            parameters: self.parameters.into(),
+            next_height: self.next_height,
+            tip_height: self.tip_height,
+            previous_hash: self.previous_hash,
+            commits: self
+                .commits
+                .iter()
+                .map(|(reference, commitment)| (*reference, commitment.to_bytes()))
+                .collect(),
+            heads: self
+                .heads
+                .iter()
+                .map(|(name_id, head)| (name_id.to_bytes(), head.into()))
+                .collect(),
+            history: self.history.iter().map(StoredUndo::from).collect(),
+        };
+        serde_json::to_vec(&stored).map_err(|_| SnapshotError::Encoding)
+    }
+
+    /// Restores structurally validated replay state under independently
+    /// supplied protocol parameters and network selection.
+    pub fn load_snapshot(
+        parameters: Parameters,
+        network: Network,
+        verifier: V,
+        bytes: &[u8],
+    ) -> Result<Self, SnapshotError> {
+        let parameters = parameters
+            .validate()
+            .map_err(|_| SnapshotError::ParametersMismatch)?;
+        let stored: StoredReducer =
+            serde_json::from_slice(bytes).map_err(|_| SnapshotError::Encoding)?;
+        if stored.format_version != REDUCER_SNAPSHOT_FORMAT_VERSION {
+            return Err(SnapshotError::UnsupportedFormat);
+        }
+        if stored.parameters != StoredParameters::from(parameters) {
+            return Err(SnapshotError::ParametersMismatch);
+        }
+        validate_tip(parameters, stored.next_height, stored.tip_height)?;
+
+        let mut commits = BTreeMap::new();
+        for (reference, bytes) in stored.commits {
+            let commitment =
+                Commitment::from_bytes(bytes).map_err(|_| SnapshotError::InvalidState)?;
+            validate_commit(parameters, stored.tip_height, reference)?;
+            if commits.insert(reference, commitment).is_some() {
+                return Err(SnapshotError::InvalidState);
+            }
+        }
+
+        let mut heads = BTreeMap::new();
+        for (name_id, stored_head) in stored.heads {
+            let name_id = NameId::from_bytes(name_id).map_err(|_| SnapshotError::InvalidState)?;
+            let head = restore_head(parameters, network, stored.tip_height, stored_head)?;
+            if head.name.id() != Ok(name_id) || heads.insert(name_id, head).is_some() {
+                return Err(SnapshotError::InvalidState);
+            }
+        }
+
+        let mut history = VecDeque::new();
+        for stored_undo in stored.history {
+            let undo = restore_undo(parameters, network, stored.tip_height, stored_undo)?;
+            history.push_back(undo);
+        }
+        validate_history(stored.tip_height, stored.previous_hash, &history)?;
+
+        Ok(Self {
+            parameters,
+            verifier,
+            next_height: stored.next_height,
+            tip_height: stored.tip_height,
+            previous_hash: stored.previous_hash,
+            commits,
+            heads,
+            history,
+        })
+    }
+
+    pub(crate) fn is_exact_for(&self, name_id: NameId) -> bool {
+        self.heads.keys().all(|candidate| *candidate == name_id)
+            && self
+                .history
+                .iter()
+                .all(|undo| undo.heads.keys().all(|candidate| *candidate == name_id))
     }
 
     pub fn resolve(&self, name: &Name, height: u32) -> Resolution {
@@ -529,6 +681,209 @@ impl<V: ProofVerifier> Reducer<V> {
         );
         Some(name_id)
     }
+}
+
+impl From<Parameters> for StoredParameters {
+    fn from(value: Parameters) -> Self {
+        Self {
+            deployment_id: value.deployment_id,
+            activation_height: value.activation_height,
+            epoch_blocks: value.epoch_blocks,
+            window_blocks: value.window_blocks,
+            commit_maturity_blocks: value.commit_maturity_blocks,
+            commit_ttl_blocks: value.commit_ttl_blocks,
+            lease_blocks: value.lease_blocks,
+            cooldown_blocks: value.cooldown_blocks,
+        }
+    }
+}
+
+impl From<&Head> for StoredHead {
+    fn from(value: &Head) -> Self {
+        Self {
+            name: value.name.as_str().to_owned(),
+            ua: value.ua.as_str().to_owned(),
+            producer: value.producer,
+            commitment: value.commitment.to_bytes(),
+            future_nf: value.future_nf.to_bytes(),
+            producer_epoch: value.producer_epoch,
+            expiry_height: value.expiry_height,
+            terminal_height: value.terminal_height,
+        }
+    }
+}
+
+impl From<&Undo> for StoredUndo {
+    fn from(value: &Undo) -> Self {
+        Self {
+            height: value.height,
+            hash: value.hash,
+            previous_hash: value.previous_hash,
+            previous_next_height: value.previous_next_height,
+            previous_tip_height: value.previous_tip_height,
+            commits: value
+                .commits
+                .iter()
+                .map(|(reference, commitment)| (*reference, commitment.map(Commitment::to_bytes)))
+                .collect(),
+            heads: value
+                .heads
+                .iter()
+                .map(|(name_id, head)| (name_id.to_bytes(), head.as_ref().map(StoredHead::from)))
+                .collect(),
+        }
+    }
+}
+
+fn validate_tip(
+    parameters: Parameters,
+    next_height: Option<u32>,
+    tip_height: Option<u32>,
+) -> Result<(), SnapshotError> {
+    match tip_height {
+        None if next_height == Some(parameters.activation_height) => Ok(()),
+        Some(tip) if tip >= parameters.activation_height && next_height == tip.checked_add(1) => {
+            Ok(())
+        }
+        _ => Err(SnapshotError::InvalidState),
+    }
+}
+
+fn validate_commit(
+    parameters: Parameters,
+    tip_height: Option<u32>,
+    reference: CommitRef,
+) -> Result<(), SnapshotError> {
+    let tip = tip_height.ok_or(SnapshotError::InvalidState)?;
+    if reference.height < parameters.activation_height
+        || reference.height > tip
+        || tip - reference.height >= parameters.commit_ttl_blocks
+    {
+        return Err(SnapshotError::InvalidState);
+    }
+    Ok(())
+}
+
+fn restore_head(
+    parameters: Parameters,
+    network: Network,
+    tip_height: Option<u32>,
+    stored: StoredHead,
+) -> Result<Head, SnapshotError> {
+    let tip = tip_height.ok_or(SnapshotError::InvalidState)?;
+    let name = Name::parse(&stored.name).map_err(|_| SnapshotError::InvalidState)?;
+    let ua = CanonicalUa::parse(network, &stored.ua).map_err(|_| SnapshotError::InvalidState)?;
+    let commitment =
+        FieldElement::from_bytes(stored.commitment).map_err(|_| SnapshotError::InvalidState)?;
+    let future_nf =
+        FieldElement::from_bytes(stored.future_nf).map_err(|_| SnapshotError::InvalidState)?;
+    let expected_epoch = parameters
+        .epoch(stored.producer.height)
+        .map_err(|_| SnapshotError::InvalidState)?;
+    let expected_expiry = parameters
+        .expiry(stored.producer.height)
+        .map_err(|_| SnapshotError::InvalidState)?;
+    if stored.producer.height > tip
+        || stored.producer_epoch != expected_epoch
+        || stored.expiry_height != expected_expiry
+        || stored
+            .terminal_height
+            .is_some_and(|height| height < stored.producer.height || height > tip)
+    {
+        return Err(SnapshotError::InvalidState);
+    }
+    Ok(Head {
+        name,
+        ua,
+        producer: stored.producer,
+        commitment,
+        future_nf,
+        producer_epoch: stored.producer_epoch,
+        expiry_height: stored.expiry_height,
+        terminal_height: stored.terminal_height,
+    })
+}
+
+fn restore_undo(
+    parameters: Parameters,
+    network: Network,
+    tip_height: Option<u32>,
+    stored: StoredUndo,
+) -> Result<Undo, SnapshotError> {
+    let expected_previous_tip = if stored.height == parameters.activation_height {
+        None
+    } else {
+        stored.height.checked_sub(1)
+    };
+    if Some(stored.height) > tip_height
+        || stored.previous_next_height != Some(stored.height)
+        || stored.previous_tip_height != expected_previous_tip
+    {
+        return Err(SnapshotError::InvalidHistory);
+    }
+
+    let mut commits = BTreeMap::new();
+    for (reference, previous) in stored.commits {
+        let previous = previous
+            .map(Commitment::from_bytes)
+            .transpose()
+            .map_err(|_| SnapshotError::InvalidHistory)?;
+        if reference.height > stored.height
+            || (previous.is_some()
+                && validate_commit(parameters, stored.previous_tip_height, reference).is_err())
+            || commits.insert(reference, previous).is_some()
+        {
+            return Err(SnapshotError::InvalidHistory);
+        }
+    }
+
+    let mut heads = BTreeMap::new();
+    for (name_id, previous) in stored.heads {
+        let name_id = NameId::from_bytes(name_id).map_err(|_| SnapshotError::InvalidHistory)?;
+        let previous = previous
+            .map(|head| restore_head(parameters, network, stored.previous_tip_height, head))
+            .transpose()
+            .map_err(|_| SnapshotError::InvalidHistory)?;
+        if previous
+            .as_ref()
+            .is_some_and(|head| head.name.id() != Ok(name_id))
+            || heads.insert(name_id, previous).is_some()
+        {
+            return Err(SnapshotError::InvalidHistory);
+        }
+    }
+
+    Ok(Undo {
+        height: stored.height,
+        hash: stored.hash,
+        previous_hash: stored.previous_hash,
+        previous_next_height: stored.previous_next_height,
+        previous_tip_height: stored.previous_tip_height,
+        commits,
+        heads,
+    })
+}
+
+fn validate_history(
+    tip_height: Option<u32>,
+    previous_hash: [u8; 32],
+    history: &VecDeque<Undo>,
+) -> Result<(), SnapshotError> {
+    let Some(last) = history.back() else {
+        return Ok(());
+    };
+    if Some(last.height) != tip_height || last.hash != previous_hash {
+        return Err(SnapshotError::InvalidHistory);
+    }
+    let ordered: Vec<_> = history.iter().collect();
+    for pair in ordered.windows(2) {
+        if pair[0].height.checked_add(1) != Some(pair[1].height)
+            || pair[1].previous_hash != pair[0].hash
+        {
+            return Err(SnapshotError::InvalidHistory);
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

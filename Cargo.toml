@@ -28,6 +28,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 shardtree = "0.7"
+subtle = "2.6"
 # Keep the address parser on the same released package/type family used by
 # coppice-wallet and zcash-devtool. The Zakura forks do not alter this parser.
 zcash_address = "0.13.0"

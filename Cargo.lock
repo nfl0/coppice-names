@@ -362,6 +362,7 @@ dependencies = [
  "rand_chacha",
  "rand_core 0.10.1",
  "shardtree",
+ "subtle",
  "zakura-client-backend",
  "zakura-orchard",
  "zakura-pasta-curves",

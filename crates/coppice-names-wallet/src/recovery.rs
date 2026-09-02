@@ -54,13 +54,7 @@ pub fn derive_name_spending_key(
     deployment_id: [u8; 32],
     name: &Name,
 ) -> Result<SpendingKey, RecoveryError> {
-    if wallet_seed.len() != WALLET_SEED_BYTES {
-        return Err(RecoveryError::WrongSeedLength);
-    }
-    let mut root_input = Zeroizing::new(Vec::with_capacity(2 + wallet_seed.len()));
-    root_input.extend_from_slice(&(wallet_seed.len() as u16).to_be_bytes());
-    root_input.extend_from_slice(wallet_seed);
-    let master = Zeroizing::new(hash32(b"CoppiceN2Root_", &root_input));
+    let master = derive_names_master(wallet_seed)?;
 
     for retry in 0..=u32::MAX {
         let mut input = Vec::with_capacity(32 + 1 + name.as_bytes().len() + 4);
@@ -75,6 +69,18 @@ pub fn derive_name_spending_key(
         }
     }
     Err(RecoveryError::AuthorityDerivationExhausted)
+}
+
+pub(crate) fn derive_names_master(
+    wallet_seed: &[u8],
+) -> Result<Zeroizing<[u8; 32]>, RecoveryError> {
+    if wallet_seed.len() != WALLET_SEED_BYTES {
+        return Err(RecoveryError::WrongSeedLength);
+    }
+    let mut root_input = Zeroizing::new(Vec::with_capacity(2 + wallet_seed.len()));
+    root_input.extend_from_slice(&(wallet_seed.len() as u16).to_be_bytes());
+    root_input.extend_from_slice(wallet_seed);
+    Ok(Zeroizing::new(hash32(b"CoppiceN2Root_", &root_input)))
 }
 
 /// Derives the first nonzero epoch-specific secret whose complete hidden

@@ -2,13 +2,23 @@
 
 use crate::{
     codec::Operation,
-    protocol::{Name, NameId},
+    protocol::{Name, NameId, Network},
     reducer::{
         Accepted, ApplyError, Block, FinalizationError, ProofVerifier, Reducer, Resolution,
-        RollbackError,
+        RollbackError, SnapshotError,
     },
     schedule::Parameters,
 };
+use serde::{Deserialize, Serialize};
+
+const EXACT_RESOLVER_SNAPSHOT_FORMAT_VERSION: u32 = 1;
+
+#[derive(Serialize, Deserialize)]
+struct StoredExactResolver {
+    format_version: u32,
+    name: String,
+    reducer: Vec<u8>,
+}
 
 /// Name-only replay with the same acceptance rules as the full reducer.
 ///
@@ -74,6 +84,48 @@ impl<V: ProofVerifier> ExactResolver<V> {
     /// finalized. This does not invent a Names finality rule.
     pub fn finalize_through(&mut self, height: u32) -> Result<(), FinalizationError> {
         self.reducer.finalize_through(height)
+    }
+
+    /// Serializes this name's derived state and rollback journals. The host is
+    /// responsible for integrity protection because Ironwood does not commit
+    /// to Names application state.
+    pub fn save_snapshot(&self) -> Result<Vec<u8>, SnapshotError> {
+        let stored = StoredExactResolver {
+            format_version: EXACT_RESOLVER_SNAPSHOT_FORMAT_VERSION,
+            name: self.name.as_str().to_owned(),
+            reducer: self.reducer.save_snapshot()?,
+        };
+        serde_json::to_vec(&stored).map_err(|_| SnapshotError::Encoding)
+    }
+
+    /// Restores one structurally validated exact-name resolver. `name`,
+    /// `parameters`, and `network` are supplied independently by the host and
+    /// must agree with the snapshot.
+    pub fn load_snapshot(
+        parameters: Parameters,
+        network: Network,
+        name: Name,
+        verifier: V,
+        bytes: &[u8],
+    ) -> Result<Self, SnapshotError> {
+        let stored: StoredExactResolver =
+            serde_json::from_slice(bytes).map_err(|_| SnapshotError::Encoding)?;
+        if stored.format_version != EXACT_RESOLVER_SNAPSHOT_FORMAT_VERSION {
+            return Err(SnapshotError::UnsupportedFormat);
+        }
+        if stored.name != name.as_str() {
+            return Err(SnapshotError::NameMismatch);
+        }
+        let name_id = name.id().map_err(|_| SnapshotError::NameMismatch)?;
+        let reducer = Reducer::load_snapshot(parameters, network, verifier, &stored.reducer)?;
+        if !reducer.is_exact_for(name_id) {
+            return Err(SnapshotError::NameMismatch);
+        }
+        Ok(Self {
+            name,
+            name_id,
+            reducer,
+        })
     }
 }
 
@@ -199,6 +251,69 @@ mod tests {
                 .unwrap();
             previous_hash = block_hash;
         }
+        assert_eq!(
+            resolver.resolve(spend_height).lifecycle,
+            Lifecycle::Cooldown
+        );
+
+        let snapshot = resolver.save_snapshot().unwrap();
+        let mut wrong_name: serde_json::Value = serde_json::from_slice(&snapshot).unwrap();
+        wrong_name["name"] = serde_json::Value::String("mallory".to_owned());
+        assert_eq!(
+            ExactResolver::load_snapshot(
+                parameters,
+                Network::Regtest,
+                Name::parse("alice").unwrap(),
+                AcceptProofs,
+                &serde_json::to_vec(&wrong_name).unwrap(),
+            )
+            .map(|_| ()),
+            Err(SnapshotError::NameMismatch)
+        );
+        let mut wrong_parameters = parameters;
+        wrong_parameters.deployment_id = [8; 32];
+        assert_eq!(
+            ExactResolver::load_snapshot(
+                wrong_parameters,
+                Network::Regtest,
+                Name::parse("alice").unwrap(),
+                AcceptProofs,
+                &snapshot,
+            )
+            .map(|_| ()),
+            Err(SnapshotError::ParametersMismatch)
+        );
+        let mut invalid_history: serde_json::Value = serde_json::from_slice(&snapshot).unwrap();
+        let reducer_bytes: Vec<u8> =
+            serde_json::from_value(invalid_history["reducer"].take()).unwrap();
+        let mut reducer_state: serde_json::Value = serde_json::from_slice(&reducer_bytes).unwrap();
+        reducer_state["history"]
+            .as_array_mut()
+            .unwrap()
+            .last_mut()
+            .unwrap()["hash"][0] = serde_json::json!(99);
+        invalid_history["reducer"] =
+            serde_json::to_value(serde_json::to_vec(&reducer_state).unwrap()).unwrap();
+        assert_eq!(
+            ExactResolver::load_snapshot(
+                parameters,
+                Network::Regtest,
+                Name::parse("alice").unwrap(),
+                AcceptProofs,
+                &serde_json::to_vec(&invalid_history).unwrap(),
+            )
+            .map(|_| ()),
+            Err(SnapshotError::InvalidHistory)
+        );
+
+        let mut resolver = ExactResolver::load_snapshot(
+            parameters,
+            Network::Regtest,
+            Name::parse("alice").unwrap(),
+            AcceptProofs,
+            &snapshot,
+        )
+        .unwrap();
         assert_eq!(
             resolver.resolve(spend_height).lifecycle,
             Lifecycle::Cooldown

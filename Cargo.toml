@@ -12,7 +12,7 @@ repository = "https://github.com/nfl0/coppice-names"
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(zcash_unstable, values("nu7"))'] }
 
 [workspace.dependencies]
-coppice = { package = "coppice", git = "https://github.com/nfl0/coppice.git", rev = "7fce89d3839a76556df5dfc7825e998325a983c9" }
+coppice = { package = "coppice", git = "https://github.com/nfl0/coppice.git", rev = "95d4e747dfd680f98cc08e247e69aa96cef4856f" }
 coppice-names = { package = "coppice-names", path = "crates/coppice-names" }
 anyhow = "1"
 blake2b_simd = "1"

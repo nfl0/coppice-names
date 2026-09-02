@@ -231,6 +231,138 @@ pub struct NamesExtractedTransaction {
     pub ironwood_binding_signature_present: bool,
 }
 
+/// A complete ordinary Ironwood spend. This deliberately carries no Names
+/// operation metadata: it is used to release a bond by returning its value,
+/// less the normal transaction fee, to the wallet.
+pub struct OrdinaryIronwoodSpendPlan<P: Parameters> {
+    pub params: P,
+    pub consensus_branch_id: BranchId,
+    pub expiry_height: BlockHeight,
+    pub fallback_lock_time: u32,
+    pub anchor: orchard::Anchor,
+    pub input_fvk: FullViewingKey,
+    pub input_note: Note,
+    pub input_witness: orchard::tree::MerklePath,
+    pub input_ask: orchard::keys::SpendAuthorizingKey,
+    pub output: ChangeOutput,
+}
+
+/// A frozen V6 transaction that ordinarily spends one Ironwood note into one
+/// wallet-controlled Ironwood output.
+pub struct OrdinaryIronwoodTransaction {
+    pub transaction: Transaction,
+    pub txid: TxId,
+    pub consensus_tx_size: usize,
+    pub fee_zatoshi: u64,
+}
+
+/// Constructs, witnesses, proves, signs, and extracts a one-input/one-output
+/// ordinary Ironwood transaction. In particular, this does not use the
+/// designated-action Names construction and cannot publish a Names operation.
+pub fn build_ordinary_ironwood_spend<P: Parameters>(
+    plan: OrdinaryIronwoodSpendPlan<P>,
+    proving_key: &orchard::circuit::ProvingKey,
+    rng: impl Rng,
+) -> Result<OrdinaryIronwoodTransaction> {
+    ensure!(
+        plan.consensus_branch_id == BranchId::Nu6_3,
+        "ordinary Ironwood spend requires the NU6.3 V6 consensus branch"
+    );
+    let input_value = plan.input_note.value().inner();
+    let output_value = plan.output.value.inner();
+    let fee_zatoshi = input_value
+        .checked_sub(output_value)
+        .context("ordinary Ironwood output exceeds its input")?;
+    ensure!(fee_zatoshi > 0, "ordinary Ironwood spend must pay a fee");
+
+    let input_nullifier = plan.input_note.nullifier(&plan.input_fvk).to_bytes();
+    let mut builder = Builder::new_with_anchor_deferred(
+        BundleType::UNPADDED,
+        BundleVersion::ironwood_v3(),
+        Flags::ENABLED,
+        TxVersion::V6,
+    )
+    .context("create deferred-anchor ordinary Ironwood builder")?;
+    builder
+        .add_spend_unwitnessed(plan.input_fvk, plan.input_note)
+        .context("add ordinary Ironwood spend")?;
+    builder
+        .add_change_output(
+            plan.output.fvk,
+            plan.output.ovk,
+            plan.output.recipient,
+            plan.output.value,
+            plan.output.memo,
+        )
+        .context("add ordinary Ironwood output")?;
+    let value_balance = builder
+        .value_balance::<i64>()
+        .context("compute ordinary Ironwood value balance")?;
+    ensure!(
+        value_balance == i64::try_from(fee_zatoshi).context("fee exceeds i64")?,
+        "ordinary Ironwood value balance differs from its fee"
+    );
+    let (bundle, metadata) = builder
+        .build_for_pczt(rng)
+        .context("build ordinary Ironwood PCZT bundle")?;
+    let action_index = metadata
+        .spend_action_index(0)
+        .context("ordinary Ironwood spend action is missing")?;
+    ensure!(
+        bundle.actions().len() == 1 && action_index == 0,
+        "ordinary one-input/one-output spend did not produce one action"
+    );
+
+    let pczt = Creator::build_from_parts(PcztParts {
+        params: plan.params,
+        version: TransactionVersion::V6,
+        consensus_branch_id: plan.consensus_branch_id,
+        lock_time: plan.fallback_lock_time,
+        expiry_height: plan.expiry_height,
+        transparent: None,
+        sapling: None,
+        orchard: None,
+        ironwood: Some(bundle),
+    })
+    .context("embed ordinary Ironwood bundle in V6 PCZT")?;
+    let pczt = IoFinalizer::new(pczt)
+        .finalize_io()
+        .map_err(|error| anyhow::anyhow!("finalize ordinary Ironwood PCZT: {error:?}"))?;
+    ensure!(
+        pczt.ironwood().actions()[action_index].spend().nullifier() == &input_nullifier,
+        "ordinary Ironwood spend moved during PCZT creation"
+    );
+    let pczt = Updater::new(pczt)
+        .set_ironwood_anchor(plan.anchor)
+        .map_err(|error| anyhow::anyhow!("set ordinary Ironwood anchor: {error:?}"))?
+        .set_ironwood_spend_witnesses(vec![(action_index, plan.input_witness)])
+        .map_err(|error| anyhow::anyhow!("set ordinary Ironwood witness: {error:?}"))?
+        .finish();
+    let pczt = Prover::new(pczt)
+        .create_ironwood_proof(proving_key)
+        .map_err(|error| anyhow::anyhow!("prove ordinary Ironwood spend: {error:?}"))?
+        .finish();
+    let mut signer = Signer::new(pczt)
+        .map_err(|error| anyhow::anyhow!("initialize ordinary Ironwood signer: {error:?}"))?;
+    signer
+        .sign_ironwood(action_index, &plan.input_ask)
+        .map_err(|error| anyhow::anyhow!("sign ordinary Ironwood spend: {error:?}"))?;
+    let transaction = TransactionExtractor::new(signer.finish())
+        .extract()
+        .map_err(|error| anyhow::anyhow!("extract ordinary Ironwood transaction: {error:?}"))?;
+    ensure!(
+        transaction.version() == TransactionVersion::V6,
+        "extracted ordinary Ironwood transaction is not V6"
+    );
+    let consensus_tx_size = serialize_consensus_transaction(&transaction)?.len();
+    Ok(OrdinaryIronwoodTransaction {
+        txid: transaction.txid(),
+        transaction,
+        consensus_tx_size,
+        fee_zatoshi,
+    })
+}
+
 struct NamesSigningMetadata<'a> {
     anchor: orchard::Anchor,
     witnessed_action_indices: &'a [([u8; 32], usize)],
@@ -2708,5 +2840,61 @@ mod tests {
             ),
             65_000
         );
+    }
+
+    #[test]
+    #[ignore = "generates a real Ironwood consensus proof"]
+    fn ordinary_release_spends_one_bond_without_names_metadata() {
+        type TestTree = ShardTree<MemoryShardStore<orchard::tree::MerkleHashOrchard, u32>, 32, 4>;
+
+        let spending_key = SpendingKey::from_bytes([31; 32]).unwrap();
+        let fvk = FullViewingKey::from(&spending_key);
+        let input = note(&fvk, BOND_ZATOSHIS, 12, 13);
+        let commitment = ExtractedNoteCommitment::from(input.commitment());
+        let mut tree = TestTree::new(MemoryShardStore::empty(), 4);
+        tree.append(
+            orchard::tree::MerkleHashOrchard::from_cmx(&commitment),
+            Retention::Checkpoint {
+                id: 0,
+                marking: Marking::Marked,
+            },
+        )
+        .unwrap();
+        let anchor = tree.root_at_checkpoint_id(&0).unwrap().unwrap().into();
+        let witness = tree
+            .witness_at_checkpoint_id(Position::from(0), &0)
+            .unwrap()
+            .unwrap()
+            .into();
+        let output_value = BOND_ZATOSHIS - 10_000;
+        let built = build_ordinary_ironwood_spend(
+            OrdinaryIronwoodSpendPlan {
+                params: local_v6_params(),
+                consensus_branch_id: BranchId::Nu6_3,
+                expiry_height: BlockHeight::from_u32(100),
+                fallback_lock_time: 0,
+                anchor,
+                input_fvk: fvk.clone(),
+                input_note: input,
+                input_witness: witness,
+                input_ask: SpendAuthorizingKey::from(&spending_key),
+                output: ChangeOutput {
+                    fvk: fvk.clone(),
+                    ovk: Some(fvk.to_ovk(Scope::Internal)),
+                    recipient: fvk.address_at(0u32, Scope::Internal),
+                    value: NoteValue::from_raw(output_value),
+                    memo: [0; 512],
+                },
+            },
+            ironwood_proving_key(),
+            StdRng::from_seed([32; 32]),
+        )
+        .unwrap();
+
+        assert_eq!(built.fee_zatoshi, 10_000);
+        assert_eq!(built.transaction.version(), TransactionVersion::V6);
+        let bundle = built.transaction.ironwood_bundle().unwrap();
+        assert_eq!(bundle.actions().len(), 1);
+        assert_eq!(*bundle.actions()[0].nullifier(), input.nullifier(&fvk));
     }
 }

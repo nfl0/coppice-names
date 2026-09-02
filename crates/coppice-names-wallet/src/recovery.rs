@@ -5,10 +5,15 @@
 //! to recover each per-name Orchard authority and every epoch COMMIT opening.
 
 use coppice_names::{
-    protocol::{Commitment, FieldElement, Name},
-    statement::registration_commitment,
+    protocol::{BOND_ZATOSHIS, CanonicalUa, CommitRef, Commitment, FieldElement, Name, StateRef},
+    statement::{registration_commitment, ua_field},
 };
-use orchard::{circuit::state_note_binding::v2::owner_commitment, keys::SpendingKey};
+use orchard::{
+    circuit::state_note_binding::v2::owner_commitment,
+    keys::{FullViewingKey, Scope, SpendingKey},
+    note::{Note, NoteVersion, RandomSeed, Rho},
+    value::NoteValue,
+};
 use pasta_curves::{
     group::ff::{FromUniformBytes, PrimeField},
     pallas,
@@ -39,6 +44,8 @@ pub enum RecoveryError {
     WrongSeedLength,
     AuthorityDerivationExhausted,
     CommitDerivationExhausted,
+    InvalidActionNullifier,
+    NoteDerivationExhausted,
 }
 
 /// Derives the deployment- and name-separated hidden Orchard spending key.
@@ -105,6 +112,105 @@ pub fn derive_commit_opening(
     Err(RecoveryError::CommitDerivationExhausted)
 }
 
+/// Reconstructs the exact REVEAL successor bond note from canonical public
+/// inputs and the recoverable per-name key.
+pub fn derive_reveal_bond_note(
+    spending_key: &SpendingKey,
+    deployment_id: [u8; 32],
+    commit_ref: CommitRef,
+    target_epoch: u32,
+    ua: &CanonicalUa,
+    action_index: u32,
+    action_nullifier: FieldElement,
+) -> Result<Note, RecoveryError> {
+    let mut reference = Vec::with_capacity(40);
+    reference.extend_from_slice(&commit_ref.height.to_be_bytes());
+    reference.extend_from_slice(&commit_ref.tx_index.to_be_bytes());
+    reference.extend_from_slice(&commit_ref.txid);
+    derive_bond_note(
+        spending_key,
+        deployment_id,
+        1,
+        &reference,
+        target_epoch,
+        ua,
+        action_index,
+        action_nullifier,
+    )
+}
+
+/// Reconstructs the exact REFRESH successor bond note from canonical public
+/// inputs and the recoverable per-name key.
+pub fn derive_refresh_bond_note(
+    spending_key: &SpendingKey,
+    deployment_id: [u8; 32],
+    predecessor_ref: StateRef,
+    target_epoch: u32,
+    ua: &CanonicalUa,
+    action_index: u32,
+    action_nullifier: FieldElement,
+) -> Result<Note, RecoveryError> {
+    let mut reference = Vec::with_capacity(44);
+    reference.extend_from_slice(&predecessor_ref.height.to_be_bytes());
+    reference.extend_from_slice(&predecessor_ref.tx_index.to_be_bytes());
+    reference.extend_from_slice(&predecessor_ref.txid);
+    reference.extend_from_slice(&predecessor_ref.action_index.to_be_bytes());
+    derive_bond_note(
+        spending_key,
+        deployment_id,
+        2,
+        &reference,
+        target_epoch,
+        ua,
+        action_index,
+        action_nullifier,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn derive_bond_note(
+    spending_key: &SpendingKey,
+    deployment_id: [u8; 32],
+    operation_tag: u8,
+    reference: &[u8],
+    target_epoch: u32,
+    ua: &CanonicalUa,
+    action_index: u32,
+    action_nullifier: FieldElement,
+) -> Result<Note, RecoveryError> {
+    let rho = Option::<Rho>::from(Rho::from_bytes(&action_nullifier.to_bytes()))
+        .ok_or(RecoveryError::InvalidActionNullifier)?;
+    let key = Zeroizing::new(*spending_key.to_bytes());
+    let ua = ua_field(ua).to_repr();
+    let fvk = FullViewingKey::from(spending_key);
+    for retry in 0..=u32::MAX {
+        let mut input = Vec::with_capacity(32 + 1 + reference.len() + 4 + 32 + 4 + 32 + 4);
+        input.extend_from_slice(&deployment_id);
+        input.push(operation_tag);
+        input.extend_from_slice(reference);
+        input.extend_from_slice(&target_epoch.to_be_bytes());
+        input.extend_from_slice(&ua);
+        input.extend_from_slice(&action_index.to_be_bytes());
+        input.extend_from_slice(&action_nullifier.to_bytes());
+        input.extend_from_slice(&retry.to_be_bytes());
+        let candidate = Zeroizing::new(keyed_hash32(b"CoppiceN2Note_", &key[..], &input));
+        let Some(seed) = Option::<RandomSeed>::from(RandomSeed::from_bytes(*candidate, &rho))
+        else {
+            continue;
+        };
+        if let Some(note) = Option::<Note>::from(Note::from_parts(
+            fvk.address_at(0u32, Scope::External),
+            NoteValue::from_raw(BOND_ZATOSHIS),
+            rho,
+            seed,
+            NoteVersion::V3,
+        )) {
+            return Ok(note);
+        }
+    }
+    Err(RecoveryError::NoteDerivationExhausted)
+}
+
 fn hash32(personalization: &[u8], input: &[u8]) -> [u8; 32] {
     blake2b_simd::Params::new()
         .hash_length(32)
@@ -140,6 +246,10 @@ fn keyed_hash64(personalization: &[u8], key: &[u8], input: &[u8]) -> [u8; 64] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use coppice_names::protocol::Network;
+    use orchard::note::ExtractedNoteCommitment;
+
+    const UA: &str = "uregtest1rxnn8qurdex552draeuvvvucggeknmmsxazg52mkatf0hrclhppe5jeqj6w7svqtxvxq320tw6ejsk4nm8zk8f35274vlwqerfx74904pydaxe27wnpq8llqxclaa0n04zg764ppzfruu4gsagmqw0mlvx";
 
     #[test]
     fn authority_and_commit_opening_are_recoverable_and_separated() {
@@ -185,5 +295,72 @@ mod tests {
                 Err(RecoveryError::WrongSeedLength)
             );
         }
+    }
+
+    #[test]
+    fn bond_note_reconstruction_is_deterministic_and_context_bound() {
+        let deployment = [9; 32];
+        let name = Name::parse("alice").unwrap();
+        let key = derive_name_spending_key(&[7; 64], deployment, &name).unwrap();
+        let ua = CanonicalUa::parse(Network::Regtest, UA).unwrap();
+        let action_nullifier = FieldElement::from_bytes(pallas::Base::from(33).to_repr()).unwrap();
+        let reference = CommitRef {
+            height: 120,
+            tx_index: 2,
+            txid: [4; 32],
+        };
+        let note =
+            derive_reveal_bond_note(&key, deployment, reference, 17, &ua, 3, action_nullifier)
+                .unwrap();
+        let repeated =
+            derive_reveal_bond_note(&key, deployment, reference, 17, &ua, 3, action_nullifier)
+                .unwrap();
+        let changed = derive_reveal_bond_note(
+            &key,
+            deployment,
+            CommitRef {
+                tx_index: 3,
+                ..reference
+            },
+            17,
+            &ua,
+            3,
+            action_nullifier,
+        )
+        .unwrap();
+        let fvk = FullViewingKey::from(&key);
+        assert_eq!(note, repeated);
+        assert_ne!(note, changed);
+        assert_eq!(note.value().inner(), BOND_ZATOSHIS);
+        assert_eq!(note.rho().to_bytes(), action_nullifier.to_bytes());
+        assert_eq!(
+            hex::encode(note.rseed().as_bytes()),
+            "c94b61ef0d6c9300b26f96e968c98d7018f7b1dcaab3673036bd6b136e74e86a"
+        );
+        assert_eq!(
+            hex::encode(ExtractedNoteCommitment::from(note.commitment()).to_bytes()),
+            "61ccfed2a2982980366cd589e2f6cd61e721a43eed474f5512ac8071f4745b07"
+        );
+        assert_eq!(
+            hex::encode(note.nullifier(&fvk).to_bytes()),
+            "3f4749a7292e61ef64034d0f20e315a39a32c14255d1d14da01e93be602df206"
+        );
+
+        let refresh = derive_refresh_bond_note(
+            &key,
+            deployment,
+            StateRef {
+                height: 130,
+                tx_index: 4,
+                txid: [5; 32],
+                action_index: 3,
+            },
+            18,
+            &ua,
+            1,
+            action_nullifier,
+        )
+        .unwrap();
+        assert_ne!(note, refresh);
     }
 }

@@ -1,6 +1,6 @@
 //! Wallet-side construction for the replacement Names protocol.
 
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use coppice_names::{
     codec::Operation,
     deployment::DeploymentParameters,
@@ -11,11 +11,14 @@ use coppice_names::{
     statement::{RefreshStatement, RevealStatement},
 };
 use orchard::{
+    Address,
     keys::{FullViewingKey, SpendingKey},
     note::{ExtractedNoteCommitment, Note},
+    value::NoteValue,
 };
 use rand_core::Rng;
 
+use crate::builder::{CarrierOutput, ChangeOutput, FundingSpend, NamesV1IronwoodPlan};
 use crate::recovery::{
     derive_commit_opening, derive_name_spending_key, derive_refresh_bond_note,
     derive_reveal_bond_note,
@@ -43,6 +46,7 @@ pub struct PreparedReveal {
     statement: RevealStatement,
     successor_note: Note,
     publication: PreparedPublication,
+    operation_height: u32,
 }
 
 impl PreparedReveal {
@@ -57,6 +61,27 @@ impl PreparedReveal {
     pub const fn publication(&self) -> &PreparedPublication {
         &self.publication
     }
+
+    /// Produces the physical designated-pair plan consumed by the pinned
+    /// Ironwood PCZT builder. Every carrier is fixed to the derived name route
+    /// and zero value; callers control only ordinary fee funding and change.
+    pub fn ironwood_plan(
+        &self,
+        designated_fvk: FullViewingKey,
+        designated_spend: Note,
+        funding_spends: Vec<FundingSpend>,
+        change_outputs: Vec<ChangeOutput>,
+    ) -> Result<NamesV1IronwoodPlan> {
+        replacement_ironwood_plan(
+            &self.publication,
+            self.successor_note,
+            designated_fvk,
+            designated_spend,
+            funding_spends,
+            change_outputs,
+            self.operation_height,
+        )
+    }
 }
 
 /// Proven REFRESH publication and its exact successor opening. UPDATE and
@@ -66,6 +91,7 @@ pub struct PreparedRefresh {
     statement: RefreshStatement,
     successor_note: Note,
     publication: PreparedPublication,
+    operation_height: u32,
 }
 
 impl PreparedRefresh {
@@ -79,6 +105,24 @@ impl PreparedRefresh {
 
     pub const fn publication(&self) -> &PreparedPublication {
         &self.publication
+    }
+
+    pub fn ironwood_plan(
+        &self,
+        designated_fvk: FullViewingKey,
+        designated_spend: Note,
+        funding_spends: Vec<FundingSpend>,
+        change_outputs: Vec<ChangeOutput>,
+    ) -> Result<NamesV1IronwoodPlan> {
+        replacement_ironwood_plan(
+            &self.publication,
+            self.successor_note,
+            designated_fvk,
+            designated_spend,
+            funding_spends,
+            change_outputs,
+            self.operation_height,
+        )
     }
 }
 
@@ -245,6 +289,7 @@ pub fn prepare_reveal(
         statement,
         successor_note,
         publication,
+        operation_height,
     })
 }
 
@@ -385,6 +430,50 @@ pub fn prepare_refresh(
         statement,
         successor_note,
         publication,
+        operation_height,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn replacement_ironwood_plan(
+    publication: &PreparedPublication,
+    successor_note: Note,
+    designated_fvk: FullViewingKey,
+    designated_spend: Note,
+    funding_spends: Vec<FundingSpend>,
+    change_outputs: Vec<ChangeOutput>,
+    operation_height: u32,
+) -> Result<NamesV1IronwoodPlan> {
+    let (route, designated_action_index) = match (publication.route(), publication.operation()) {
+        (
+            coppice_names::publication::PublicationRoute::Name(route),
+            Operation::Reveal { action_index, .. } | Operation::Refresh { action_index, .. },
+        ) => (route, *action_index),
+        _ => anyhow::bail!("only name-routed REVEAL/REFRESH has a designated Ironwood plan"),
+    };
+    let recipient = Option::<Address>::from(Address::from_raw_address_bytes(&route.receiver()))
+        .context("derived name route receiver is invalid")?;
+    let carrier_outputs = publication
+        .frames()
+        .iter()
+        .map(|memo| CarrierOutput {
+            recipient,
+            value: NoteValue::from_raw(publication.carrier_value_zatoshis()),
+            memo: *memo,
+        })
+        .collect();
+    Ok(NamesV1IronwoodPlan {
+        designated_fvk,
+        designated_spend,
+        successor_note,
+        successor_ovk: None,
+        successor_memo: [0; 512],
+        carrier_outputs,
+        funding_spends,
+        change_outputs,
+        designated_action_index: usize::try_from(designated_action_index)
+            .context("designated action index does not fit usize")?,
+        operation_height,
     })
 }
 
@@ -405,6 +494,7 @@ pub fn recover_name_fvk(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::builder::build_names_v1_bundle;
     use coppice::identity::CoreRuntimeId;
     use coppice_names::{
         proof::keygen, protocol::Network, publication::PublicationRoute, reducer::ProofVerifier,
@@ -506,6 +596,25 @@ mod tests {
             reveal.successor_note().rho().to_bytes(),
             registration_note.nullifier(&registration_fvk).to_bytes()
         );
+        let reveal_plan = reveal
+            .ironwood_plan(registration_fvk.clone(), registration_note, vec![], vec![])
+            .unwrap();
+        assert!(
+            reveal_plan
+                .carrier_outputs
+                .iter()
+                .all(|carrier| carrier.value.inner() == 0)
+        );
+        let reveal_bundle =
+            build_names_v1_bundle(reveal_plan, ChaCha20Rng::from_seed([46; 32])).unwrap();
+        assert_eq!(
+            reveal_bundle.designated_nullifier,
+            reveal.statement().action_nullifier.to_bytes()
+        );
+        assert_eq!(
+            reveal_bundle.designated_commitment,
+            reveal.statement().action_commitment.to_bytes()
+        );
 
         let refresh_height = (100 + 2 * 1_152..100 + 3 * 1_152)
             .find(|height| schedule.accepts_operation(name_id, *height))
@@ -558,6 +667,26 @@ mod tests {
             PublicationRoute::Name(
                 coppice_names::protocol::NameRoute::derive(deployment_id, name_id).unwrap()
             )
+        );
+        let name_fvk = recover_name_fvk(&seed, deployment, &name).unwrap();
+        let refresh_plan = refresh
+            .ironwood_plan(name_fvk, *reveal.successor_note(), vec![], vec![])
+            .unwrap();
+        assert!(
+            refresh_plan
+                .carrier_outputs
+                .iter()
+                .all(|carrier| carrier.value.inner() == 0)
+        );
+        let refresh_bundle =
+            build_names_v1_bundle(refresh_plan, ChaCha20Rng::from_seed([47; 32])).unwrap();
+        assert_eq!(
+            refresh_bundle.designated_nullifier,
+            refresh.statement().action_nullifier.to_bytes()
+        );
+        assert_eq!(
+            refresh_bundle.designated_commitment,
+            refresh.statement().action_commitment.to_bytes()
         );
     }
 }

@@ -10,7 +10,6 @@
 
 pub mod bond;
 pub mod builder;
-pub mod operation;
 pub mod recovery;
 pub mod replacement;
 

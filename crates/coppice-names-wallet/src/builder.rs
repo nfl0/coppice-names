@@ -1,6 +1,7 @@
-//! Names v1 Ironwood PCZT-bundle construction with one designated action pair.
+//! Names Ironwood PCZT-bundle construction with one designated action pair.
 
 use anyhow::{Context, Result, bail, ensure};
+use coppice_names::protocol::BOND_ZATOSHIS;
 use orchard::{
     Address,
     builder::{Builder, BundleType, RequestedActionPair},
@@ -45,27 +46,27 @@ pub struct ChangeOutput {
     pub memo: [u8; 512],
 }
 
-/// Wallet-side intent for a Names v1 Ironwood PCZT bundle.
-pub struct NamesV1IronwoodPlan {
-    pub designated_fvk: FullViewingKey,
-    pub designated_spend: Note,
+/// Wallet-side intent for a Names Ironwood PCZT bundle.
+pub struct NamesIronwoodPlan {
+    pub(crate) designated_fvk: FullViewingKey,
+    pub(crate) designated_spend: Note,
     /// Exact successor opening already bound by the Names proof.
-    pub successor_note: Note,
-    pub successor_ovk: Option<OutgoingViewingKey>,
-    pub successor_memo: [u8; 512],
-    pub carrier_outputs: Vec<CarrierOutput>,
-    pub funding_spends: Vec<FundingSpend>,
-    pub change_outputs: Vec<ChangeOutput>,
-    /// Canonical action index carried by the CNV1 operation.
-    pub designated_action_index: usize,
-    /// Exact intended canonical height of the Names operation. The later
-    /// PCZT expiry height must equal this height.
-    pub operation_height: u32,
+    pub(crate) successor_note: Note,
+    pub(crate) successor_ovk: Option<OutgoingViewingKey>,
+    pub(crate) successor_memo: [u8; 512],
+    pub(crate) carrier_outputs: Vec<CarrierOutput>,
+    pub(crate) funding_spends: Vec<FundingSpend>,
+    pub(crate) change_outputs: Vec<ChangeOutput>,
+    /// Canonical action index carried by the CNV2 operation.
+    pub(crate) designated_action_index: usize,
+    /// Earliest intended canonical height of the Names operation. The later
+    /// PCZT expiry height must not precede this height.
+    pub(crate) operation_height: u32,
 }
 
-/// The public physical shape of a manually assembled Names v1 Ironwood bundle.
+/// The public physical shape of a manually assembled Names Ironwood bundle.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct NamesV1IronwoodShape {
+pub struct NamesIronwoodShape {
     pub real_spend_count: usize,
     pub requested_output_count: usize,
     pub carrier_output_count: usize,
@@ -74,7 +75,7 @@ pub struct NamesV1IronwoodShape {
 }
 
 /// Constructed, unproved Ironwood PCZT bundle and verified layout metadata.
-pub struct NamesV1BuiltBundle {
+pub struct NamesBuiltBundle {
     pub bundle: orchard::pczt::Bundle,
     pub designated_action_index: usize,
     pub designated_nullifier: [u8; 32],
@@ -86,24 +87,24 @@ pub struct NamesV1BuiltBundle {
     pub change_output_count: usize,
     /// Positive value contributed by Ironwood toward the transaction fee or other pools.
     pub ironwood_value_balance: i64,
-    /// Exact intended canonical height of the Names operation. The later
-    /// PCZT expiry height must equal this height.
+    /// Earliest intended canonical height of the Names operation. The later
+    /// PCZT expiry height must not precede this height.
     pub operation_height: u32,
 }
 
-/// Metadata needed to place an already-built Names v1 bundle into a V6 PCZT.
-pub struct NamesV1PcztPlan<P: Parameters> {
-    pub ironwood: NamesV1BuiltBundle,
+/// Metadata needed to place an already-built Names bundle into a V6 PCZT.
+pub struct NamesPcztPlan<P: Parameters> {
+    pub ironwood: NamesBuiltBundle,
     pub params: P,
     pub consensus_branch_id: BranchId,
     pub expiry_height: BlockHeight,
     pub fallback_lock_time: u32,
 }
 
-/// Complete, still-unproved Names v1 PCZT and the metadata needed by later roles.
-pub struct NamesV1BuiltPczt {
+/// Complete, still-unproved Names PCZT and the metadata needed by later roles.
+pub struct NamesBuiltPczt {
     pub pczt: pczt::Pczt,
-    /// The canonical CNV1 action index, encoded as `u32` at this boundary.
+    /// The canonical CNV2 action index, encoded as `u32` at this boundary.
     pub designated_action_index: u32,
     pub designated_nullifier: [u8; 32],
     pub designated_commitment: [u8; 32],
@@ -115,11 +116,11 @@ pub struct NamesV1BuiltPczt {
     pub ironwood_value_balance: i64,
 }
 
-/// Complete Names v1 PCZT after IO finalization, still without real witnesses, proofs, or
+/// Complete Names PCZT after IO finalization, still without real witnesses, proofs, or
 /// real spend authorization signatures.
-pub struct NamesV1FinalizedPczt {
+pub struct NamesFinalizedPczt {
     pub pczt: pczt::Pczt,
-    /// The canonical CNV1 action index, encoded as `u32` at this boundary.
+    /// The canonical CNV2 action index, encoded as `u32` at this boundary.
     pub designated_action_index: u32,
     pub designated_nullifier: [u8; 32],
     pub designated_commitment: [u8; 32],
@@ -132,24 +133,24 @@ pub struct NamesV1FinalizedPczt {
 }
 
 /// A wallet-provided real Ironwood spend witness, keyed by its canonical nullifier.
-pub struct NamesV1IronwoodWitness {
+pub struct NamesIronwoodWitness {
     pub nullifier: [u8; 32],
     pub merkle_path: orchard::tree::MerklePath,
 }
 
-/// Anchor and real-spend witnesses to install into an IO-finalized Names v1 PCZT.
-pub struct NamesV1WitnessPlan {
+/// Anchor and real-spend witnesses to install into an IO-finalized Names PCZT.
+pub struct NamesWitnessPlan {
     pub anchor: orchard::Anchor,
-    pub spends: Vec<NamesV1IronwoodWitness>,
+    pub spends: Vec<NamesIronwoodWitness>,
 }
 
-/// Names v1 PCZT after real Ironwood anchor and witness installation.
-pub struct NamesV1WitnessedPczt {
+/// Names PCZT after real Ironwood anchor and witness installation.
+pub struct NamesWitnessedPczt {
     pub pczt: pczt::Pczt,
     pub anchor: orchard::Anchor,
     /// `(nullifier, final PCZT action index)` entries in witness-plan order.
     pub witnessed_action_indices: Vec<([u8; 32], usize)>,
-    /// The canonical CNV1 action index, encoded as `u32` at this boundary.
+    /// The canonical CNV2 action index, encoded as `u32` at this boundary.
     pub designated_action_index: u32,
     pub designated_nullifier: [u8; 32],
     pub designated_commitment: [u8; 32],
@@ -161,13 +162,13 @@ pub struct NamesV1WitnessedPczt {
     pub ironwood_value_balance: i64,
 }
 
-/// Names v1 PCZT after creating the consensus Ironwood bundle proof.
-pub struct NamesV1ProvedPczt {
+/// Names PCZT after creating the consensus Ironwood bundle proof.
+pub struct NamesProvedPczt {
     pub pczt: pczt::Pczt,
     pub anchor: orchard::Anchor,
     /// `(nullifier, final PCZT action index)` entries in witness-plan order.
     pub witnessed_action_indices: Vec<([u8; 32], usize)>,
-    /// The canonical CNV1 action index, encoded as `u32` at this boundary.
+    /// The canonical CNV2 action index, encoded as `u32` at this boundary.
     pub designated_action_index: u32,
     pub designated_nullifier: [u8; 32],
     pub designated_commitment: [u8; 32],
@@ -181,23 +182,23 @@ pub struct NamesV1ProvedPczt {
 }
 
 /// A real Ironwood spend authorization key, keyed by its canonical nullifier.
-pub struct NamesV1IronwoodSigningKey {
+pub struct NamesIronwoodSigningKey {
     pub nullifier: [u8; 32],
     pub ask: orchard::keys::SpendAuthorizingKey,
 }
 
-/// Wallet signing requests for the real Ironwood spends in a Names v1 PCZT.
-pub struct NamesV1SigningPlan {
-    pub spends: Vec<NamesV1IronwoodSigningKey>,
+/// Wallet signing requests for the real Ironwood spends in a Names PCZT.
+pub struct NamesSigningPlan {
+    pub spends: Vec<NamesIronwoodSigningKey>,
 }
 
-/// Names v1 PCZT after both real Ironwood spends have been authorized.
-pub struct NamesV1SignedPczt {
+/// Names PCZT after both real Ironwood spends have been authorized.
+pub struct NamesSignedPczt {
     pub pczt: pczt::Pczt,
     pub anchor: orchard::Anchor,
     /// `(nullifier, final PCZT action index)` entries in witness-plan order.
     pub witnessed_action_indices: Vec<([u8; 32], usize)>,
-    /// The canonical CNV1 action index, encoded as `u32` at this boundary.
+    /// The canonical CNV2 action index, encoded as `u32` at this boundary.
     pub designated_action_index: u32,
     pub designated_nullifier: [u8; 32],
     pub designated_commitment: [u8; 32],
@@ -210,8 +211,8 @@ pub struct NamesV1SignedPczt {
     pub ironwood_proof_byte_len: usize,
 }
 
-/// Fully authorized consensus transaction extracted from a signed Names v1 PCZT.
-pub struct NamesV1ExtractedTransaction {
+/// Fully authorized consensus transaction extracted from a signed Names PCZT.
+pub struct NamesExtractedTransaction {
     pub transaction: Transaction,
     pub txid: TxId,
     pub consensus_tx_size: usize,
@@ -230,7 +231,7 @@ pub struct NamesV1ExtractedTransaction {
     pub ironwood_binding_signature_present: bool,
 }
 
-struct NamesV1SigningMetadata<'a> {
+struct NamesSigningMetadata<'a> {
     anchor: orchard::Anchor,
     witnessed_action_indices: &'a [([u8; 32], usize)],
     designated_action_index: u32,
@@ -242,12 +243,12 @@ struct NamesV1SigningMetadata<'a> {
 }
 
 /// Computes the exact requested and padded action counts used by the Orchard
-/// builder for a Names v1 plan.
-pub fn names_v1_ironwood_shape(plan: &NamesV1IronwoodPlan) -> Result<NamesV1IronwoodShape> {
+/// builder for a Names plan.
+pub fn names_ironwood_shape(plan: &NamesIronwoodPlan) -> Result<NamesIronwoodShape> {
     let real_spend_count = 1usize
         .checked_add(plan.funding_spends.len())
-        .context("Names v1 real-spend count overflowed usize")?;
-    names_v1_ironwood_shape_from_counts(
+        .context("Names real-spend count overflowed usize")?;
+    names_ironwood_shape_from_counts(
         real_spend_count,
         plan.carrier_outputs.len(),
         plan.change_outputs.len(),
@@ -255,34 +256,34 @@ pub fn names_v1_ironwood_shape(plan: &NamesV1IronwoodPlan) -> Result<NamesV1Iron
     )
 }
 
-/// Computes a Names v1 bundle shape when the note objects are not yet needed.
+/// Computes a Names bundle shape when the note objects are not yet needed.
 ///
 /// `real_spend_count` includes the one designated state-operation spend;
 /// `requested_output_count` is therefore one successor output plus the
 /// supplied carrier and change counts. The action count is delegated to the
 /// same `BundleType::UNPADDED` implementation used by the actual builder.
-pub fn names_v1_ironwood_shape_from_counts(
+pub fn names_ironwood_shape_from_counts(
     real_spend_count: usize,
     carrier_output_count: usize,
     change_output_count: usize,
     designated_action_index: usize,
-) -> Result<NamesV1IronwoodShape> {
+) -> Result<NamesIronwoodShape> {
     ensure!(
         real_spend_count > 0,
-        "Names v1 bundle must contain a designated real spend"
+        "Names bundle must contain a designated real spend"
     );
     let requested_output_count = 1usize
         .checked_add(carrier_output_count)
         .and_then(|count| count.checked_add(change_output_count))
-        .context("Names v1 requested-output count overflowed usize")?;
+        .context("Names requested-output count overflowed usize")?;
     let action_count = BundleType::UNPADDED
         .num_actions(Flags::ENABLED, real_spend_count, requested_output_count)
-        .map_err(|error| anyhow::anyhow!("compute Names v1 Ironwood action count: {error}"))?;
+        .map_err(|error| anyhow::anyhow!("compute Names Ironwood action count: {error}"))?;
     ensure!(
         designated_action_index < action_count,
         "designated Names action index is outside the planned Ironwood shape"
     );
-    Ok(NamesV1IronwoodShape {
+    Ok(NamesIronwoodShape {
         real_spend_count,
         requested_output_count,
         carrier_output_count,
@@ -291,16 +292,16 @@ pub fn names_v1_ironwood_shape_from_counts(
     })
 }
 
-/// Computes the conventional ZIP-317 fee for a manually assembled Names v1
+/// Computes the conventional ZIP-317 fee for a manually assembled Names
 /// shielded-only transaction.
 ///
 /// The pinned fee rule receives no transparent inputs or outputs and no
 /// Sapling or Orchard actions; the shared physical action count represents the
 /// complete Ironwood logical-action contribution.
-pub fn required_zip317_fee_for_names_v1<P: Parameters>(
+pub fn required_zip317_fee_for_names<P: Parameters>(
     params: &P,
     target_height: BlockHeight,
-    shape: NamesV1IronwoodShape,
+    shape: NamesIronwoodShape,
 ) -> Result<Zatoshis> {
     StandardFeeRule::Zip317
         .fee_required(
@@ -313,15 +314,26 @@ pub fn required_zip317_fee_for_names_v1<P: Parameters>(
             0,
             shape.action_count,
         )
-        .map_err(|error| anyhow::anyhow!("compute ZIP-317 Names v1 fee: {error:?}"))
+        .map_err(|error| anyhow::anyhow!("compute ZIP-317 Names fee: {error:?}"))
 }
 
-/// Builds the Ironwood portion of a Names v1 PCZT without proving or signing.
-pub fn build_names_v1_bundle(
-    plan: NamesV1IronwoodPlan,
-    rng: impl Rng,
-) -> Result<NamesV1BuiltBundle> {
-    let shape = names_v1_ironwood_shape(&plan)?;
+/// Builds the Ironwood portion of a Names PCZT without proving or signing.
+pub fn build_names_bundle(plan: NamesIronwoodPlan, rng: impl Rng) -> Result<NamesBuiltBundle> {
+    let shape = names_ironwood_shape(&plan)?;
+    ensure!(
+        plan.designated_spend.value().inner() == BOND_ZATOSHIS,
+        "designated Names input is not exactly the one-ZEC bond"
+    );
+    ensure!(
+        plan.successor_note.value().inner() == BOND_ZATOSHIS,
+        "Names successor is not exactly the one-ZEC bond"
+    );
+    ensure!(
+        plan.carrier_outputs
+            .iter()
+            .all(|carrier| carrier.value.inner() == 0),
+        "Names carrier outputs must be zero value"
+    );
     let designated_nullifier = plan.designated_spend.nullifier(&plan.designated_fvk);
     let designated_commitment = ExtractedNoteCommitment::from(plan.successor_note.commitment());
     ensure!(
@@ -408,7 +420,7 @@ pub fn build_names_v1_bundle(
         action_count == shape.action_count,
         "built Ironwood action count differs from the planned shape"
     );
-    Ok(NamesV1BuiltBundle {
+    Ok(NamesBuiltBundle {
         bundle,
         designated_action_index: plan.designated_action_index,
         designated_nullifier: designated_nullifier.to_bytes(),
@@ -429,8 +441,8 @@ pub fn build_names_v1_bundle(
 /// `PcztParts::ironwood` field accepts the existing `orchard::pczt::Bundle` and
 /// converts its fields into the top-level PCZT bundle without rebuilding the
 /// actions.
-pub fn build_names_v1_pczt<P: Parameters>(plan: NamesV1PcztPlan<P>) -> Result<NamesV1BuiltPczt> {
-    let NamesV1PcztPlan {
+pub fn build_names_pczt<P: Parameters>(plan: NamesPcztPlan<P>) -> Result<NamesBuiltPczt> {
+    let NamesPcztPlan {
         ironwood,
         params,
         consensus_branch_id,
@@ -439,10 +451,10 @@ pub fn build_names_v1_pczt<P: Parameters>(plan: NamesV1PcztPlan<P>) -> Result<Na
     } = plan;
     ensure!(
         consensus_branch_id == BranchId::Nu6_3,
-        "Names v1 Ironwood PCZT requires the NU6.3 V6 consensus branch"
+        "Names Ironwood PCZT requires the NU6.3 V6 consensus branch"
     );
 
-    let NamesV1BuiltBundle {
+    let NamesBuiltBundle {
         bundle,
         designated_action_index,
         designated_nullifier,
@@ -457,10 +469,10 @@ pub fn build_names_v1_pczt<P: Parameters>(plan: NamesV1PcztPlan<P>) -> Result<Na
     } = ironwood;
     ensure!(
         expiry_height >= BlockHeight::from_u32(operation_height),
-        "Names v1 PCZT expiry height {expiry_height} precedes the operation's declared height {operation_height}"
+        "Names PCZT expiry height {expiry_height} precedes the operation's declared height {operation_height}"
     );
     let designated_action_index = u32::try_from(designated_action_index)
-        .context("convert designated Names action index to CNV1 u32")?;
+        .context("convert designated Names action index to CNV2 u32")?;
     let source_action_layout = action_pair_layout(&bundle);
 
     let pczt = Creator::build_from_parts(PcztParts {
@@ -495,7 +507,7 @@ pub fn build_names_v1_pczt<P: Parameters>(plan: NamesV1PcztPlan<P>) -> Result<Na
         "embedded Ironwood value balance changed"
     );
 
-    Ok(NamesV1BuiltPczt {
+    Ok(NamesBuiltPczt {
         pczt,
         designated_action_index,
         designated_nullifier,
@@ -509,9 +521,9 @@ pub fn build_names_v1_pczt<P: Parameters>(plan: NamesV1PcztPlan<P>) -> Result<Na
     })
 }
 
-/// Runs the pinned PCZT IO Finalizer over a complete Names v1 V6 PCZT.
-pub fn finalize_names_v1_pczt_io(built: NamesV1BuiltPczt) -> Result<NamesV1FinalizedPczt> {
-    let NamesV1BuiltPczt {
+/// Runs the pinned PCZT IO Finalizer over a complete Names V6 PCZT.
+pub fn finalize_names_pczt_io(built: NamesBuiltPczt) -> Result<NamesFinalizedPczt> {
+    let NamesBuiltPczt {
         pczt,
         designated_action_index,
         designated_nullifier,
@@ -536,7 +548,7 @@ pub fn finalize_names_v1_pczt_io(built: NamesV1BuiltPczt) -> Result<NamesV1Final
 
     let pczt = IoFinalizer::new(pczt)
         .finalize_io()
-        .map_err(|error| anyhow::anyhow!("finalize Names v1 PCZT IO: {error:?}"))?;
+        .map_err(|error| anyhow::anyhow!("finalize Names PCZT IO: {error:?}"))?;
 
     ensure!(
         pczt.ironwood().actions().len() == before_action_count,
@@ -563,7 +575,7 @@ pub fn finalize_names_v1_pczt_io(built: NamesV1BuiltPczt) -> Result<NamesV1Final
         designated_commitment,
     )?;
 
-    Ok(NamesV1FinalizedPczt {
+    Ok(NamesFinalizedPczt {
         pczt,
         designated_action_index,
         designated_nullifier,
@@ -584,11 +596,11 @@ pub fn finalize_names_v1_pczt_io(built: NamesV1BuiltPczt) -> Result<NamesV1Final
 /// should therefore derive the plan from a trusted commitment-tree fixture or
 /// wallet tree; this helper verifies the structural mapping and preserves all
 /// existing dummy state.
-pub fn install_names_v1_ironwood_witnesses(
-    finalized: NamesV1FinalizedPczt,
-    plan: NamesV1WitnessPlan,
-) -> Result<NamesV1WitnessedPczt> {
-    let NamesV1FinalizedPczt {
+pub fn install_names_ironwood_witnesses(
+    finalized: NamesFinalizedPczt,
+    plan: NamesWitnessPlan,
+) -> Result<NamesWitnessedPczt> {
+    let NamesFinalizedPczt {
         pczt,
         designated_action_index,
         designated_nullifier,
@@ -600,7 +612,7 @@ pub fn install_names_v1_ironwood_witnesses(
         change_output_count,
         ironwood_value_balance,
     } = finalized;
-    let NamesV1WitnessPlan { anchor, spends } = plan;
+    let NamesWitnessPlan { anchor, spends } = plan;
 
     let before_action_layout = embedded_action_layout(&pczt)?;
     let before_action_count = pczt.ironwood().actions().len();
@@ -700,9 +712,9 @@ pub fn install_names_v1_ironwood_witnesses(
 
     let pczt = Updater::new(pczt)
         .set_ironwood_anchor(anchor)
-        .map_err(|error| anyhow::anyhow!("set Names v1 Ironwood anchor: {error:?}"))?
+        .map_err(|error| anyhow::anyhow!("set Names Ironwood anchor: {error:?}"))?
         .set_ironwood_spend_witnesses(updater_witnesses)
-        .map_err(|error| anyhow::anyhow!("set Names v1 Ironwood spend witnesses: {error:?}"))?
+        .map_err(|error| anyhow::anyhow!("set Names Ironwood spend witnesses: {error:?}"))?
         .finish();
 
     let expected_anchor = anchor.to_bytes();
@@ -751,7 +763,7 @@ pub fn install_names_v1_ironwood_witnesses(
         );
     }
 
-    Ok(NamesV1WitnessedPczt {
+    Ok(NamesWitnessedPczt {
         pczt,
         anchor,
         witnessed_action_indices,
@@ -767,16 +779,16 @@ pub fn install_names_v1_ironwood_witnesses(
     })
 }
 
-/// Creates the consensus Ironwood proof for an anchored, witnessed Names v1 PCZT.
+/// Creates the consensus Ironwood proof for an anchored, witnessed Names PCZT.
 ///
 /// The pinned Prover performs the authoritative witness-root check immediately
 /// before invoking the Ironwood circuit. This wrapper only checks cheap PCZT
 /// structure before and after that operation.
-pub fn prove_names_v1_ironwood_pczt(
-    witnessed: NamesV1WitnessedPczt,
+pub fn prove_names_ironwood_pczt(
+    witnessed: NamesWitnessedPczt,
     proving_key: &orchard::circuit::ProvingKey,
-) -> Result<NamesV1ProvedPczt> {
-    let NamesV1WitnessedPczt {
+) -> Result<NamesProvedPczt> {
+    let NamesWitnessedPczt {
         pczt,
         anchor,
         witnessed_action_indices,
@@ -869,7 +881,7 @@ pub fn prove_names_v1_ironwood_pczt(
 
     let pczt = Prover::new(pczt)
         .create_ironwood_proof(proving_key)
-        .map_err(|error| anyhow::anyhow!("create Names v1 Ironwood proof: {error:?}"))?
+        .map_err(|error| anyhow::anyhow!("create Names Ironwood proof: {error:?}"))?
         .finish();
 
     let proof_byte_len = pczt
@@ -927,7 +939,7 @@ pub fn prove_names_v1_ironwood_pczt(
         );
     }
 
-    Ok(NamesV1ProvedPczt {
+    Ok(NamesProvedPczt {
         pczt,
         anchor,
         witnessed_action_indices,
@@ -944,12 +956,12 @@ pub fn prove_names_v1_ironwood_pczt(
     })
 }
 
-/// Signs the two real Ironwood spends in a proved Names v1 PCZT.
-pub fn sign_names_v1_ironwood_pczt(
-    proved: NamesV1ProvedPczt,
-    plan: NamesV1SigningPlan,
-) -> Result<NamesV1SignedPczt> {
-    let NamesV1ProvedPczt {
+/// Signs every real Ironwood spend in a proved Names PCZT.
+pub fn sign_names_ironwood_pczt(
+    proved: NamesProvedPczt,
+    plan: NamesSigningPlan,
+) -> Result<NamesSignedPczt> {
+    let NamesProvedPczt {
         pczt,
         anchor,
         witnessed_action_indices,
@@ -979,9 +991,9 @@ pub fn sign_names_v1_ironwood_pczt(
         "proved PCZT Ironwood proof length differs from its metadata"
     );
 
-    let pczt = sign_names_v1_ironwood_pczt_core(
+    let pczt = sign_names_ironwood_pczt_core(
         pczt,
-        NamesV1SigningMetadata {
+        NamesSigningMetadata {
             anchor,
             witnessed_action_indices: &witnessed_action_indices,
             designated_action_index,
@@ -999,7 +1011,7 @@ pub fn sign_names_v1_ironwood_pczt(
         "signed PCZT Ironwood proof length changed"
     );
 
-    Ok(NamesV1SignedPczt {
+    Ok(NamesSignedPczt {
         pczt,
         anchor,
         witnessed_action_indices,
@@ -1018,13 +1030,13 @@ pub fn sign_names_v1_ironwood_pczt(
 
 /// Applies real Ironwood signatures while keeping the same logic usable by the
 /// cheap unproved fixture test. The public wrapper above additionally requires
-/// the consensus proof carried by `NamesV1ProvedPczt`.
-fn sign_names_v1_ironwood_pczt_core(
+/// the consensus proof carried by `NamesProvedPczt`.
+fn sign_names_ironwood_pczt_core(
     pczt: pczt::Pczt,
-    metadata: NamesV1SigningMetadata<'_>,
-    plan: NamesV1SigningPlan,
+    metadata: NamesSigningMetadata<'_>,
+    plan: NamesSigningPlan,
 ) -> Result<pczt::Pczt> {
-    let NamesV1SigningMetadata {
+    let NamesSigningMetadata {
         anchor,
         witnessed_action_indices,
         designated_action_index,
@@ -1034,11 +1046,6 @@ fn sign_names_v1_ironwood_pczt_core(
         real_spend_count,
         ironwood_value_balance,
     } = metadata;
-    ensure!(
-        real_spend_count == 2,
-        "Names v1 Ironwood signing requires exactly two real spends"
-    );
-
     let before_action_layout = embedded_action_layout(&pczt)?;
     let before_action_count = pczt.ironwood().actions().len();
     let before_value_balance = *pczt.ironwood().value_sum();
@@ -1123,7 +1130,7 @@ fn sign_names_v1_ironwood_pczt_core(
         "unexpected number of pre-existing Ironwood spend signatures"
     );
 
-    let NamesV1SigningPlan { spends } = plan;
+    let NamesSigningPlan { spends } = plan;
     ensure!(
         spends.len() == real_spend_count,
         "signing plan does not cover exactly the real Ironwood spends"
@@ -1170,11 +1177,11 @@ fn sign_names_v1_ironwood_pczt_core(
     );
 
     let mut signer = Signer::new(pczt)
-        .map_err(|error| anyhow::anyhow!("initialize Names v1 PCZT signer: {error:?}"))?;
+        .map_err(|error| anyhow::anyhow!("initialize Names PCZT signer: {error:?}"))?;
     for (action_index, ask) in signing_targets {
         signer
             .sign_ironwood(action_index, ask)
-            .map_err(|error| anyhow::anyhow!("sign Names v1 Ironwood spend: {error:?}"))?;
+            .map_err(|error| anyhow::anyhow!("sign Names Ironwood spend: {error:?}"))?;
     }
     let pczt = signer.finish();
 
@@ -1240,15 +1247,13 @@ fn sign_names_v1_ironwood_pczt_core(
     Ok(pczt)
 }
 
-/// Extracts a fully authorized consensus transaction from a signed Names v1 PCZT.
+/// Extracts a fully authorized consensus transaction from a signed Names PCZT.
 ///
 /// The pinned Transaction Extractor creates the Ironwood binding signature and performs the
 /// authoritative consensus proof and spend-signature verification before returning a frozen
 /// transaction. This wrapper checks only the cheap Names-specific invariants around that role.
-pub fn extract_names_v1_transaction(
-    signed: NamesV1SignedPczt,
-) -> Result<NamesV1ExtractedTransaction> {
-    let NamesV1SignedPczt {
+pub fn extract_names_transaction(signed: NamesSignedPczt) -> Result<NamesExtractedTransaction> {
+    let NamesSignedPczt {
         pczt,
         anchor,
         witnessed_action_indices: _,
@@ -1314,7 +1319,7 @@ pub fn extract_names_v1_transaction(
 
     let transaction = TransactionExtractor::new(pczt)
         .extract()
-        .map_err(|error| anyhow::anyhow!("extract Names v1 consensus transaction: {error:?}"))?;
+        .map_err(|error| anyhow::anyhow!("extract Names consensus transaction: {error:?}"))?;
 
     ensure!(
         transaction.version() == TransactionVersion::V6,
@@ -1335,7 +1340,7 @@ pub fn extract_names_v1_transaction(
     );
 
     let designated_action_index_usize = usize::try_from(designated_action_index)
-        .context("convert extracted CNV1 action index to usize")?;
+        .context("convert extracted CNV2 action index to usize")?;
     let designated_action = ironwood
         .actions()
         .get(designated_action_index_usize)
@@ -1390,7 +1395,7 @@ pub fn extract_names_v1_transaction(
     let serialized_transaction = serialize_consensus_transaction(&transaction)?;
     let consensus_tx_size = serialized_transaction.len();
 
-    Ok(NamesV1ExtractedTransaction {
+    Ok(NamesExtractedTransaction {
         txid: transaction.txid(),
         transaction,
         consensus_tx_size,
@@ -1439,7 +1444,7 @@ pub fn verify_embedded_designated_action(
     expected_commitment: [u8; 32],
 ) -> Result<()> {
     let action_index =
-        usize::try_from(action_index).context("convert embedded CNV1 action index to usize")?;
+        usize::try_from(action_index).context("convert embedded CNV2 action index to usize")?;
     let action = pczt
         .ironwood()
         .actions()
@@ -1546,20 +1551,14 @@ fn value_sum_parts(value_balance: i64) -> Result<(u64, bool)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use coppice_names::v1::{
-        CommitRef, GenesisStatement, IronwoodActionRef, NameState, OrchardV1ProofProver,
-        ProducerPosition, RegistrationIntent, StateData, StateRef, StateStatus, V1Operation,
-        V1Parameters, decode_operation, encode_operation, operation_footprint,
-    };
     use incrementalmerkletree::{Marking, Position, Retention};
     use orchard::{
-        circuit::state_note_binding::{GenesisWitness, spend_auth_owner_key_bytes},
         keys::{Scope, SpendAuthorizingKey, SpendingKey},
         note::{NoteVersion, RandomSeed, Rho},
     };
     use rand::{SeedableRng, rngs::StdRng};
     use shardtree::{ShardTree, store::memory::MemoryShardStore};
-    use std::{io::Cursor, sync::OnceLock, time::Instant};
+    use std::{io::Cursor, sync::OnceLock};
     use zcash_protocol::{
         consensus::BlockHeight,
         constants::{V6_TX_VERSION, V6_VERSION_GROUP_ID},
@@ -1612,14 +1611,14 @@ mod tests {
             .into_iter()
             .map(|memo| CarrierOutput {
                 recipient,
-                value: NoteValue::from_raw(1),
+                value: NoteValue::from_raw(0),
                 memo,
             })
             .collect()
     }
 
     struct FundedRevealFixture {
-        plan: NamesV1IronwoodPlan,
+        plan: NamesIronwoodPlan,
         registration_nullifier: [u8; 32],
         registration_commitment: ExtractedNoteCommitment,
         registration_ask: SpendAuthorizingKey,
@@ -1632,14 +1631,14 @@ mod tests {
         let registration_sk = SpendingKey::from_bytes([7; 32]).unwrap();
         let names_fvk = FullViewingKey::from(&registration_sk);
         let registration_ask = SpendAuthorizingKey::from(&registration_sk);
-        let input = note(&names_fvk, 50_000, 1, 2);
-        let successor = successor(&names_fvk, &input, 50_000, 3);
+        let input = note(&names_fvk, 100_000_000, 1, 2);
+        let successor = successor(&names_fvk, &input, 100_000_000, 3);
         let registration_nullifier = input.nullifier(&names_fvk).to_bytes();
         let registration_commitment = ExtractedNoteCommitment::from(input.commitment());
         let funding_sk = SpendingKey::from_bytes([8; 32]).unwrap();
         let funding_fvk = FullViewingKey::from(&funding_sk);
         let funding_ask = SpendAuthorizingKey::from(&funding_sk);
-        let funding = note(&funding_fvk, 10_000, 4, 5);
+        let funding = note(&funding_fvk, 100_000, 4, 5);
         let funding_nullifier = funding.nullifier(&funding_fvk).to_bytes();
         let funding_commitment = ExtractedNoteCommitment::from(funding.commitment());
         let carrier_fvk = fvk(9);
@@ -1647,13 +1646,13 @@ mod tests {
         let change_recipient = funding_fvk.address_at(0u32, Scope::Internal);
 
         FundedRevealFixture {
-            plan: NamesV1IronwoodPlan {
+            plan: NamesIronwoodPlan {
                 designated_fvk: names_fvk,
                 designated_spend: input,
                 successor_note: successor,
                 successor_ovk: None,
                 successor_memo: [0; 512],
-                // This is deliberately CPV1-sized fixture data; semantic CNV1
+                // This is deliberately CPV1-sized fixture data; semantic CNV2
                 // encoding is outside this structural PCZT test.
                 carrier_outputs: carriers(5_056, 11, carrier_recipient),
                 funding_spends: vec![FundingSpend {
@@ -1664,7 +1663,7 @@ mod tests {
                     fvk: funding_fvk,
                     ovk: None,
                     recipient: change_recipient,
-                    value: NoteValue::from_raw(8_989),
+                    value: NoteValue::from_raw(35_000),
                     memo: [0; 512],
                 }],
                 designated_action_index: 4,
@@ -1680,13 +1679,11 @@ mod tests {
         }
     }
 
-    fn funded_reveal_plan() -> NamesV1IronwoodPlan {
+    fn funded_reveal_plan() -> NamesIronwoodPlan {
         funded_reveal_fixture().plan
     }
 
-    fn deterministic_funded_reveal_witness_plan(
-        fixture: &FundedRevealFixture,
-    ) -> NamesV1WitnessPlan {
+    fn deterministic_funded_reveal_witness_plan(fixture: &FundedRevealFixture) -> NamesWitnessPlan {
         type TestTree = ShardTree<MemoryShardStore<orchard::tree::MerkleHashOrchard, u32>, 32, 4>;
 
         let mut tree = TestTree::new(MemoryShardStore::empty(), 4);
@@ -1725,14 +1722,14 @@ mod tests {
 
         // Deliberately return the randomized funding spend first. The helper
         // must resolve both entries from their nullifiers, not this order.
-        NamesV1WitnessPlan {
+        NamesWitnessPlan {
             anchor,
             spends: vec![
-                NamesV1IronwoodWitness {
+                NamesIronwoodWitness {
                     nullifier: fixture.funding_nullifier,
                     merkle_path: funding_path,
                 },
-                NamesV1IronwoodWitness {
+                NamesIronwoodWitness {
                     nullifier: fixture.registration_nullifier,
                     merkle_path: registration_path,
                 },
@@ -1769,8 +1766,7 @@ mod tests {
 
     #[test]
     fn reveal_shape_preserves_designated_pair_with_funding_and_change() {
-        let built =
-            build_names_v1_bundle(funded_reveal_plan(), StdRng::from_seed([10; 32])).unwrap();
+        let built = build_names_bundle(funded_reveal_plan(), StdRng::from_seed([10; 32])).unwrap();
 
         assert_eq!(built.designated_action_index, 4);
         assert_eq!(built.real_spend_count, 2);
@@ -1778,7 +1774,7 @@ mod tests {
         assert_eq!(built.carrier_output_count, 11);
         assert_eq!(built.change_output_count, 1);
         assert_eq!(built.action_count, 13);
-        assert_eq!(built.ironwood_value_balance, 1_000);
+        assert_eq!(built.ironwood_value_balance, 65_000);
         verify_designated_action(
             &built.bundle,
             built.designated_action_index,
@@ -1809,16 +1805,54 @@ mod tests {
     }
 
     #[test]
-    fn zip317_fee_planning_uses_shared_reveal_shape_and_previews_update() {
+    fn builder_rejects_noncanonical_bond_and_carrier_values() {
+        let mut wrong_input = funded_reveal_plan();
+        wrong_input.designated_spend = note(&wrong_input.designated_fvk, 99_999_999, 1, 2);
+        assert!(
+            build_names_bundle(wrong_input, StdRng::from_seed([14; 32]))
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("designated Names input")
+        );
+
+        let mut wrong_successor = funded_reveal_plan();
+        wrong_successor.successor_note = successor(
+            &wrong_successor.designated_fvk,
+            &wrong_successor.designated_spend,
+            99_999_999,
+            3,
+        );
+        assert!(
+            build_names_bundle(wrong_successor, StdRng::from_seed([15; 32]))
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("Names successor")
+        );
+
+        let mut wrong_carrier = funded_reveal_plan();
+        wrong_carrier.carrier_outputs[0].value = NoteValue::from_raw(1);
+        assert!(
+            build_names_bundle(wrong_carrier, StdRng::from_seed([16; 32]))
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("carrier outputs")
+        );
+    }
+
+    #[test]
+    fn zip317_fee_planning_uses_shared_reveal_shape() {
         let fixture = funded_reveal_fixture();
-        let reveal_shape = names_v1_ironwood_shape(&fixture.plan).unwrap();
+        let reveal_shape = names_ironwood_shape(&fixture.plan).unwrap();
         assert_eq!(reveal_shape.real_spend_count, 2);
         assert_eq!(reveal_shape.requested_output_count, 13);
         assert_eq!(reveal_shape.carrier_output_count, 11);
         assert_eq!(reveal_shape.change_output_count, 1);
         assert_eq!(reveal_shape.action_count, 13);
         assert_eq!(
-            required_zip317_fee_for_names_v1(
+            required_zip317_fee_for_names(
                 &local_v6_params(),
                 BlockHeight::from_u32(100),
                 reveal_shape,
@@ -1827,7 +1861,7 @@ mod tests {
             Zatoshis::from_u64(65_000).unwrap()
         );
 
-        let built = build_names_v1_bundle(fixture.plan, StdRng::from_seed([10; 32])).unwrap();
+        let built = build_names_bundle(fixture.plan, StdRng::from_seed([10; 32])).unwrap();
         assert_eq!(built.action_count, reveal_shape.action_count);
         assert_eq!(built.real_spend_count, reveal_shape.real_spend_count);
         assert_eq!(
@@ -1835,58 +1869,18 @@ mod tests {
             reveal_shape.requested_output_count
         );
 
-        let update = V1Operation::Update {
-            predecessor: StateRef::new(
-                ProducerPosition::new(950, 2, [4; 32]),
-                0,
-                0,
-                [6; 32],
-                [7; 32],
-            ),
-            state: StateData {
-                name_id: [1; 32],
-                owner_pk: [5; 32],
-                sequence: 1,
-                record: vec![6; 65],
-                lease_expiry: 2_000,
-                status: StateStatus::Active,
-                terminal_height: 0,
-            },
-            state_commitment: [8; 32],
-            state_nullifier: [9; 32],
-            action_index: 0,
-            proof: vec![0; 4_640],
-        };
-        let update_footprint = operation_footprint(&update).unwrap();
-        assert_eq!(update_footprint.operation_bytes, 4_950);
-        assert_eq!(update_footprint.proof_bytes, 4_640);
-        assert_eq!(update_footprint.cpv1_frames, 11);
-
-        let update_shape =
-            names_v1_ironwood_shape_from_counts(2, update_footprint.cpv1_frames, 1, 0).unwrap();
-        assert_eq!(update_shape.real_spend_count, 2);
-        assert_eq!(update_shape.requested_output_count, 13);
-        assert_eq!(update_shape.carrier_output_count, 11);
-        assert_eq!(update_shape.change_output_count, 1);
-        assert_eq!(update_shape.action_count, 13);
         assert_eq!(
-            required_zip317_fee_for_names_v1(
-                &local_v6_params(),
-                BlockHeight::from_u32(100),
-                update_shape,
-            )
-            .unwrap(),
-            Zatoshis::from_u64(65_000).unwrap()
+            names_ironwood_shape_from_counts(2, 11, 1, 0).unwrap(),
+            reveal_shape
         );
     }
 
     #[test]
     fn funded_reveal_embeds_directly_in_complete_v6_pczt() {
-        let built =
-            build_names_v1_bundle(funded_reveal_plan(), StdRng::from_seed([10; 32])).unwrap();
+        let built = build_names_bundle(funded_reveal_plan(), StdRng::from_seed([10; 32])).unwrap();
         let source_action_layout = action_pair_layout(&built.bundle);
 
-        let complete = build_names_v1_pczt(NamesV1PcztPlan {
+        let complete = build_names_pczt(NamesPcztPlan {
             ironwood: built,
             params: local_v6_params(),
             consensus_branch_id: BranchId::Nu6_3,
@@ -1914,8 +1908,8 @@ mod tests {
         assert_eq!(complete.designated_action_index, 4);
         assert!(complete.pczt.ironwood().anchor().is_none());
         assert!(complete.pczt.ironwood().zkproof().is_none());
-        assert_eq!(*complete.pczt.ironwood().value_sum(), (1_000, false));
-        assert_eq!(complete.ironwood_value_balance, 1_000);
+        assert_eq!(*complete.pczt.ironwood().value_sum(), (65_000, false));
+        assert_eq!(complete.ironwood_value_balance, 65_000);
         verify_embedded_designated_action(
             &complete.pczt,
             complete.designated_action_index,
@@ -1947,7 +1941,7 @@ mod tests {
             complete.designated_commitment,
         )
         .unwrap();
-        assert_eq!(*parsed.ironwood().value_sum(), (1_000, false));
+        assert_eq!(*parsed.ironwood().value_sum(), (65_000, false));
 
         let deferred_spend_indices = complete
             .pczt
@@ -1972,7 +1966,7 @@ mod tests {
 
         let pre_finalize_layout = embedded_action_layout(&complete.pczt).unwrap();
         let creator_bytes = complete.pczt.clone().serialize().unwrap();
-        let finalized = finalize_names_v1_pczt_io(complete).unwrap();
+        let finalized = finalize_names_pczt_io(complete).unwrap();
 
         assert_eq!(finalized.action_count, 13);
         assert_eq!(finalized.pczt.ironwood().actions().len(), 13);
@@ -1988,8 +1982,8 @@ mod tests {
             finalized.designated_commitment,
         )
         .unwrap();
-        assert_eq!(*finalized.pczt.ironwood().value_sum(), (1_000, false));
-        assert_eq!(finalized.ironwood_value_balance, 1_000);
+        assert_eq!(*finalized.pczt.ironwood().value_sum(), (65_000, false));
+        assert_eq!(finalized.ironwood_value_balance, 65_000);
         assert!(!finalized.pczt.global().inputs_modifiable());
         assert!(!finalized.pczt.global().outputs_modifiable());
         assert!(!finalized.pczt.global().shielded_modifiable());
@@ -2037,7 +2031,7 @@ mod tests {
             finalized_parsed.clone().serialize().unwrap(),
             finalized_bytes
         );
-        assert_eq!(*finalized_parsed.ironwood().value_sum(), (1_000, false));
+        assert_eq!(*finalized_parsed.ironwood().value_sum(), (65_000, false));
         assert!(finalized_parsed.ironwood().anchor().is_none());
         assert!(finalized_parsed.ironwood().zkproof().is_none());
     }
@@ -2046,8 +2040,8 @@ mod tests {
     fn funded_reveal_installs_real_witnesses_by_nullifier() {
         let fixture = funded_reveal_fixture();
         let witness_plan = deterministic_funded_reveal_witness_plan(&fixture);
-        let built = build_names_v1_bundle(fixture.plan, StdRng::from_seed([10; 32])).unwrap();
-        let complete = build_names_v1_pczt(NamesV1PcztPlan {
+        let built = build_names_bundle(fixture.plan, StdRng::from_seed([10; 32])).unwrap();
+        let complete = build_names_pczt(NamesPcztPlan {
             ironwood: built,
             params: local_v6_params(),
             consensus_branch_id: BranchId::Nu6_3,
@@ -2055,13 +2049,13 @@ mod tests {
             fallback_lock_time: 0,
         })
         .unwrap();
-        let finalized = finalize_names_v1_pczt_io(complete).unwrap();
+        let finalized = finalize_names_pczt_io(complete).unwrap();
 
         let before_layout = embedded_action_layout(&finalized.pczt).unwrap();
         let before_action_count = finalized.pczt.ironwood().actions().len();
         let before_value_balance = *finalized.pczt.ironwood().value_sum();
         assert_eq!(before_action_count, 13);
-        assert_eq!(before_value_balance, (1_000, false));
+        assert_eq!(before_value_balance, (65_000, false));
         assert!(finalized.pczt.ironwood().anchor().is_none());
         assert!(finalized.pczt.ironwood().zkproof().is_none());
 
@@ -2146,7 +2140,7 @@ mod tests {
             assert_eq!(witness.merkle_path.root(commitment), expected_anchor);
         }
 
-        let witnessed = install_names_v1_ironwood_witnesses(finalized, witness_plan).unwrap();
+        let witnessed = install_names_ironwood_witnesses(finalized, witness_plan).unwrap();
 
         assert_eq!(witnessed.anchor, expected_anchor);
         assert_eq!(witnessed.action_count, before_action_count);
@@ -2256,8 +2250,8 @@ mod tests {
     fn funded_reveal_signs_two_real_ironwood_spends_by_nullifier() {
         let fixture = funded_reveal_fixture();
         let witness_plan = deterministic_funded_reveal_witness_plan(&fixture);
-        let built = build_names_v1_bundle(fixture.plan, StdRng::from_seed([10; 32])).unwrap();
-        let complete = build_names_v1_pczt(NamesV1PcztPlan {
+        let built = build_names_bundle(fixture.plan, StdRng::from_seed([10; 32])).unwrap();
+        let complete = build_names_pczt(NamesPcztPlan {
             ironwood: built,
             params: local_v6_params(),
             consensus_branch_id: BranchId::Nu6_3,
@@ -2265,9 +2259,9 @@ mod tests {
             fallback_lock_time: 0,
         })
         .unwrap();
-        let finalized = finalize_names_v1_pczt_io(complete).unwrap();
-        let witnessed = install_names_v1_ironwood_witnesses(finalized, witness_plan).unwrap();
-        let NamesV1WitnessedPczt {
+        let finalized = finalize_names_pczt_io(complete).unwrap();
+        let witnessed = install_names_ironwood_witnesses(finalized, witness_plan).unwrap();
+        let NamesWitnessedPczt {
             pczt,
             anchor,
             witnessed_action_indices,
@@ -2288,10 +2282,10 @@ mod tests {
         let before_anchor = anchor;
         let before_proof = pczt.ironwood().zkproof().clone();
         assert_eq!(before_action_count, 13);
-        assert_eq!(before_value_balance, (1_000, false));
+        assert_eq!(before_value_balance, (65_000, false));
         assert_eq!(action_count, before_action_count);
         assert_eq!(real_spend_count, 2);
-        assert_eq!(ironwood_value_balance, 1_000);
+        assert_eq!(ironwood_value_balance, 65_000);
         assert_eq!(designated_action_index, 4);
         assert_eq!(designated_nullifier, fixture.registration_nullifier);
         assert!(before_proof.is_none());
@@ -2330,13 +2324,13 @@ mod tests {
 
         // Deliberately request registration first even though the witness metadata is
         // in funding-first order; both actions must be resolved by nullifier.
-        let signing_plan = NamesV1SigningPlan {
+        let signing_plan = NamesSigningPlan {
             spends: vec![
-                NamesV1IronwoodSigningKey {
+                NamesIronwoodSigningKey {
                     nullifier: fixture.registration_nullifier,
                     ask: fixture.registration_ask.clone(),
                 },
-                NamesV1IronwoodSigningKey {
+                NamesIronwoodSigningKey {
                     nullifier: fixture.funding_nullifier,
                     ask: fixture.funding_ask.clone(),
                 },
@@ -2344,9 +2338,9 @@ mod tests {
         };
         // Exercise the same signing core as the proved-stage public wrapper without
         // constructing a proving key or generating another consensus proof.
-        let signed = sign_names_v1_ironwood_pczt_core(
+        let signed = sign_names_ironwood_pczt_core(
             pczt,
-            NamesV1SigningMetadata {
+            NamesSigningMetadata {
                 anchor: before_anchor,
                 witnessed_action_indices: &witnessed_action_indices,
                 designated_action_index,
@@ -2448,220 +2442,13 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "expensive Names v1 genesis proving"]
-    fn funded_reveal_embeds_one_real_names_v1_reveal_payload() {
-        const ACTION_INDEX: u32 = 4;
-        const MINIMUM_BOND: u64 = 50_000;
-
-        let fixture = funded_reveal_fixture();
-
-        // These are the exact note/key values that the designated-pair wallet
-        // plan will pass to the Ironwood builder below. Copying them here lets
-        // the application proof consume the same immutable note material
-        // before the plan is moved into the builder.
-        let registration_note = fixture.plan.designated_spend;
-        let successor_note = fixture.plan.successor_note;
-        let names_fvk = fixture.plan.designated_fvk.clone();
-        let names_ask = fixture.registration_ask.clone();
-        let registration_nullifier = fixture.registration_nullifier;
-        let successor_commitment =
-            ExtractedNoteCommitment::from(successor_note.commitment()).to_bytes();
-        let successor_future_nullifier = successor_note.nullifier(&names_fvk).to_bytes();
-
-        let owner_pk = spend_auth_owner_key_bytes(&names_ask);
-        let intent = RegistrationIntent {
-            name: "footprint".to_owned(),
-            owner_pk,
-            record: vec![9; 64],
-            secret: [8; 32],
-        };
-        let name_id = intent.name_id().unwrap();
-        let intent_commitment = intent.commitment().unwrap();
-        let v1 = V1Parameters::testing();
-        let operation_height = coppice_names::v1::schedule::next_anchor_height(name_id, 901, v1)
-            .expect("synthetic REVEAL needs a scheduled height");
-
-        // This CommitRef is deliberately synthetic. It gives the offline
-        // envelope a canonical predecessor shape, but establishes no chain
-        // inclusion, maturity, lifetime, or replay acceptance.
-        let commit = CommitRef::new(ProducerPosition::new(900, 1, [3; 32]), 0, intent_commitment);
-
-        let state_data = StateData {
-            name_id,
-            owner_pk,
-            sequence: 0,
-            record: intent.record.clone(),
-            lease_expiry: v1.lease_expiry(operation_height).unwrap(),
-            status: StateStatus::Active,
-            terminal_height: 0,
-        };
-        let state_ref = StateRef::new(
-            ProducerPosition::new(operation_height, 0, [4; 32]),
-            ACTION_INDEX,
-            0,
-            successor_commitment,
-            successor_future_nullifier,
-        );
-        let state = NameState::new(state_data.clone(), successor_commitment, state_ref).unwrap();
-        let action = IronwoodActionRef {
-            action_index: ACTION_INDEX,
-            nullifier: registration_nullifier,
-            commitment: successor_commitment,
-        };
-        let statement =
-            GenesisStatement::from_reveal(&intent, &state, action, operation_height, v1).unwrap();
-
-        assert_eq!(statement.name_id, name_id);
-        assert_eq!(statement.owner_pk, owner_pk);
-        assert_eq!(statement.commitment, successor_commitment);
-        assert_eq!(statement.registration_nullifier, registration_nullifier);
-        assert_eq!(statement.state_nullifier, successor_future_nullifier);
-        assert_eq!(statement.minimum_bond_zatoshis, MINIMUM_BOND);
-
-        let witness = GenesisWitness::new(
-            registration_note,
-            successor_note,
-            &names_fvk,
-            Scope::External,
-            MINIMUM_BOND,
-        )
-        .expect("the funded registration/successor notes form a genesis witness");
-        let names_prover = OrchardV1ProofProver::new();
-        let proving_started = Instant::now();
-        let genesis_proof = names_prover
-            .prove_genesis(&statement, witness, StdRng::from_seed([44; 32]))
-            .unwrap();
-        let proving_elapsed = proving_started.elapsed();
-        assert!(!genesis_proof.is_empty());
-
-        let reveal = V1Operation::Reveal {
-            intent: Box::new(intent),
-            commit,
-            replacement_predecessor: None,
-            state: state_data,
-            state_commitment: successor_commitment,
-            state_nullifier: successor_future_nullifier,
-            action_index: ACTION_INDEX,
-            proof: genesis_proof.clone(),
-        };
-        let encoded_reveal = encode_operation(&reveal).unwrap();
-        assert_eq!(decode_operation(&encoded_reveal).unwrap(), reveal);
-        let footprint = operation_footprint(&reveal).unwrap();
-        assert_eq!(footprint.operation_bytes, encoded_reveal.len());
-        assert_eq!(footprint.proof_bytes, genesis_proof.len());
-
-        let core_runtime_id = [0x31; 32];
-        let envelope = coppice::application::ApplicationEnvelopeV1::new(
-            coppice::application::ApplicationKey::new(
-                coppice_names::v1::names_application_id(),
-                coppice_names::v1::NAMES_APPLICATION_VERSION,
-            ),
-            encoded_reveal.clone(),
-        )
-        .unwrap()
-        .encode();
-        let cpv1_frames = coppice::transport::encode_frames(core_runtime_id, &envelope).unwrap();
-        assert_eq!(cpv1_frames.len(), footprint.cpv1_frames);
-        let reconstructed_reveal =
-            coppice::transport::reconstruct_frames(&cpv1_frames, core_runtime_id).unwrap();
-        let reconstructed_reveal =
-            coppice::application::ApplicationEnvelopeV1::decode(&reconstructed_reveal).unwrap();
-        assert_eq!(reconstructed_reveal.payload(), encoded_reveal);
-        assert_eq!(
-            decode_operation(reconstructed_reveal.payload()).unwrap(),
-            reveal
-        );
-        assert!(
-            coppice::transport::reconstruct_frames(&cpv1_frames, [0x42; 32]).is_err(),
-            "CPV1 frames must be bound to the Core runtime ID"
-        );
-
-        let rendezvous_recipient = names_fvk.address_at(99u32, Scope::External);
-        let carrier_outputs = cpv1_frames
-            .iter()
-            .copied()
-            .map(|memo| CarrierOutput {
-                recipient: rendezvous_recipient,
-                value: NoteValue::from_raw(1),
-                memo,
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(carrier_outputs.len(), footprint.cpv1_frames);
-        assert!(
-            carrier_outputs
-                .iter()
-                .all(|carrier| carrier.recipient == rendezvous_recipient)
-        );
-
-        // Replace only the structural fixture's carrier bytes. All note
-        // material, the designated index, and the funding halves stay intact.
-        let mut plan = fixture.plan;
-        plan.carrier_outputs = carrier_outputs;
-        let built = build_names_v1_bundle(plan, StdRng::from_seed([10; 32])).unwrap();
-
-        assert_eq!(built.designated_action_index, ACTION_INDEX as usize);
-        assert_eq!(built.real_spend_count, 2);
-        assert_eq!(built.carrier_output_count, footprint.cpv1_frames);
-        assert_eq!(built.requested_output_count, footprint.cpv1_frames + 2);
-        assert_eq!(built.change_output_count, 1);
-        assert_eq!(built.action_count, 13);
-        assert_eq!(built.ironwood_value_balance, 1_000);
-        assert_eq!(built.designated_nullifier, statement.registration_nullifier);
-        assert_eq!(built.designated_commitment, statement.commitment);
-        verify_designated_action(
-            &built.bundle,
-            built.designated_action_index,
-            statement.registration_nullifier,
-            statement.commitment,
-        )
-        .unwrap();
-
-        let complete = build_names_v1_pczt(NamesV1PcztPlan {
-            ironwood: built,
-            params: local_v6_params(),
-            consensus_branch_id: BranchId::Nu6_3,
-            expiry_height: BlockHeight::from_u32(100),
-            fallback_lock_time: 0,
-        })
-        .unwrap();
-        assert_eq!(complete.pczt.ironwood().actions().len(), 13);
-        assert_eq!(*complete.pczt.ironwood().value_sum(), (1_000, false));
-        assert_eq!(complete.designated_action_index, ACTION_INDEX);
-        assert_eq!(complete.carrier_output_count, footprint.cpv1_frames);
-        verify_embedded_designated_action(
-            &complete.pczt,
-            complete.designated_action_index,
-            statement.registration_nullifier,
-            statement.commitment,
-        )
-        .unwrap();
-
-        eprintln!(
-            "Names v1 semantic REVEAL: app_id={}, operation_bytes={}, proof_bytes={}, cpv1_frames={}, minimum_actions={}, actions={}, real_spends={}, outputs={}, value_balance={}, proving_elapsed_ms={}, registration_nf={}, successor_cmx={}, successor_future_nf={}",
-            hex::encode(coppice_names::v1::names_application_id().to_bytes()),
-            footprint.operation_bytes,
-            footprint.proof_bytes,
-            footprint.cpv1_frames,
-            footprint.minimum_ironwood_actions,
-            complete.action_count,
-            complete.real_spend_count,
-            complete.requested_output_count,
-            complete.ironwood_value_balance,
-            proving_elapsed.as_millis(),
-            hex::encode(registration_nullifier),
-            hex::encode(successor_commitment),
-            hex::encode(successor_future_nullifier),
-        );
-    }
-
-    #[test]
     #[ignore = "generates a real Ironwood consensus proof; run via `cargo test -- --ignored` or the scripted release qualification"]
     fn funded_reveal_proves_signs_and_extracts_one_consensus_transaction() {
         let fixture = funded_reveal_fixture();
         let witness_plan = deterministic_funded_reveal_witness_plan(&fixture);
         let expected_anchor = witness_plan.anchor;
-        let built = build_names_v1_bundle(fixture.plan, StdRng::from_seed([10; 32])).unwrap();
-        let complete = build_names_v1_pczt(NamesV1PcztPlan {
+        let built = build_names_bundle(fixture.plan, StdRng::from_seed([10; 32])).unwrap();
+        let complete = build_names_pczt(NamesPcztPlan {
             ironwood: built,
             params: local_v6_params(),
             consensus_branch_id: BranchId::Nu6_3,
@@ -2669,8 +2456,8 @@ mod tests {
             fallback_lock_time: 0,
         })
         .unwrap();
-        let finalized = finalize_names_v1_pczt_io(complete).unwrap();
-        let witnessed = install_names_v1_ironwood_witnesses(finalized, witness_plan).unwrap();
+        let finalized = finalize_names_pczt_io(complete).unwrap();
+        let witnessed = install_names_ironwood_witnesses(finalized, witness_plan).unwrap();
 
         let before_layout = embedded_action_layout(&witnessed.pczt).unwrap();
         let before_action_count = witnessed.pczt.ironwood().actions().len();
@@ -2680,7 +2467,7 @@ mod tests {
         let before_designated_commitment = witnessed.designated_commitment;
         let before_anchor = witnessed.anchor;
         assert_eq!(before_action_count, 13);
-        assert_eq!(before_value_balance, (1_000, false));
+        assert_eq!(before_value_balance, (65_000, false));
         assert_eq!(before_designated_action_index, 4);
         assert_eq!(before_designated_nullifier, fixture.registration_nullifier);
         assert_eq!(before_anchor, expected_anchor);
@@ -2724,7 +2511,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(dummy_signatures.len(), 11);
 
-        let proved = prove_names_v1_ironwood_pczt(witnessed, ironwood_proving_key()).unwrap();
+        let proved = prove_names_ironwood_pczt(witnessed, ironwood_proving_key()).unwrap();
 
         assert_eq!(proved.anchor, before_anchor);
         assert_eq!(proved.action_count, before_action_count);
@@ -2795,15 +2582,15 @@ mod tests {
         .unwrap();
 
         let proved_proof = proved.pczt.ironwood().zkproof().clone();
-        let signed = sign_names_v1_ironwood_pczt(
+        let signed = sign_names_ironwood_pczt(
             proved,
-            NamesV1SigningPlan {
+            NamesSigningPlan {
                 spends: vec![
-                    NamesV1IronwoodSigningKey {
+                    NamesIronwoodSigningKey {
                         nullifier: fixture.registration_nullifier,
                         ask: fixture.registration_ask.clone(),
                     },
-                    NamesV1IronwoodSigningKey {
+                    NamesIronwoodSigningKey {
                         nullifier: fixture.funding_nullifier,
                         ask: fixture.funding_ask.clone(),
                     },
@@ -2830,7 +2617,7 @@ mod tests {
             13
         );
 
-        let extracted = extract_names_v1_transaction(signed).unwrap();
+        let extracted = extract_names_transaction(signed).unwrap();
         assert_eq!(extracted.transaction.version(), TransactionVersion::V6);
         assert_eq!(extracted.action_count, before_action_count);
         assert_eq!(
@@ -2849,7 +2636,7 @@ mod tests {
             before_designated_commitment
         );
         assert_eq!(extracted.anchor, before_anchor);
-        assert_eq!(extracted.ironwood_value_balance, 1_000);
+        assert_eq!(extracted.ironwood_value_balance, 65_000);
         assert_eq!(extracted.ironwood_proof_byte_len, proof_len);
         assert_eq!(extracted.ironwood_spend_authorization_count, 13);
         assert!(extracted.ironwood_binding_signature_present);
@@ -2880,7 +2667,7 @@ mod tests {
         extracted.transaction.write(&mut consensus_bytes).unwrap();
         assert_eq!(consensus_bytes.len(), extracted.consensus_tx_size);
         eprintln!(
-            "Names v1 extracted consensus transaction: size={}, txid={}",
+            "Names extracted consensus transaction: size={}, txid={}",
             extracted.consensus_tx_size, extracted.txid
         );
 
@@ -2919,35 +2706,7 @@ mod tests {
                     .unwrap()
                     .value_balance()
             ),
-            1_000
+            65_000
         );
-    }
-
-    #[test]
-    fn update_shape_keeps_ten_carriers_off_the_designated_action() {
-        let names_fvk = fvk(11);
-        let input = note(&names_fvk, 50_000, 6, 7);
-        let successor = successor(&names_fvk, &input, 50_000, 8);
-        let carrier_fvk = fvk(12);
-        let built = build_names_v1_bundle(
-            NamesV1IronwoodPlan {
-                designated_fvk: names_fvk,
-                designated_spend: input,
-                successor_note: successor,
-                successor_ovk: None,
-                successor_memo: [0; 512],
-                carrier_outputs: carriers(4_950, 10, carrier_fvk.address_at(0u32, Scope::External)),
-                funding_spends: vec![],
-                change_outputs: vec![],
-                designated_action_index: 0,
-                operation_height: 0,
-            },
-            StdRng::from_seed([13; 32]),
-        )
-        .unwrap();
-        assert_eq!(built.action_count, 11);
-        assert_eq!(built.carrier_output_count, 10);
-        assert_eq!(built.designated_action_index, 0);
-        assert_eq!(built.ironwood_value_balance, -10);
     }
 }

@@ -17,7 +17,6 @@ coppice-names = { package = "coppice-names", path = "crates/coppice-names" }
 anyhow = "1"
 blake2b_simd = "1"
 halo2_gadgets = { package = "zakura-halo2-gadgets", version = "=1.0.0", default-features = false }
-halo2_proofs = { package = "zakura-halo2-proofs", version = "=1.0.0" }
 hex = "0.4"
 incrementalmerkletree = { version = "0.8.2", features = ["legacy-api"] }
 orchard = { package = "zakura-orchard", version = "=1.0.0", features = ["std", "state-note"] }
@@ -25,24 +24,18 @@ pasta_curves = { package = "zakura-pasta-curves", version = "=1.0.0" }
 rand_chacha = "0.10"
 rand = "0.10"
 rand_core = "0.10"
-sapling = { package = "zakura-sapling-crypto", version = "=1.0.0" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-postcard = { version = "1", features = ["alloc"] }
 sha2 = "0.10"
 shardtree = "0.7"
-zcash_note_encryption = "0.4.2"
 # Keep the address parser on the same released package/type family used by
 # coppice-wallet and zcash-devtool. The Zakura forks do not alter this parser.
 zcash_address = "0.13.0"
 zcash_client_backend = { package = "zakura-client-backend", version = "=0.1.0-rc4" }
-zcash_keys = { package = "zakura-keys", version = "=1.0.0" }
 zcash_primitives = { package = "zakura-primitives", version = "=1.0.0", features = ["std"] }
 zcash_protocol = { version = "=0.10.5", features = ["std", "local-consensus"] }
 zeroize = "1"
 pczt = { package = "zakura-pczt", version = "=0.1.0-rc2", features = ["io-finalizer", "orchard", "prover", "signer", "spend-finalizer", "tx-extractor", "zcp-builder"] }
-zip321 = "=0.9.0"
-zip32 = "0.2.1"
 
 [patch.crates-io]
 # Replace the released Zakura Orchard package with the Coppice extension while

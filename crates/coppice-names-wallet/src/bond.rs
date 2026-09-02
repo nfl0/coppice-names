@@ -1,7 +1,7 @@
 //! Application request for an exact wallet-controlled bond denomination.
 
 /// Current deployment bond denomination: exactly one ZEC.
-pub const REQUIRED_BOND_ZATOSHIS: u64 = 100_000_000;
+pub const REQUIRED_BOND_ZATOSHIS: u64 = coppice_names::protocol::BOND_ZATOSHIS;
 
 /// What the wallet must do before it can construct a Names COMMIT.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -20,12 +20,9 @@ pasta_curves.workspace = true
 pczt.workspace = true
 rand.workspace = true
 rand_core.workspace = true
-zcash_address.workspace = true
 zcash_client_backend.workspace = true
-zcash_keys.workspace = true
 zcash_primitives.workspace = true
 zcash_protocol.workspace = true
-zip321.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]

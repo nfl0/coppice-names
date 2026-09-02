@@ -18,7 +18,7 @@ use orchard::{
 };
 use rand_core::Rng;
 
-use crate::builder::{CarrierOutput, ChangeOutput, FundingSpend, NamesV1IronwoodPlan};
+use crate::builder::{CarrierOutput, ChangeOutput, FundingSpend, NamesIronwoodPlan};
 use crate::recovery::{
     derive_commit_opening, derive_name_spending_key, derive_refresh_bond_note,
     derive_reveal_bond_note,
@@ -71,7 +71,7 @@ impl PreparedReveal {
         designated_spend: Note,
         funding_spends: Vec<FundingSpend>,
         change_outputs: Vec<ChangeOutput>,
-    ) -> Result<NamesV1IronwoodPlan> {
+    ) -> Result<NamesIronwoodPlan> {
         replacement_ironwood_plan(
             &self.publication,
             self.successor_note,
@@ -113,7 +113,7 @@ impl PreparedRefresh {
         designated_spend: Note,
         funding_spends: Vec<FundingSpend>,
         change_outputs: Vec<ChangeOutput>,
-    ) -> Result<NamesV1IronwoodPlan> {
+    ) -> Result<NamesIronwoodPlan> {
         replacement_ironwood_plan(
             &self.publication,
             self.successor_note,
@@ -443,7 +443,7 @@ fn replacement_ironwood_plan(
     funding_spends: Vec<FundingSpend>,
     change_outputs: Vec<ChangeOutput>,
     operation_height: u32,
-) -> Result<NamesV1IronwoodPlan> {
+) -> Result<NamesIronwoodPlan> {
     let (route, designated_action_index) = match (publication.route(), publication.operation()) {
         (
             coppice_names::publication::PublicationRoute::Name(route),
@@ -462,7 +462,7 @@ fn replacement_ironwood_plan(
             memo: *memo,
         })
         .collect();
-    Ok(NamesV1IronwoodPlan {
+    Ok(NamesIronwoodPlan {
         designated_fvk,
         designated_spend,
         successor_note,
@@ -495,11 +495,10 @@ pub fn recover_name_fvk(
 mod tests {
     use super::*;
     use crate::builder::{
-        ChangeOutput, FundingSpend, NamesV1IronwoodSigningKey, NamesV1IronwoodWitness,
-        NamesV1PcztPlan, NamesV1SigningPlan, NamesV1WitnessPlan, build_names_v1_bundle,
-        build_names_v1_pczt, extract_names_v1_transaction, finalize_names_v1_pczt_io,
-        install_names_v1_ironwood_witnesses, prove_names_v1_ironwood_pczt,
-        sign_names_v1_ironwood_pczt,
+        ChangeOutput, FundingSpend, NamesIronwoodSigningKey, NamesIronwoodWitness, NamesPcztPlan,
+        NamesSigningPlan, NamesWitnessPlan, build_names_bundle, build_names_pczt,
+        extract_names_transaction, finalize_names_pczt_io, install_names_ironwood_witnesses,
+        prove_names_ironwood_pczt, sign_names_ironwood_pczt,
     };
     use coppice::{
         identity::{CoreRuntimeId, CoreRuntimeParameters, ZcashNetwork},
@@ -674,7 +673,7 @@ mod tests {
                 .all(|carrier| carrier.value.inner() == 0)
         );
         let reveal_bundle =
-            build_names_v1_bundle(reveal_plan, ChaCha20Rng::from_seed([46; 32])).unwrap();
+            build_names_bundle(reveal_plan, ChaCha20Rng::from_seed([46; 32])).unwrap();
         assert_eq!(
             reveal_bundle.designated_nullifier,
             reveal.statement().action_nullifier.to_bytes()
@@ -747,7 +746,7 @@ mod tests {
                 .all(|carrier| carrier.value.inner() == 0)
         );
         let refresh_bundle =
-            build_names_v1_bundle(refresh_plan, ChaCha20Rng::from_seed([47; 32])).unwrap();
+            build_names_bundle(refresh_plan, ChaCha20Rng::from_seed([47; 32])).unwrap();
         assert_eq!(
             refresh_bundle.designated_nullifier,
             refresh.statement().action_nullifier.to_bytes()
@@ -858,7 +857,7 @@ mod tests {
                 }],
             )
             .unwrap();
-        let built = build_names_v1_bundle(plan, ChaCha20Rng::from_seed([46; 32])).unwrap();
+        let built = build_names_bundle(plan, ChaCha20Rng::from_seed([46; 32])).unwrap();
         assert_eq!(built.action_count, 13);
         assert_eq!(built.ironwood_value_balance, 65_000);
         assert_eq!(
@@ -899,7 +898,7 @@ mod tests {
             .unwrap()
             .into();
 
-        let pczt = build_names_v1_pczt(NamesV1PcztPlan {
+        let pczt = build_names_pczt(NamesPcztPlan {
             ironwood: built,
             params: local_v6_params(),
             consensus_branch_id: BranchId::Nu6_3,
@@ -907,17 +906,17 @@ mod tests {
             fallback_lock_time: 0,
         })
         .unwrap();
-        let finalized = finalize_names_v1_pczt_io(pczt).unwrap();
-        let witnessed = install_names_v1_ironwood_witnesses(
+        let finalized = finalize_names_pczt_io(pczt).unwrap();
+        let witnessed = install_names_ironwood_witnesses(
             finalized,
-            NamesV1WitnessPlan {
+            NamesWitnessPlan {
                 anchor,
                 spends: vec![
-                    NamesV1IronwoodWitness {
+                    NamesIronwoodWitness {
                         nullifier: funding_nullifier,
                         merkle_path: funding_path,
                     },
-                    NamesV1IronwoodWitness {
+                    NamesIronwoodWitness {
                         nullifier: registration_nullifier,
                         merkle_path: registration_path,
                     },
@@ -927,16 +926,16 @@ mod tests {
         .unwrap();
         let proving_key =
             orchard::circuit::ProvingKey::build(BundleVersion::ironwood_v3().circuit_version());
-        let proved = prove_names_v1_ironwood_pczt(witnessed, &proving_key).unwrap();
-        let signed = sign_names_v1_ironwood_pczt(
+        let proved = prove_names_ironwood_pczt(witnessed, &proving_key).unwrap();
+        let signed = sign_names_ironwood_pczt(
             proved,
-            NamesV1SigningPlan {
+            NamesSigningPlan {
                 spends: vec![
-                    NamesV1IronwoodSigningKey {
+                    NamesIronwoodSigningKey {
                         nullifier: registration_nullifier,
                         ask: registration_ask,
                     },
-                    NamesV1IronwoodSigningKey {
+                    NamesIronwoodSigningKey {
                         nullifier: funding_nullifier,
                         ask: funding_ask,
                     },
@@ -944,7 +943,7 @@ mod tests {
             },
         )
         .unwrap();
-        let extracted = extract_names_v1_transaction(signed).unwrap();
+        let extracted = extract_names_transaction(signed).unwrap();
         assert_eq!(extracted.action_count, 13);
         assert_eq!(extracted.ironwood_value_balance, 65_000);
         assert_eq!(extracted.designated_action_index, 0);

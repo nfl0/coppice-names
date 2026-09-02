@@ -15,6 +15,7 @@ use coppice_names::{
         StateRef,
     },
     reducer::{Accepted, Action, Block, Lifecycle, ProofVerifier, Reducer, Transaction},
+    resolver::ExactResolver,
     schedule::Parameters,
     statement::{
         RefreshStatement, RevealStatement, commit_ref_field, deployment_field,
@@ -87,6 +88,7 @@ fn build_document() -> Value {
     let name_id = name.id().unwrap();
     let ua = CanonicalUa::parse(Network::Regtest, UA).unwrap();
     let (prover, verifier) = keygen();
+    let (_, exact_verifier) = keygen();
     let proof_identity = verifier.identity();
     let deployment = deployment(proof_identity);
     let deployment_preimage = deployment.canonical_preimage().unwrap();
@@ -240,6 +242,7 @@ fn build_document() -> Value {
     );
 
     let mut reducer = Reducer::new(parameters, [0; 32], verifier).unwrap();
+    let mut exact = ExactResolver::new(parameters, [0; 32], name.clone(), exact_verifier).unwrap();
     let mut previous_hash = [0; 32];
     for height in parameters.activation_height..=refresh_height {
         let transaction = if height == commit_height {
@@ -267,14 +270,15 @@ fn build_document() -> Value {
             None
         };
         let hash = block_hash(height);
-        let accepted = reducer
-            .apply_block(&Block {
-                height,
-                hash,
-                prev_hash: previous_hash,
-                transactions: transaction.into_iter().collect(),
-            })
-            .unwrap();
+        let block = Block {
+            height,
+            hash,
+            prev_hash: previous_hash,
+            transactions: transaction.into_iter().collect(),
+        };
+        let accepted = reducer.apply_block(&block).unwrap();
+        let exact_accepted = exact.apply_block(&block).unwrap();
+        assert_eq!(exact_accepted, accepted);
         if height == commit_height {
             assert_eq!(accepted, [Accepted::Commit]);
         } else if height == reveal_height {
@@ -287,6 +291,8 @@ fn build_document() -> Value {
         previous_hash = hash;
     }
     let resolution = reducer.resolve(&name, refresh_height);
+    let exact_resolution = exact.resolve(refresh_height);
+    assert_eq!(exact_resolution, resolution);
     assert_eq!(resolution.lifecycle, Lifecycle::Active);
     assert_eq!(resolution.ua.as_ref(), Some(&ua));
     let head = resolution.head.unwrap();

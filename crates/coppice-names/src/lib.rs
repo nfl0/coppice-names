@@ -21,6 +21,8 @@ pub mod proof;
 pub mod protocol;
 /// Canonical accepted-state reducer.
 pub mod reducer;
+/// Exact arbitrary-name replay over authenticated canonical effects.
+pub mod resolver;
 /// Deterministic height schedule and checked lifecycle arithmetic.
 pub mod schedule;
 /// Canonical one-public-field proof statements.

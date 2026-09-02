@@ -2456,11 +2456,11 @@ mod tests {
         let fixture = funded_reveal_fixture();
 
         // These are the exact note/key values that the designated-pair wallet
-        // plan will pass to the Ironwood builder below. Cloning them here only
-        // lets the application proof consume the same immutable note material
+        // plan will pass to the Ironwood builder below. Copying them here lets
+        // the application proof consume the same immutable note material
         // before the plan is moved into the builder.
-        let registration_note = fixture.plan.designated_spend.clone();
-        let successor_note = fixture.plan.successor_note.clone();
+        let registration_note = fixture.plan.designated_spend;
+        let successor_note = fixture.plan.successor_note;
         let names_fvk = fixture.plan.designated_fvk.clone();
         let names_ask = fixture.registration_ask.clone();
         let registration_nullifier = fixture.registration_nullifier;

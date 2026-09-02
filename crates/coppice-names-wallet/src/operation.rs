@@ -277,8 +277,8 @@ pub fn prepare_reveal(inputs: RevealInputs, params: V1Parameters) -> Result<Reve
         GenesisStatement::from_reveal(&intent, &state, action, operation_height, params)
             .map_err(|error| anyhow::anyhow!("construct Names v1 genesis statement: {error:?}"))?;
     let witness = GenesisWitness::new(
-        registration_note.clone(),
-        successor_note.clone(),
+        registration_note,
+        successor_note,
         &fvk,
         scope,
         params.minimum_bond_zatoshis,
@@ -722,8 +722,8 @@ pub fn plan_state_operation<P: Parameters>(
 
     let plan = NamesV1IronwoodPlan {
         designated_fvk: finalized.owner_fvk.clone(),
-        designated_spend: finalized.designated_note.clone(),
-        successor_note: finalized.successor_note.clone(),
+        designated_spend: finalized.designated_note,
+        successor_note: finalized.successor_note,
         successor_ovk: successor.ovk,
         successor_memo: successor.memo,
         carrier_outputs,
@@ -816,14 +816,14 @@ fn successor_state_note(
         .context("spent state-note nullifier is not a valid successor rho")?;
     let rseed = Option::<RandomSeed>::from(RandomSeed::from_bytes(successor_seed, &rho))
         .context("successor note seed is not canonical for its rho")?;
-    Ok(Option::<Note>::from(Note::from_parts(
+    Option::<Note>::from(Note::from_parts(
         fvk.address_at(0u32, scope),
         spent.value(),
         rho,
         rseed,
         NoteVersion::V3,
     ))
-    .context("construct exact successor state note")?)
+    .context("construct exact successor state note")
 }
 
 /// The Active sequence+1 successor skeleton preserving identity, record, and
@@ -924,12 +924,7 @@ fn prepare_transition(
         params,
     )
     .map_err(|error| anyhow::anyhow!("construct Names v1 transition statement: {error:?}"))?;
-    let witness = TransitionWitness::new(
-        predecessor_note.clone(),
-        successor_note.clone(),
-        &fvk,
-        scope,
-    );
+    let witness = TransitionWitness::new(predecessor_note, successor_note, &fvk, scope);
     Ok(TransitionPreparation {
         statement,
         witness,
@@ -1003,6 +998,9 @@ fn names_application_envelope(payload: Vec<u8>) -> Result<Vec<u8>> {
     .map_err(|error| anyhow::anyhow!("encode Names application envelope: {error:?}"))?
     .encode())
 }
+
+#[cfg(test)]
+const TEST_CORE_RUNTIME_ID: [u8; 32] = [0x42; 32];
 
 #[cfg(test)]
 mod tests {
@@ -1202,7 +1200,7 @@ mod tests {
                 intent: intent.clone(),
                 commit,
                 replacement_predecessor: None,
-                registration_note: registration_note.clone(),
+                registration_note,
                 scope: Scope::External,
                 fvk: fvk.clone(),
                 ask: ask.clone(),
@@ -1325,7 +1323,7 @@ mod tests {
             intent: intent.clone(),
             commit,
             replacement_predecessor,
-            registration_note: registration_note.clone(),
+            registration_note,
             scope: Scope::External,
             fvk: fvk.clone(),
             ask: ask.clone(),
@@ -1424,7 +1422,7 @@ mod tests {
             params,
         )
         .unwrap();
-        let predecessor_note = reveal_preparation.successor_note().clone();
+        let predecessor_note = *reveal_preparation.successor_note();
         let reveal_finalized = reveal_preparation
             .finalize(vec![0x5A; 1_920], TEST_CORE_RUNTIME_ID)
             .unwrap();
@@ -1435,7 +1433,7 @@ mod tests {
         let update_preparation = prepare_update(
             TransitionInputs {
                 predecessor: predecessor.clone(),
-                predecessor_note: predecessor_note.clone(),
+                predecessor_note,
                 scope: Scope::External,
                 fvk: fvk.clone(),
                 ask: ask.clone(),
@@ -1473,7 +1471,7 @@ mod tests {
         assert_eq!(statement.successor_terminal_height, 0);
         assert_eq!(statement.operation_height, update_height);
 
-        let update_successor_note = update_preparation.successor_note().clone();
+        let update_successor_note = *update_preparation.successor_note();
         let successor_commitment = statement.successor_commitment;
         let successor_future_nullifier = statement.successor_nullifier;
         let dummy_proof = vec![0xA5; 1_920];
@@ -1529,7 +1527,7 @@ mod tests {
             prepare_update(
                 TransitionInputs {
                     predecessor: predecessor.clone(),
-                    predecessor_note: predecessor_note.clone(),
+                    predecessor_note,
                     scope: Scope::External,
                     fvk: fvk.clone(),
                     ask: ask.clone(),
@@ -1567,7 +1565,7 @@ mod tests {
             params,
         )
         .unwrap();
-        let predecessor_note = reveal_preparation.successor_note().clone();
+        let predecessor_note = *reveal_preparation.successor_note();
         let reveal_finalized = reveal_preparation
             .finalize(vec![0x5A; 1_920], TEST_CORE_RUNTIME_ID)
             .unwrap();
@@ -1575,7 +1573,7 @@ mod tests {
 
         let inputs = |operation_height, designated_action_index| TransitionInputs {
             predecessor: predecessor.clone(),
-            predecessor_note: predecessor_note.clone(),
+            predecessor_note,
             scope: Scope::External,
             fvk: fvk.clone(),
             ask: ask.clone(),
@@ -1616,7 +1614,7 @@ mod tests {
         assert_eq!(statement.successor_terminal_height, 0);
         assert_eq!(statement.operation_height, renew_height);
 
-        let renew_successor_note = renew_preparation.successor_note().clone();
+        let renew_successor_note = *renew_preparation.successor_note();
         let successor_commitment = statement.successor_commitment;
         let successor_future_nullifier = statement.successor_nullifier;
         let successor_lease_expiry = statement.successor_lease_expiry;
@@ -1682,7 +1680,7 @@ mod tests {
             params,
         )
         .unwrap();
-        let predecessor_note = reveal_preparation.successor_note().clone();
+        let predecessor_note = *reveal_preparation.successor_note();
         let reveal_finalized = reveal_preparation
             .finalize(vec![0x5A; 1_920], TEST_CORE_RUNTIME_ID)
             .unwrap();
@@ -1692,7 +1690,7 @@ mod tests {
         let release_preparation = prepare_release(
             TransitionInputs {
                 predecessor: predecessor.clone(),
-                predecessor_note: predecessor_note.clone(),
+                predecessor_note,
                 scope: Scope::External,
                 fvk: fvk.clone(),
                 ask: ask.clone(),
@@ -1802,7 +1800,7 @@ mod tests {
             params,
         )
         .unwrap();
-        let predecessor_note = reveal_preparation.successor_note().clone();
+        let predecessor_note = *reveal_preparation.successor_note();
         let predecessor_nullifier = predecessor_note.nullifier(&fvk).to_bytes();
         let reveal_finalized = reveal_preparation
             .finalize(vec![0x5A; 1_920], TEST_CORE_RUNTIME_ID)
@@ -1854,7 +1852,7 @@ mod tests {
             OperationFunding {
                 funding_spends: vec![FundingSpend {
                     fvk: fvk.clone(),
-                    note: funding_note.clone(),
+                    note: funding_note,
                 }],
                 change_outputs: vec![ChangeOutput {
                     fvk: fvk.clone(),
@@ -1958,7 +1956,7 @@ mod tests {
         let finalized = reveal_preparation
             .finalize(vec![0x5A; 320], TEST_CORE_RUNTIME_ID)
             .unwrap();
-        assert!(finalized.frames().len() >= 1);
+        assert!(!finalized.frames().is_empty());
         let zero_funding = plan_state_operation(
             &consensus_params,
             &finalized,
@@ -2011,11 +2009,11 @@ mod tests {
                 funding_spends: vec![
                     FundingSpend {
                         fvk: fvk.clone(),
-                        note: funding_one.clone(),
+                        note: funding_one,
                     },
                     FundingSpend {
                         fvk: fvk.clone(),
-                        note: funding_two.clone(),
+                        note: funding_two,
                     },
                 ],
                 change_outputs: vec![
@@ -2060,7 +2058,7 @@ mod tests {
             OperationFunding {
                 funding_spends: vec![FundingSpend {
                     fvk: fvk.clone(),
-                    note: funding_one.clone(),
+                    note: funding_one,
                 }],
                 change_outputs: vec![],
             },
@@ -2089,7 +2087,7 @@ mod tests {
             intent: intent.clone(),
             commit,
             replacement_predecessor: None,
-            registration_note: registration_note.clone(),
+            registration_note,
             scope: Scope::External,
             fvk: fvk.clone(),
             ask: ask.clone(),
@@ -2133,7 +2131,7 @@ mod tests {
                 intent,
                 commit,
                 replacement_predecessor: None,
-                registration_note: registration_note.clone(),
+                registration_note,
                 scope: Scope::External,
                 fvk: fvk.clone(),
                 ask: ask.clone(),
@@ -2180,7 +2178,7 @@ mod tests {
             OperationFunding {
                 funding_spends: vec![FundingSpend {
                     fvk: fvk.clone(),
-                    note: funding_note.clone(),
+                    note: funding_note,
                 }],
                 change_outputs: vec![ChangeOutput {
                     fvk: fvk.clone(),
@@ -2245,7 +2243,7 @@ mod tests {
         };
         let later_expiry = build_names_v1_pczt(NamesV1PcztPlan {
             ironwood: rebuilt(reveal_height, 20, 21),
-            params: consensus_params.clone(),
+            params: consensus_params,
             consensus_branch_id: BranchId::Nu6_3,
             expiry_height: BlockHeight::from_u32(reveal_height + 1),
             fallback_lock_time: 0,
@@ -2265,5 +2263,3 @@ mod tests {
         assert!(preceding_expiry.is_err());
     }
 }
-#[cfg(test)]
-const TEST_CORE_RUNTIME_ID: [u8; 32] = [0x42; 32];

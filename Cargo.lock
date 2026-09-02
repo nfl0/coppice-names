@@ -2076,7 +2076,7 @@ dependencies = [
 [[package]]
 name = "zakura-orchard"
 version = "1.0.0"
-source = "git+https://github.com/nfl0/orchard-coppice.git?rev=92f7e81f59d1d1760b780050095bd468d9fa64dc#92f7e81f59d1d1760b780050095bd468d9fa64dc"
+source = "git+https://github.com/nfl0/orchard-coppice.git?rev=c9ce12ec0a48c4636835ead96489fc7e144343a0#c9ce12ec0a48c4636835ead96489fc7e144343a0"
 dependencies = [
  "aes",
  "bitvec",

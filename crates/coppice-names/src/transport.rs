@@ -30,6 +30,7 @@ pub enum TransportConfigurationError {
 pub enum BlockTransportError {
     Configuration(TransportConfigurationError),
     InvalidActionEffects,
+    InvalidActionPosition,
 }
 
 /// Why authenticated transaction bytes did not yield a Names operation.
@@ -58,6 +59,54 @@ pub enum NamesTransportStatus {
     /// it as having no Names operation.
     Rejected(TransportRejection),
     Operation(Operation),
+}
+
+/// Returns the canonical global Ironwood position of one action in a
+/// Core-authenticated block. The pre-block tree size is derived from Core's
+/// authenticated post-block checkpoint and the complete ordered action list,
+/// so callers do not need an activation-one or empty-frontier assumption.
+pub fn authenticated_action_position(
+    block: &CoreBlockContext,
+    tx_index: u32,
+    action_index: u32,
+) -> Result<u32, BlockTransportError> {
+    let total_actions = block
+        .transactions()
+        .iter()
+        .try_fold(0u32, |total, transaction| {
+            if transaction.ironwood_effects().nullifiers().len()
+                != transaction.ironwood_effects().commitments().len()
+            {
+                return Err(BlockTransportError::InvalidActionEffects);
+            }
+            total
+                .checked_add(
+                    u32::try_from(transaction.ironwood_effects().commitments().len())
+                        .map_err(|_| BlockTransportError::InvalidActionPosition)?,
+                )
+                .ok_or(BlockTransportError::InvalidActionPosition)
+        })?;
+    let mut position = block
+        .ironwood_checkpoint()
+        .tree_size
+        .checked_sub(total_actions)
+        .ok_or(BlockTransportError::InvalidActionPosition)?;
+    for transaction in block.transactions() {
+        let action_count = u32::try_from(transaction.ironwood_effects().commitments().len())
+            .map_err(|_| BlockTransportError::InvalidActionPosition)?;
+        if transaction.tx_index() == tx_index {
+            if action_index >= action_count {
+                return Err(BlockTransportError::InvalidActionPosition);
+            }
+            return position
+                .checked_add(action_index)
+                .ok_or(BlockTransportError::InvalidActionPosition);
+        }
+        position = position
+            .checked_add(action_count)
+            .ok_or(BlockTransportError::InvalidActionPosition)?;
+    }
+    Err(BlockTransportError::InvalidActionPosition)
 }
 
 /// Decodes only a COMMIT from the deployment's public Core rendezvous.
@@ -600,6 +649,75 @@ mod tests {
             names.transactions.iter().all(
                 |transaction| transaction.actions.is_empty() && transaction.operation.is_none()
             )
+        );
+    }
+
+    #[test]
+    fn authenticated_positions_include_the_pre_block_frontier() {
+        let mut replay = CoreReplay::new(
+            CoreReplayConfiguration::new(100, 20).unwrap(),
+            CoreReplayActivationCheckpoint {
+                height: 99,
+                block_hash: [9; 32],
+                ironwood_frontier: IronwoodFrontier::empty(),
+                ironwood_tree_size: 0,
+            },
+        )
+        .unwrap();
+        let action_bytes = |value: u64| pallas::Base::from(value).to_repr();
+        replay
+            .apply_block(&CoreCanonicalBlockInput {
+                height: 100,
+                block_hash: [10; 32],
+                prev_block_hash: [9; 32],
+                branch_id: BranchId::Nu6_3,
+                transactions: vec![CoreCanonicalTransactionInput {
+                    tx_index: 4,
+                    txid: [4; 32],
+                    ironwood_nullifiers: vec![action_bytes(1), action_bytes(2)],
+                    ironwood_commitments: vec![action_bytes(3), action_bytes(4)],
+                    full_transaction_acquisition: FullTransactionAcquisition::None,
+                    full_transaction: None,
+                }],
+            })
+            .unwrap();
+        let core = replay
+            .apply_block(&CoreCanonicalBlockInput {
+                height: 101,
+                block_hash: [11; 32],
+                prev_block_hash: [10; 32],
+                branch_id: BranchId::Nu6_3,
+                transactions: vec![
+                    CoreCanonicalTransactionInput {
+                        tx_index: 2,
+                        txid: [2; 32],
+                        ironwood_nullifiers: vec![action_bytes(5)],
+                        ironwood_commitments: vec![action_bytes(6)],
+                        full_transaction_acquisition: FullTransactionAcquisition::None,
+                        full_transaction: None,
+                    },
+                    CoreCanonicalTransactionInput {
+                        tx_index: 9,
+                        txid: [9; 32],
+                        ironwood_nullifiers: vec![action_bytes(7), action_bytes(8)],
+                        ironwood_commitments: vec![action_bytes(9), action_bytes(10)],
+                        full_transaction_acquisition: FullTransactionAcquisition::None,
+                        full_transaction: None,
+                    },
+                ],
+            })
+            .unwrap();
+
+        assert_eq!(authenticated_action_position(&core, 2, 0), Ok(2));
+        assert_eq!(authenticated_action_position(&core, 9, 0), Ok(3));
+        assert_eq!(authenticated_action_position(&core, 9, 1), Ok(4));
+        assert_eq!(
+            authenticated_action_position(&core, 9, 2),
+            Err(BlockTransportError::InvalidActionPosition)
+        );
+        assert_eq!(
+            authenticated_action_position(&core, 7, 0),
+            Err(BlockTransportError::InvalidActionPosition)
         );
     }
 }

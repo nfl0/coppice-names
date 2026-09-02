@@ -165,10 +165,12 @@ impl<V: ProofVerifier> Reducer<V> {
         if block.prev_hash != self.previous_hash {
             return Err(ApplyError::WrongPreviousHash);
         }
-        for (index, transaction) in block.transactions.iter().enumerate() {
-            if transaction.tx_index != u32::try_from(index).unwrap_or(u32::MAX) {
+        let mut previous_tx_index = None;
+        for transaction in &block.transactions {
+            if previous_tx_index.is_some_and(|previous| transaction.tx_index <= previous) {
                 return Err(ApplyError::NonCanonicalTransactionIndex);
             }
+            previous_tx_index = Some(transaction.tx_index);
             for (action_index, action) in transaction.actions.iter().enumerate() {
                 if action.action_index != u32::try_from(action_index).unwrap_or(u32::MAX) {
                     return Err(ApplyError::NonCanonicalActionIndex);
@@ -575,6 +577,38 @@ mod tests {
     ) -> Option<Accepted> {
         let mut undo = reducer.new_undo(height, [0; 32]);
         reducer.apply_transaction(height, transaction, &mut undo)
+    }
+
+    #[test]
+    fn block_accepts_sparse_canonical_transaction_indices_only_in_order() {
+        let transactions = [2, 7, 11]
+            .map(|tx_index| Transaction {
+                tx_index,
+                txid: [tx_index as u8; 32],
+                actions: vec![],
+                operation: None,
+            })
+            .to_vec();
+        let block = |transactions| Block {
+            height: 0,
+            hash: [1; 32],
+            prev_hash: [0; 32],
+            transactions,
+        };
+
+        let mut reducer = Reducer::new(parameters(), [0; 32], AcceptProofs).unwrap();
+        assert!(reducer.apply_block(&block(transactions.clone())).is_ok());
+
+        for invalid in [
+            vec![transactions[0].clone(), transactions[0].clone()],
+            vec![transactions[2].clone(), transactions[1].clone()],
+        ] {
+            let mut reducer = Reducer::new(parameters(), [0; 32], AcceptProofs).unwrap();
+            assert_eq!(
+                reducer.apply_block(&block(invalid)),
+                Err(ApplyError::NonCanonicalTransactionIndex)
+            );
+        }
     }
 
     #[test]

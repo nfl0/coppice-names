@@ -5,11 +5,13 @@ use crate::{
     deployment::{DeploymentError, DeploymentParameters, NAMES_APPLICATION_VERSION},
     names_application_id,
     protocol::{Name, NameRoute, Network, ValueError},
+    reducer::{Action, Block, Transaction},
 };
 use coppice::{
     application::ApplicationKey,
     carrier::{CoreRendezvous, RendezvousError},
-    replay::CoreTransactionContext,
+    identity::ValidatedCoreRuntimeParameters,
+    replay::{CoreBlockContext, CoreTransactionContext},
     runtime::{ApplicationMessageStatus, RoutedFrame, inspect_transaction_at_rendezvous},
     transport::Error as Cpv1Error,
 };
@@ -20,6 +22,14 @@ pub enum TransportConfigurationError {
     InvalidDeployment(DeploymentError),
     InvalidName(ValueError),
     InvalidRendezvous(RendezvousError),
+    RuntimeMismatch,
+}
+
+/// A Core block could not be represented at the narrower Names boundary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BlockTransportError {
+    Configuration(TransportConfigurationError),
+    InvalidActionEffects,
 }
 
 /// Why authenticated transaction bytes did not yield a Names operation.
@@ -55,14 +65,16 @@ pub enum NamesTransportStatus {
 /// The supplied transaction context must have come from Core canonical replay.
 pub fn inspect_commit_transaction(
     transaction: &CoreTransactionContext,
-    public_rendezvous: &CoreRendezvous,
+    runtime: &ValidatedCoreRuntimeParameters,
     deployment: DeploymentParameters,
     network: Network,
 ) -> Result<NamesTransportStatus, TransportConfigurationError> {
+    let validated = validate_runtime(deployment, runtime)?;
+    let public_rendezvous = CoreRendezvous::from_validated(runtime);
     inspect_authenticated(
         transaction,
-        public_rendezvous,
-        deployment,
+        &public_rendezvous,
+        validated,
         network,
         ExpectedRoute::Commit,
     )
@@ -73,13 +85,12 @@ pub fn inspect_commit_transaction(
 /// saved per-name secret or trusted index.
 pub fn inspect_name_transaction(
     transaction: &CoreTransactionContext,
+    runtime: &ValidatedCoreRuntimeParameters,
     deployment: DeploymentParameters,
     network: Network,
     name: &Name,
 ) -> Result<NamesTransportStatus, TransportConfigurationError> {
-    let validated = deployment
-        .validate()
-        .map_err(TransportConfigurationError::InvalidDeployment)?;
+    let validated = validate_runtime(deployment, runtime)?;
     let deployment_id = validated
         .deployment_id()
         .map_err(TransportConfigurationError::InvalidDeployment)?;
@@ -97,6 +108,112 @@ pub fn inspect_name_transaction(
         network,
         ExpectedRoute::Name(name),
     )
+}
+
+/// Converts one Core-authenticated block into the exact reducer input for an
+/// arbitrary requested name.
+///
+/// Each transaction is inspected at both the runtime's authenticated generic
+/// COMMIT route and the deployment-derived requested-name route. Exactly one
+/// correctly routed Names operation may survive. A second Names candidate,
+/// including a malformed or wrong-route candidate, makes the transaction's
+/// operation ambiguous and therefore inert; canonical Ironwood actions are
+/// retained in every case.
+pub fn inspect_exact_name_block(
+    block: &CoreBlockContext,
+    runtime: &ValidatedCoreRuntimeParameters,
+    deployment: DeploymentParameters,
+    network: Network,
+    name: &Name,
+) -> Result<Block, BlockTransportError> {
+    let validated =
+        validate_runtime(deployment, runtime).map_err(BlockTransportError::Configuration)?;
+    let transactions = block
+        .transactions()
+        .iter()
+        .map(|transaction| {
+            let effects = transaction.ironwood_effects();
+            if effects.nullifiers().len() != effects.commitments().len() {
+                return Err(BlockTransportError::InvalidActionEffects);
+            }
+            let actions = effects
+                .nullifiers()
+                .iter()
+                .zip(effects.commitments())
+                .enumerate()
+                .map(|(action_index, (nullifier, commitment))| {
+                    Ok(Action {
+                        action_index: u32::try_from(action_index)
+                            .map_err(|_| BlockTransportError::InvalidActionEffects)?,
+                        nullifier: crate::protocol::FieldElement::from_bytes(*nullifier)
+                            .map_err(|_| BlockTransportError::InvalidActionEffects)?,
+                        commitment: crate::protocol::FieldElement::from_bytes(*commitment)
+                            .map_err(|_| BlockTransportError::InvalidActionEffects)?,
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let operation = if transaction
+                .full_transaction_status()
+                .validated_full_transaction()
+                .is_none()
+            {
+                None
+            } else {
+                let commit = inspect_commit_transaction(transaction, runtime, validated, network)
+                    .map_err(BlockTransportError::Configuration)?;
+                let named =
+                    inspect_name_transaction(transaction, runtime, validated, network, name)
+                        .map_err(BlockTransportError::Configuration)?;
+                select_single_operation(commit, named)
+            };
+            Ok(Transaction {
+                tx_index: transaction.tx_index(),
+                txid: transaction.txid(),
+                actions,
+                operation,
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Block {
+        height: block.height(),
+        hash: block.block_hash(),
+        prev_hash: block.prev_block_hash(),
+        transactions,
+    })
+}
+
+fn validate_runtime(
+    deployment: DeploymentParameters,
+    runtime: &ValidatedCoreRuntimeParameters,
+) -> Result<DeploymentParameters, TransportConfigurationError> {
+    let validated = deployment
+        .validate()
+        .map_err(TransportConfigurationError::InvalidDeployment)?;
+    if validated.core_runtime_id != runtime.core_runtime_id() {
+        return Err(TransportConfigurationError::RuntimeMismatch);
+    }
+    Ok(validated)
+}
+
+fn select_single_operation(
+    commit: NamesTransportStatus,
+    named: NamesTransportStatus,
+) -> Option<Operation> {
+    match (commit, named) {
+        (NamesTransportStatus::Operation(operation), NamesTransportStatus::NoOperation)
+        | (NamesTransportStatus::NoOperation, NamesTransportStatus::Operation(operation)) => {
+            Some(operation)
+        }
+        (
+            NamesTransportStatus::Operation(operation),
+            NamesTransportStatus::Rejected(TransportRejection::WrongApplication),
+        )
+        | (
+            NamesTransportStatus::Rejected(TransportRejection::WrongApplication),
+            NamesTransportStatus::Operation(operation),
+        ) => Some(operation),
+        _ => None,
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -193,8 +310,17 @@ mod tests {
         deployment::ProofIdentity,
         protocol::{CanonicalUa, CommitRef, Commitment, FieldElement},
     };
-    use coppice::{application::ApplicationEnvelopeV1, identity::CoreRuntimeId};
+    use coppice::{
+        application::ApplicationEnvelopeV1,
+        identity::{CoreRuntimeId, CoreRuntimeParameters, ZcashNetwork},
+        replay::{
+            CoreCanonicalBlockInput, CoreCanonicalTransactionInput, CoreReplay,
+            CoreReplayActivationCheckpoint, CoreReplayConfiguration, FullTransactionAcquisition,
+            IronwoodFrontier,
+        },
+    };
     use pasta_curves::{group::ff::PrimeField, pallas};
+    use zcash_protocol::consensus::BranchId;
 
     const UA: &str = "uregtest1rxnn8qurdex552draeuvvvucggeknmmsxazg52mkatf0hrclhppe5jeqj6w7svqtxvxq320tw6ejsk4nm8zk8f35274vlwqerfx74904pydaxe27wnpq8llqxclaa0n04zg764ppzfruu4gsagmqw0mlvx";
 
@@ -210,6 +336,31 @@ mod tests {
             cooldown_blocks: 20,
             proof: ProofIdentity::derive(11, 64, 96, [1; 32], [2; 32]),
         }
+    }
+
+    fn runtime() -> ValidatedCoreRuntimeParameters {
+        CoreRuntimeParameters {
+            runtime_protocol_id: b"coppice.runtime".to_vec(),
+            runtime_protocol_version: 1,
+            zcash_network_domain: b"coppice-runtime-regtest-v1".to_vec(),
+            zcash_network: ZcashNetwork::Regtest,
+            runtime_activation_height: 100,
+            carrier_protocol_id: b"CPV1".to_vec(),
+            rendezvous_ivk: hex::decode(
+                "65deb2b3ee7ac69020543f40f21122cb6dc1f4201a329fcdf9d5e3bb2dfbbabe29d542352fe36c3c7b24c2989dc9d0000b9e04f444e05dc4538bde395c0e6008",
+            )
+            .unwrap()
+            .try_into()
+            .unwrap(),
+            rendezvous_receiver: hex::decode(
+                "9ec59e4d447ba285086cc3456cadf62004a19b6a7989c726daaa9944a6cdbf25f7bfa51afa15b66da53881",
+            )
+            .unwrap()
+            .try_into()
+            .unwrap(),
+        }
+        .validate()
+        .unwrap()
     }
 
     fn commit() -> Operation {
@@ -356,6 +507,99 @@ mod tests {
                 ExpectedRoute::Commit,
             ),
             NamesTransportStatus::Rejected(TransportRejection::WrongRoute)
+        );
+    }
+
+    #[test]
+    fn composed_routes_accept_one_names_operation_and_reject_ambiguity() {
+        let operation = commit();
+        assert_eq!(
+            select_single_operation(
+                NamesTransportStatus::Operation(operation.clone()),
+                NamesTransportStatus::NoOperation,
+            ),
+            Some(operation.clone())
+        );
+        assert_eq!(
+            select_single_operation(
+                NamesTransportStatus::Operation(operation.clone()),
+                NamesTransportStatus::Rejected(TransportRejection::WrongApplication),
+            ),
+            Some(operation.clone())
+        );
+        assert_eq!(
+            select_single_operation(
+                NamesTransportStatus::Operation(operation.clone()),
+                NamesTransportStatus::Operation(operation.clone()),
+            ),
+            None
+        );
+        assert_eq!(
+            select_single_operation(
+                NamesTransportStatus::Operation(operation),
+                NamesTransportStatus::Rejected(TransportRejection::NonZeroCarrierValue),
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn exact_block_adapter_preserves_sparse_core_positions() {
+        let runtime = runtime();
+        let mut deployment = deployment();
+        deployment.core_runtime_id = runtime.core_runtime_id();
+        let mut replay = CoreReplay::new(
+            CoreReplayConfiguration::new(100, 20).unwrap(),
+            CoreReplayActivationCheckpoint {
+                height: 99,
+                block_hash: [9; 32],
+                ironwood_frontier: IronwoodFrontier::empty(),
+                ironwood_tree_size: 0,
+            },
+        )
+        .unwrap();
+        let transactions = [2, 7, 11]
+            .map(|tx_index| CoreCanonicalTransactionInput {
+                tx_index,
+                txid: [tx_index as u8; 32],
+                ironwood_nullifiers: vec![],
+                ironwood_commitments: vec![],
+                full_transaction_acquisition: FullTransactionAcquisition::None,
+                full_transaction: None,
+            })
+            .to_vec();
+        let core = replay
+            .apply_block(&CoreCanonicalBlockInput {
+                height: 100,
+                block_hash: [10; 32],
+                prev_block_hash: [9; 32],
+                branch_id: BranchId::Nu6_3,
+                transactions,
+            })
+            .unwrap();
+        let names = inspect_exact_name_block(
+            &core,
+            &runtime,
+            deployment,
+            Network::Regtest,
+            &Name::parse("alice").unwrap(),
+        )
+        .unwrap();
+        assert_eq!(names.height, 100);
+        assert_eq!(names.hash, [10; 32]);
+        assert_eq!(names.prev_hash, [9; 32]);
+        assert_eq!(
+            names
+                .transactions
+                .iter()
+                .map(|transaction| transaction.tx_index)
+                .collect::<Vec<_>>(),
+            [2, 7, 11]
+        );
+        assert!(
+            names.transactions.iter().all(
+                |transaction| transaction.actions.is_empty() && transaction.operation.is_none()
+            )
         );
     }
 }

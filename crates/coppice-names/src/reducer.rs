@@ -1,6 +1,6 @@
 //! Deterministic canonical Names reducer.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 
 use crate::{
     codec::Operation,
@@ -102,15 +102,39 @@ pub enum ApplyError {
     NonCanonicalActionIndex,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RollbackError {
+    NoAppliedBlock,
+    BeyondRetention,
+    WrongTipHash,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FinalizationError {
+    BeyondTip,
+}
+
+struct Undo {
+    height: u32,
+    hash: [u8; 32],
+    previous_hash: [u8; 32],
+    previous_next_height: Option<u32>,
+    previous_tip_height: Option<u32>,
+    commits: BTreeMap<CommitRef, Option<Commitment>>,
+    heads: BTreeMap<NameId, Option<Head>>,
+}
+
 /// Full canonical state. No global state root or externally trusted index is
 /// part of protocol authority.
 pub struct Reducer<V> {
     parameters: Parameters,
     verifier: V,
     next_height: Option<u32>,
+    tip_height: Option<u32>,
     previous_hash: [u8; 32],
     commits: BTreeMap<CommitRef, Commitment>,
     heads: BTreeMap<NameId, Head>,
+    history: VecDeque<Undo>,
 }
 
 impl<V: ProofVerifier> Reducer<V> {
@@ -124,11 +148,13 @@ impl<V: ProofVerifier> Reducer<V> {
             .map_err(|_| ApplyError::InvalidParameters)?;
         Ok(Self {
             next_height: Some(parameters.activation_height),
+            tip_height: None,
             parameters,
             verifier,
             previous_hash: activation_parent_hash,
             commits: BTreeMap::new(),
             heads: BTreeMap::new(),
+            history: VecDeque::new(),
         })
     }
 
@@ -150,17 +176,75 @@ impl<V: ProofVerifier> Reducer<V> {
             }
         }
 
+        let mut undo = self.new_undo(block.height, block.hash);
+        self.prune_commits(block.height, &mut undo);
         let mut accepted = Vec::new();
         for transaction in &block.transactions {
-            self.mark_expired(block.height);
-            if let Some(value) = self.apply_transaction(block.height, transaction) {
+            self.mark_expired(block.height, &mut undo);
+            if let Some(value) = self.apply_transaction(block.height, transaction, &mut undo) {
                 accepted.push(value);
             }
         }
-        self.mark_expired(block.height);
+        self.mark_expired(block.height, &mut undo);
         self.next_height = block.height.checked_add(1);
+        self.tip_height = Some(block.height);
         self.previous_hash = block.hash;
+        self.history.push_back(undo);
         Ok(accepted)
+    }
+
+    /// Reverts exactly the current canonical tip without replaying older state.
+    pub fn rollback_tip(&mut self, expected_hash: [u8; 32]) -> Result<(), RollbackError> {
+        let undo = self.history.back().ok_or_else(|| {
+            if self.tip_height.is_some() {
+                RollbackError::BeyondRetention
+            } else {
+                RollbackError::NoAppliedBlock
+            }
+        })?;
+        if undo.hash != expected_hash || self.previous_hash != expected_hash {
+            return Err(RollbackError::WrongTipHash);
+        }
+        let undo = self.history.pop_back().expect("checked nonempty history");
+        for (commit_ref, previous) in undo.commits {
+            match previous {
+                Some(commitment) => {
+                    self.commits.insert(commit_ref, commitment);
+                }
+                None => {
+                    self.commits.remove(&commit_ref);
+                }
+            }
+        }
+        for (name_id, previous) in undo.heads {
+            match previous {
+                Some(head) => {
+                    self.heads.insert(name_id, head);
+                }
+                None => {
+                    self.heads.remove(&name_id);
+                }
+            }
+        }
+        self.previous_hash = undo.previous_hash;
+        self.next_height = undo.previous_next_height;
+        self.tip_height = undo.previous_tip_height;
+        Ok(())
+    }
+
+    /// Permanently drops rollback journals at or below a finalized height.
+    pub fn finalize_through(&mut self, height: u32) -> Result<(), FinalizationError> {
+        if self.tip_height.is_none_or(|tip| height > tip) {
+            return Err(FinalizationError::BeyondTip);
+        }
+        while self
+            .history
+            .front()
+            .is_some_and(|undo| undo.height <= height)
+        {
+            self.history.pop_front();
+        }
+        Ok(())
     }
 
     pub fn resolve(&self, name: &Name, height: u32) -> Resolution {
@@ -186,15 +270,68 @@ impl<V: ProofVerifier> Reducer<V> {
         }
     }
 
-    fn mark_expired(&mut self, height: u32) {
-        for head in self.heads.values_mut() {
-            if head.terminal_height.is_none() && height >= head.expiry_height {
+    fn remember_commit(&self, undo: &mut Undo, commit_ref: CommitRef) {
+        undo.commits
+            .entry(commit_ref)
+            .or_insert_with(|| self.commits.get(&commit_ref).copied());
+    }
+
+    fn new_undo(&self, height: u32, hash: [u8; 32]) -> Undo {
+        Undo {
+            height,
+            hash,
+            previous_hash: self.previous_hash,
+            previous_next_height: self.next_height,
+            previous_tip_height: self.tip_height,
+            commits: BTreeMap::new(),
+            heads: BTreeMap::new(),
+        }
+    }
+
+    fn remember_head(&self, undo: &mut Undo, name_id: NameId) {
+        undo.heads
+            .entry(name_id)
+            .or_insert_with(|| self.heads.get(&name_id).cloned());
+    }
+
+    fn prune_commits(&mut self, height: u32, undo: &mut Undo) {
+        let expired: Vec<_> = self
+            .commits
+            .keys()
+            .copied()
+            .filter(|commit_ref| {
+                height
+                    .checked_sub(commit_ref.height)
+                    .is_some_and(|age| age >= self.parameters.commit_ttl_blocks)
+            })
+            .collect();
+        for commit_ref in expired {
+            self.remember_commit(undo, commit_ref);
+            self.commits.remove(&commit_ref);
+        }
+    }
+
+    fn mark_expired(&mut self, height: u32, undo: &mut Undo) {
+        let expired: Vec<_> = self
+            .heads
+            .iter()
+            .filter(|(_, head)| head.terminal_height.is_none() && height >= head.expiry_height)
+            .map(|(name_id, _)| *name_id)
+            .collect();
+        for name_id in expired {
+            self.remember_head(undo, name_id);
+            if let Some(head) = self.heads.get_mut(&name_id) {
                 head.terminal_height = Some(head.expiry_height);
             }
         }
     }
 
-    fn apply_transaction(&mut self, height: u32, transaction: &Transaction) -> Option<Accepted> {
+    fn apply_transaction(
+        &mut self,
+        height: u32,
+        transaction: &Transaction,
+        undo: &mut Undo,
+    ) -> Option<Accepted> {
         let spent: Vec<(NameId, StateRef)> = self
             .heads
             .iter()
@@ -209,21 +346,20 @@ impl<V: ProofVerifier> Reducer<V> {
 
         let result = match transaction.operation.as_ref() {
             Some(Operation::Commit { commitment }) => {
-                self.commits.insert(
-                    CommitRef {
-                        height,
-                        tx_index: transaction.tx_index,
-                        txid: transaction.txid,
-                    },
-                    *commitment,
-                );
+                let commit_ref = CommitRef {
+                    height,
+                    tx_index: transaction.tx_index,
+                    txid: transaction.txid,
+                };
+                self.remember_commit(undo, commit_ref);
+                self.commits.insert(commit_ref, *commitment);
                 Some(Accepted::Commit)
             }
             Some(operation @ Operation::Reveal { .. }) => self
-                .apply_reveal(height, transaction, operation)
+                .apply_reveal(height, transaction, operation, undo)
                 .map(|_| Accepted::Reveal),
             Some(operation @ Operation::Refresh { .. }) => self
-                .apply_refresh(height, transaction, operation)
+                .apply_refresh(height, transaction, operation, undo)
                 .map(|_| Accepted::Refresh),
             None => None,
         };
@@ -232,6 +368,9 @@ impl<V: ProofVerifier> Reducer<V> {
             if let Some(head) = self.heads.get_mut(&name_id)
                 && head.producer == spent_producer
             {
+                undo.heads
+                    .entry(name_id)
+                    .or_insert_with(|| Some(head.clone()));
                 head.terminal_height.get_or_insert(height);
             }
         }
@@ -243,6 +382,7 @@ impl<V: ProofVerifier> Reducer<V> {
         height: u32,
         transaction: &Transaction,
         operation: &Operation,
+        undo: &mut Undo,
     ) -> Option<NameId> {
         let Operation::Reveal {
             name,
@@ -292,6 +432,7 @@ impl<V: ProofVerifier> Reducer<V> {
             return None;
         }
         let expiry_height = self.parameters.expiry(height).ok()?;
+        self.remember_head(undo, name_id);
         self.heads.insert(
             name_id,
             Head {
@@ -318,6 +459,7 @@ impl<V: ProofVerifier> Reducer<V> {
         height: u32,
         transaction: &Transaction,
         operation: &Operation,
+        undo: &mut Undo,
     ) -> Option<NameId> {
         let Operation::Refresh {
             name,
@@ -364,6 +506,7 @@ impl<V: ProofVerifier> Reducer<V> {
             return None;
         }
         let expiry_height = self.parameters.expiry(height).ok()?;
+        self.remember_head(undo, name_id);
         self.heads.insert(
             name_id,
             Head {
@@ -425,6 +568,15 @@ mod tests {
         CanonicalUa::parse(Network::Regtest, UA).unwrap()
     }
 
+    fn apply_transaction(
+        reducer: &mut Reducer<AcceptProofs>,
+        height: u32,
+        transaction: &Transaction,
+    ) -> Option<Accepted> {
+        let mut undo = reducer.new_undo(height, [0; 32]);
+        reducer.apply_transaction(height, transaction, &mut undo)
+    }
+
     #[test]
     fn accepted_refresh_advances_and_unmatched_spend_terminates() {
         let name = Name::parse("alice").unwrap();
@@ -465,7 +617,7 @@ mod tests {
             }),
         };
         assert_eq!(
-            reducer.apply_transaction(reveal_height, &reveal),
+            apply_transaction(&mut reducer, reveal_height, &reveal),
             Some(Accepted::Reveal)
         );
         let predecessor = reducer.heads[&name_id].producer;
@@ -490,7 +642,7 @@ mod tests {
             }),
         };
         assert_eq!(
-            reducer.apply_transaction(refresh_height, &refresh),
+            apply_transaction(&mut reducer, refresh_height, &refresh),
             Some(Accepted::Refresh)
         );
         assert_eq!(
@@ -509,7 +661,7 @@ mod tests {
             }],
             operation: None,
         };
-        assert_eq!(reducer.apply_transaction(spend_height, &spend), None);
+        assert_eq!(apply_transaction(&mut reducer, spend_height, &spend), None);
         assert_eq!(
             reducer.resolve(&name, spend_height).lifecycle,
             Lifecycle::Cooldown
@@ -567,7 +719,7 @@ mod tests {
                 proof: vec![1],
             }),
         };
-        assert_eq!(reducer.apply_transaction(25, &transaction), None);
+        assert_eq!(apply_transaction(&mut reducer, 25, &transaction), None);
         assert_eq!(reducer.heads[&name_id].terminal_height, Some(25));
     }
 
@@ -627,7 +779,7 @@ mod tests {
         };
 
         assert_eq!(
-            reducer.apply_transaction(reveal_height, &reclaim),
+            apply_transaction(&mut reducer, reveal_height, &reclaim),
             Some(Accepted::Reveal)
         );
         let head = &reducer.heads[&name_id];
@@ -653,5 +805,129 @@ mod tests {
         assert_eq!(reducer.apply_block(&block), Ok(vec![]));
         assert_eq!(reducer.next_height, None);
         assert_eq!(reducer.apply_block(&block), Err(ApplyError::WrongHeight));
+    }
+
+    #[test]
+    fn rollback_restores_head_and_accepts_alternate_branch() {
+        let name = Name::parse("alice").unwrap();
+        let name_id = name.id().unwrap();
+        let parameters = Parameters {
+            activation_height: 25,
+            ..parameters()
+        };
+        let mut reducer = Reducer::new(parameters, [1; 32], AcceptProofs).unwrap();
+        let original = Head {
+            name: name.clone(),
+            ua: ua(),
+            producer: StateRef {
+                height: 1,
+                tx_index: 0,
+                txid: [2; 32],
+                action_index: 0,
+            },
+            commitment: field(3),
+            future_nf: field(4),
+            producer_epoch: 0,
+            expiry_height: 50,
+            terminal_height: None,
+        };
+        reducer.heads.insert(name_id, original.clone());
+        let abandoned = Block {
+            height: 25,
+            hash: [5; 32],
+            prev_hash: [1; 32],
+            transactions: vec![Transaction {
+                tx_index: 0,
+                txid: [6; 32],
+                actions: vec![Action {
+                    action_index: 0,
+                    nullifier: field(4),
+                    commitment: field(7),
+                }],
+                operation: None,
+            }],
+        };
+        reducer.apply_block(&abandoned).unwrap();
+        assert_eq!(reducer.heads[&name_id].terminal_height, Some(25));
+
+        assert_eq!(
+            reducer.rollback_tip([8; 32]),
+            Err(RollbackError::WrongTipHash)
+        );
+        assert_eq!(reducer.heads[&name_id].terminal_height, Some(25));
+        reducer.rollback_tip(abandoned.hash).unwrap();
+        assert_eq!(reducer.heads[&name_id], original);
+
+        let alternate = Block {
+            height: 25,
+            hash: [9; 32],
+            prev_hash: [1; 32],
+            transactions: vec![],
+        };
+        reducer.apply_block(&alternate).unwrap();
+        assert_eq!(reducer.resolve(&name, 25).lifecycle, Lifecycle::Active);
+        assert_eq!(
+            reducer.finalize_through(26),
+            Err(FinalizationError::BeyondTip)
+        );
+        reducer.finalize_through(25).unwrap();
+        assert_eq!(
+            reducer.rollback_tip(alternate.hash),
+            Err(RollbackError::BeyondRetention)
+        );
+    }
+
+    #[test]
+    fn rollback_restores_commit_pruned_at_ttl_boundary() {
+        let parameters = Parameters {
+            deployment_id: [7; 32],
+            activation_height: 0,
+            epoch_blocks: 10,
+            window_blocks: 1,
+            commit_maturity_blocks: 1,
+            commit_ttl_blocks: 3,
+            lease_blocks: 20,
+            cooldown_blocks: 10,
+        };
+        let mut reducer = Reducer::new(parameters, [0; 32], AcceptProofs).unwrap();
+        let commitment = Commitment::from_bytes(pallas::Base::from(9).to_repr()).unwrap();
+        let commit_ref = CommitRef {
+            height: 0,
+            tx_index: 0,
+            txid: [10; 32],
+        };
+        let commit_block = Block {
+            height: 0,
+            hash: [1; 32],
+            prev_hash: [0; 32],
+            transactions: vec![Transaction {
+                tx_index: 0,
+                txid: commit_ref.txid,
+                actions: vec![],
+                operation: Some(Operation::Commit { commitment }),
+            }],
+        };
+        reducer.apply_block(&commit_block).unwrap();
+        for height in 1_u32..=3 {
+            let block = Block {
+                height,
+                hash: [u8::try_from(height + 1).unwrap(); 32],
+                prev_hash: [u8::try_from(height).unwrap(); 32],
+                transactions: vec![],
+            };
+            reducer.apply_block(&block).unwrap();
+        }
+        assert!(!reducer.commits.contains_key(&commit_ref));
+
+        reducer.rollback_tip([4; 32]).unwrap();
+        assert_eq!(reducer.commits.get(&commit_ref), Some(&commitment));
+        reducer.rollback_tip([3; 32]).unwrap();
+        reducer.rollback_tip([2; 32]).unwrap();
+        reducer.rollback_tip([1; 32]).unwrap();
+        assert!(!reducer.commits.contains_key(&commit_ref));
+        assert_eq!(
+            reducer.rollback_tip([0; 32]),
+            Err(RollbackError::NoAppliedBlock)
+        );
     }
 }

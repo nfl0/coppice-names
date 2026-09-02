@@ -1,6 +1,7 @@
 //! Orchard prover and verifier adapters for the replacement Names relations.
 
 use crate::{
+    deployment::ProofIdentity,
     protocol::FieldElement,
     reducer::ProofVerifier,
     statement::{RefreshStatement, RevealStatement},
@@ -34,6 +35,20 @@ pub struct OrchardProofProver {
 #[derive(Debug)]
 pub struct OrchardProofVerifier {
     keys: orchard_names::VerifyingKeys,
+}
+
+impl OrchardProofVerifier {
+    /// Returns the complete proof-system identity committed by a deployment.
+    pub fn identity(&self) -> ProofIdentity {
+        ProofIdentity::derive(
+            u8::try_from(orchard_names::CIRCUIT_K).expect("Names circuit K fits u8"),
+            u16::try_from(orchard_names::REVEAL_PROOF_BYTES).expect("REVEAL proof length fits u16"),
+            u16::try_from(orchard_names::REFRESH_PROOF_BYTES)
+                .expect("REFRESH proof length fits u16"),
+            self.keys.reveal_fingerprint().to_bytes(),
+            self.keys.refresh_fingerprint().to_bytes(),
+        )
+    }
 }
 
 /// Generates the paired prover and verifier for one deployment.
@@ -132,6 +147,20 @@ mod tests {
     use rand_chacha::{ChaCha20Rng, rand_core::SeedableRng};
 
     const UA: &str = "uregtest1rxnn8qurdex552draeuvvvucggeknmmsxazg52mkatf0hrclhppe5jeqj6w7svqtxvxq320tw6ejsk4nm8zk8f35274vlwqerfx74904pydaxe27wnpq8llqxclaa0n04zg764ppzfruu4gsagmqw0mlvx";
+
+    #[test]
+    fn proof_identity_matches_frozen_verifier_manifests() {
+        let (_, verifier) = keygen();
+        let identity = verifier.identity();
+        assert_eq!(
+            hex::encode(identity.reveal().to_bytes()),
+            "a4cc96f71b13842c78a34ba0a4f4a09e29925287a81914059b5ec3963228466d"
+        );
+        assert_eq!(
+            hex::encode(identity.refresh().to_bytes()),
+            "fd59a28c7364cd4dc062c51e48a14d938fac3e1fa107eecc1ff2d3f99f08cd00"
+        );
+    }
 
     #[test]
     fn real_reveal_proof_verifies_through_reducer_adapter() {

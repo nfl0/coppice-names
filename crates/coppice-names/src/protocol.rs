@@ -1,5 +1,6 @@
 //! Canonical Coppice Names protocol values.
 
+use orchard::keys::IncomingViewingKey;
 use pasta_curves::{
     group::ff::{FromUniformBytes, PrimeField},
     pallas,
@@ -114,6 +115,58 @@ impl NameId {
 
     pub(crate) fn field(self) -> pallas::Base {
         canonical_field(self.0).expect("NameId is canonical")
+    }
+}
+
+/// Public, name-specific Orchard route used only for Names carrier notes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NameRoute {
+    incoming_viewing_key: [u8; 64],
+    receiver: [u8; 43],
+}
+
+impl NameRoute {
+    /// Deterministically derives the deployment-separated route for a name.
+    pub fn derive(deployment_id: [u8; 32], name_id: NameId) -> Result<Self, ValueError> {
+        let mut common = Vec::with_capacity(64);
+        common.extend_from_slice(&deployment_id);
+        common.extend_from_slice(&name_id.to_bytes());
+        let dk: [u8; 32] = blake2b_simd::Params::new()
+            .hash_length(32)
+            .personal(b"CoppiceN2RteD")
+            .hash(&common)
+            .as_bytes()
+            .try_into()
+            .expect("BLAKE2b-256 output");
+        for counter in 0..=u8::MAX {
+            let mut input = common.clone();
+            input.push(counter);
+            let ivk = wide_field(b"CoppiceN2RteI", &input);
+            if ivk == pallas::Base::zero() {
+                continue;
+            }
+            let mut bytes = [0; 64];
+            bytes[..32].copy_from_slice(&dk);
+            bytes[32..].copy_from_slice(&ivk.to_repr());
+            let incoming =
+                Option::<IncomingViewingKey>::from(IncomingViewingKey::from_bytes(&bytes))
+                    .expect("nonzero canonical IVK field and arbitrary diversifier key are valid");
+            return Ok(Self {
+                incoming_viewing_key: bytes,
+                receiver: incoming.address_at(0u32).to_raw_address_bytes(),
+            });
+        }
+        Err(ValueError::HashToFieldExhausted)
+    }
+
+    /// Returns the raw Orchard incoming viewing key (`dk || ivk`).
+    pub const fn incoming_viewing_key(self) -> [u8; 64] {
+        self.incoming_viewing_key
+    }
+
+    /// Returns the raw index-zero Orchard receiver.
+    pub const fn receiver(self) -> [u8; 43] {
+        self.receiver
     }
 }
 
@@ -256,6 +309,25 @@ mod tests {
         assert_eq!(
             FieldElement::from_bytes([0xff; 32]),
             Err(ValueError::InvalidField)
+        );
+    }
+
+    #[test]
+    fn synthetic_prevector_route_remains_reproducible() {
+        let deployment_id =
+            hex::decode("0f0a82a82d6645b74a7ae2fc86722440c8f1395993e5b3efdf566a8815ab1d5c")
+                .unwrap()
+                .try_into()
+                .unwrap();
+        let route =
+            NameRoute::derive(deployment_id, Name::parse("alice").unwrap().id().unwrap()).unwrap();
+        assert_eq!(
+            hex::encode(route.incoming_viewing_key()),
+            "09b2fdd10a05a9e201463d22b59299962944c22f481c66013895d928befb227ba8ac90539dfe62080f89fa700e20963c1a1c78d3cd6464bc9377b45cb3e0f802"
+        );
+        assert_eq!(
+            hex::encode(route.receiver()),
+            "8afcc90c3230fdce15e081d8095158d5530804fc764f1041a62804d9a821145c718993796e7d23f2524b8d"
         );
     }
 }

@@ -8,6 +8,11 @@ const COMMIT_TAG: u8 = 0;
 const REVEAL_TAG: u8 = 1;
 const REFRESH_TAG: u8 = 2;
 
+/// Largest deployment-frozen REVEAL proof compatible with maximum inputs.
+pub const MAX_REVEAL_PROOF_BYTES: usize = 14_883;
+/// Largest deployment-frozen REFRESH proof compatible with maximum inputs.
+pub const MAX_REFRESH_PROOF_BYTES: usize = 14_879;
+
 /// Fixed proof lengths selected by one deployment.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CodecParameters {
@@ -17,7 +22,9 @@ pub struct CodecParameters {
 
 impl CodecParameters {
     pub fn validate(self) -> Result<Self, CodecError> {
-        if self.reveal_proof_bytes > 14_883 || self.refresh_proof_bytes > 14_879 {
+        if self.reveal_proof_bytes > MAX_REVEAL_PROOF_BYTES
+            || self.refresh_proof_bytes > MAX_REFRESH_PROOF_BYTES
+        {
             return Err(CodecError::TooLarge);
         }
         Ok(self)

@@ -5,17 +5,7 @@
 //! transport and canonical acquisition; Zcash consensus remains the sole
 //! transaction and fork-choice authority.
 
-use coppice::application::{ApplicationId, derive_application_id};
-
-/// Exact application-family identity used by Names operations on the generic
-/// Coppice transport. The operation version is encoded by CNV1 itself.
-pub const NAMES_CANONICAL_APPLICATION_IDENTITY: &[u8] = b"coppice.names";
-
-/// Returns the canonical Names application family identifier.
-pub fn names_application_id() -> ApplicationId {
-    derive_application_id(NAMES_CANONICAL_APPLICATION_IDENTITY)
-        .expect("the Names application identity is nonempty")
-}
+pub use crate::{NAMES_CANONICAL_APPLICATION_IDENTITY, names_application_id};
 
 pub mod application;
 pub mod lease;

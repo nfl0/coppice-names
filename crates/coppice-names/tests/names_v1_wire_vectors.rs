@@ -122,7 +122,7 @@ fn frozen_vector_operations() -> Vec<(&'static str, V1Operation)> {
         (
             "update",
             V1Operation::Update {
-                predecessor: predecessor.clone(),
+                predecessor,
                 state: frozen_state(|state| {
                     state.sequence = 1;
                     state.record = vec![0x43; 64];
@@ -136,7 +136,7 @@ fn frozen_vector_operations() -> Vec<(&'static str, V1Operation)> {
         (
             "renew",
             V1Operation::Renew {
-                predecessor: predecessor.clone(),
+                predecessor,
                 state: frozen_state(|state| {
                     state.sequence = 1;
                     state.lease_expiry = 2_000;

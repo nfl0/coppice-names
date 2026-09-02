@@ -4,8 +4,8 @@ use crate::{
     codec::Operation,
     protocol::{Name, NameId, Network},
     reducer::{
-        Accepted, ApplyError, Block, FinalizationError, ProofVerifier, Reducer, Resolution,
-        RollbackError, SnapshotError,
+        Accepted, ApplyError, Block, FinalizationError, ProofVerifier, Reducer, ReducerTip,
+        Resolution, RollbackError, SnapshotError,
     },
     schedule::Parameters,
 };
@@ -71,6 +71,17 @@ impl<V: ProofVerifier> ExactResolver<V> {
     /// Resolves at an applied canonical height.
     pub fn resolve(&self, height: u32) -> Resolution {
         self.reducer.resolve(&self.name, height)
+    }
+
+    pub fn tip(&self) -> Option<ReducerTip> {
+        self.reducer.tip()
+    }
+
+    pub fn pending_commit(
+        &self,
+        reference: &crate::protocol::CommitRef,
+    ) -> Option<crate::protocol::Commitment> {
+        self.reducer.pending_commit(reference)
     }
 
     /// Reverts exactly the current canonical tip. Wallet hosts use this to
@@ -255,6 +266,14 @@ mod tests {
             resolver.resolve(spend_height).lifecycle,
             Lifecycle::Cooldown
         );
+        assert_eq!(
+            resolver.tip(),
+            Some(ReducerTip {
+                height: spend_height,
+                hash: hash(spend_height),
+            })
+        );
+        assert_eq!(resolver.pending_commit(&commit_ref), Some(commitment));
 
         let snapshot = resolver.save_snapshot().unwrap();
         let mut wrong_name: serde_json::Value = serde_json::from_slice(&snapshot).unwrap();

@@ -90,6 +90,12 @@ pub struct Resolution {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReducerTip {
+    pub height: u32,
+    pub hash: [u8; 32],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Accepted {
     Commit,
     Reveal,
@@ -253,6 +259,17 @@ impl<V: ProofVerifier> Reducer<V> {
         self.previous_hash = block.hash;
         self.history.push_back(undo);
         Ok(accepted)
+    }
+
+    pub fn tip(&self) -> Option<ReducerTip> {
+        self.tip_height.map(|height| ReducerTip {
+            height,
+            hash: self.previous_hash,
+        })
+    }
+
+    pub fn pending_commit(&self, reference: &CommitRef) -> Option<Commitment> {
+        self.commits.get(reference).copied()
     }
 
     /// Reverts exactly the current canonical tip without replaying older state.

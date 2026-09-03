@@ -514,9 +514,9 @@ mod tests {
         application::ApplicationEnvelopeV1,
         identity::{CoreRuntimeId, CoreRuntimeParameters, ZcashNetwork},
         replay::{
-            CoreCanonicalBlockInput, CoreCanonicalTransactionInput, CoreReplay,
-            CoreReplayActivationCheckpoint, CoreReplayConfiguration, FullTransactionAcquisition,
-            IronwoodFrontier,
+            CoreCanonicalBlockInput, CoreCanonicalTransactionInput, CorePositionReplay, CoreReplay,
+            CoreReplayActivationCheckpoint, CoreReplayConfiguration, CoreReplayPositionCheckpoint,
+            FullTransactionAcquisition, IronwoodFrontier,
         },
     };
     use pasta_curves::{group::ff::PrimeField, pallas};
@@ -868,6 +868,57 @@ mod tests {
         );
         assert_eq!(
             authenticated_action_position(&core, 7, 0),
+            Err(BlockTransportError::InvalidActionPosition)
+        );
+    }
+
+    #[test]
+    fn wallet_position_replay_matches_full_replay_positions() {
+        let configuration = CoreReplayConfiguration::new(100, 20).unwrap();
+        let mut replay = CorePositionReplay::new(
+            configuration,
+            CoreReplayPositionCheckpoint {
+                height: 99,
+                block_hash: [9; 32],
+                ironwood_tree_size: 2,
+            },
+        )
+        .unwrap();
+        let action_bytes = |value: u64| pallas::Base::from(value).to_repr();
+        let core = replay
+            .apply_block(&CoreCanonicalBlockInput {
+                height: 100,
+                block_hash: [10; 32],
+                prev_block_hash: [9; 32],
+                branch_id: BranchId::Nu6_3,
+                transactions: vec![
+                    CoreCanonicalTransactionInput {
+                        tx_index: 2,
+                        txid: [2; 32],
+                        ironwood_nullifiers: vec![action_bytes(5)],
+                        ironwood_commitments: vec![action_bytes(6)],
+                        full_transaction_acquisition: FullTransactionAcquisition::None,
+                        full_transaction: None,
+                    },
+                    CoreCanonicalTransactionInput {
+                        tx_index: 9,
+                        txid: [9; 32],
+                        ironwood_nullifiers: vec![action_bytes(7), action_bytes(8)],
+                        ironwood_commitments: vec![action_bytes(9), action_bytes(10)],
+                        full_transaction_acquisition: FullTransactionAcquisition::None,
+                        full_transaction: None,
+                    },
+                ],
+            })
+            .unwrap();
+
+        assert_eq!(core.pre_ironwood_tree_size(), 2);
+        assert_eq!(core.post_ironwood_tree_size(), 5);
+        assert_eq!(positioned_action_position(&core, 2, 0), Ok(2));
+        assert_eq!(positioned_action_position(&core, 9, 0), Ok(3));
+        assert_eq!(positioned_action_position(&core, 9, 1), Ok(4));
+        assert_eq!(
+            positioned_action_position(&core, 9, 2),
             Err(BlockTransportError::InvalidActionPosition)
         );
     }

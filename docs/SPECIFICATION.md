@@ -207,11 +207,20 @@ incoming-viewing-key field, then uses the index-zero Orchard receiver. Exact
 derivation is implemented by `NameRoute::derive` and frozen by the conformance
 vectors.
 
-A resolver inspects Core-authenticated full transaction bytes at both the
-generic route and the requested-name route. Exactly one correctly routed Names
-operation may survive. Ambiguous, malformed, unauthenticated, nonzero-value, or
-wrong-route bulletins are inert as Names operations. Their authenticated
-Ironwood action effects MUST remain visible to spentness processing.
+A complete replay may inspect Core-authenticated full transaction bytes at both
+the generic route and every name route. An exact-name resolver need not acquire
+unrelated traffic at the generic route: it first discovers a REVEAL in the
+requested name's deterministic window, then follows that REVEAL's bounded
+`CommitRef` to the one historical compact transaction it names. The referenced
+full transaction is authenticated against that compact transaction's txid and
+Ironwood effects before its COMMIT is admitted to the reducer. The referenced
+COMMIT is semantically identical to observing it during forward replay.
+
+Exactly one correctly routed Names operation may survive inspection. Ambiguous,
+malformed, unauthenticated, nonzero-value, or wrong-route bulletins are inert as
+Names operations. Their authenticated Ironwood action effects MUST remain
+visible to spentness processing. A resolver MUST NOT trust an unauthenticated
+transaction locator or COMMIT cache.
 
 ## 6. Operation codec
 
@@ -405,8 +414,11 @@ verifying-key fingerprints are deployment-bound.
 
 `ExactResolver` applies the same reducer rules for one requested name. It:
 
-- retains every generic COMMIT until its bounded TTL because a later REVEAL
-  for the requested name may reference it;
+- discovers candidate REVEAL/REFRESH bulletins only in the requested name's
+  deterministic windows;
+- authenticates the exact historical COMMIT referenced by a candidate REVEAL,
+  provided the reference is older than the REVEAL and still within the bounded
+  COMMIT TTL, and admits that evidence atomically with the REVEAL block;
 - decodes and verifies REVEAL/REFRESH only for the requested name; and
 - retains every authenticated Ironwood action nullifier because an otherwise
   unrelated transaction may spend the requested name's current bond.
@@ -415,10 +427,18 @@ Therefore exact replay and complete replay MUST produce the same lifecycle,
 UA, head, and producer for the requested name at the same canonical tip.
 
 The deterministic name schedule bounds expensive name-route trial decryption
-and full-transaction acquisition to the name's short windows. It does not make
-canonical-tail spentness disappear: action nullifiers remain necessary to know
-whether the accepted head is current. A cache may accelerate this work, but it
-is derived state and MUST NOT become an unauthenticated source of truth.
+and full-transaction acquisition to the name's short windows. A compact-block
+ring covering the COMMIT TTL is sufficient to authenticate referenced COMMITs;
+it is derived, nonsecret state and may instead be reconstructed with a bounded
+historical compact-block request. Implementations SHOULD reject impossible
+schedule, reference, transaction-shape, and lineage cases before invoking a
+proof verifier.
+
+The schedule does not make canonical-tail spentness disappear: action
+nullifiers remain necessary to know whether the accepted head is current. A
+compact nullifier journal or fast lookup index may accelerate this work, but it
+MUST remain bound to the wallet's canonical scan and reorganization handling;
+neither is an independent or trusted source of truth.
 
 ## 12. Reorganizations and cached state
 
@@ -432,6 +452,11 @@ Applying a block with the wrong height or previous hash fails. Rollback removes
 exactly the expected current tip and restores all COMMIT, head, terminal, and
 branch-linkage changes recorded for that block. Journals MAY be discarded only
 through a height independently finalized by the host.
+
+An on-demand referenced COMMIT MUST be inserted in the same atomic reducer
+transition as the block containing its candidate REVEAL. A failed block leaves
+no referenced evidence behind, and rolling back that block removes evidence
+that was not already present from forward replay.
 
 ## 13. Wallet recovery policy (non-normative)
 

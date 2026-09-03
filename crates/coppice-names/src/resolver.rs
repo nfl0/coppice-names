@@ -5,7 +5,7 @@ use crate::{
     protocol::{Name, NameId, Network},
     reducer::{
         Accepted, ApplyError, Block, FinalizationError, ProofVerifier, Reducer, ReducerTip,
-        Resolution, RollbackError, SnapshotError,
+        ReferencedCommit, Resolution, RollbackError, SnapshotError,
     },
     schedule::Parameters,
 };
@@ -53,6 +53,16 @@ impl<V: ProofVerifier> ExactResolver<V> {
     /// Applies one authenticated canonical block after removing unrelated
     /// application payloads but retaining every action effect.
     pub fn apply_block(&mut self, block: &Block) -> Result<Vec<Accepted>, ApplyError> {
+        self.apply_block_with_referenced_commits(block, &[])
+    }
+
+    /// Applies exact-name state with bounded historical COMMIT evidence fetched
+    /// only after a candidate REVEAL identifies its canonical reference.
+    pub fn apply_block_with_referenced_commits(
+        &mut self,
+        block: &Block,
+        referenced_commits: &[ReferencedCommit],
+    ) -> Result<Vec<Accepted>, ApplyError> {
         let mut filtered = block.clone();
         for transaction in &mut filtered.transactions {
             let relevant = match transaction.operation.as_ref() {
@@ -66,7 +76,8 @@ impl<V: ProofVerifier> ExactResolver<V> {
                 transaction.operation = None;
             }
         }
-        self.reducer.apply_block(&filtered)
+        self.reducer
+            .apply_block_with_referenced_commits(&filtered, referenced_commits)
     }
 
     /// Resolves at an applied canonical height.
@@ -380,6 +391,103 @@ mod tests {
         assert_eq!(
             resolver.rollback_tip([40; 32]),
             Err(RollbackError::BeyondRetention)
+        );
+    }
+
+    #[test]
+    fn referenced_commit_is_equivalent_to_forward_commit_and_rolls_back_atomically() {
+        let parameters = Parameters {
+            deployment_id: [7; 32],
+            activation_height: 0,
+            epoch_blocks: 20,
+            window_blocks: 4,
+            commit_maturity_blocks: 4,
+            commit_ttl_blocks: 10,
+            lease_blocks: 50,
+            cooldown_blocks: 20,
+        };
+        let name = Name::parse("alice").unwrap();
+        let reveal_height = (4..40)
+            .find(|height| parameters.accepts_operation(name.id().unwrap(), *height))
+            .unwrap();
+        let commit_ref = CommitRef {
+            height: reveal_height - parameters.commit_maturity_blocks,
+            tx_index: 3,
+            txid: [10; 32],
+        };
+        let commitment = Commitment::from_bytes(pallas::Base::from(1).to_repr()).unwrap();
+        let reveal = Operation::Reveal {
+            name: name.clone(),
+            commit: commit_ref,
+            ua: CanonicalUa::parse(Network::Regtest, UA).unwrap(),
+            action_index: 0,
+            successor_future_nf: field(4),
+            proof: vec![1],
+        };
+        let mut resolver = ExactResolver::new(parameters, [0; 32], name, AcceptProofs).unwrap();
+        let mut previous_hash = [0; 32];
+        for height in 0..=reveal_height {
+            let block_hash = hash(height);
+            let block = Block {
+                height,
+                hash: block_hash,
+                prev_hash: previous_hash,
+                transactions: (height == reveal_height)
+                    .then(|| Transaction {
+                        tx_index: 0,
+                        txid: [20; 32],
+                        actions: vec![Action {
+                            action_index: 0,
+                            nullifier: field(2),
+                            commitment: field(3),
+                        }],
+                        operation: Some(reveal.clone()),
+                    })
+                    .into_iter()
+                    .collect(),
+            };
+            if height == reveal_height {
+                assert_eq!(
+                    resolver
+                        .apply_block_with_referenced_commits(
+                            &block,
+                            &[ReferencedCommit {
+                                reference: commit_ref,
+                                commitment,
+                            }],
+                        )
+                        .unwrap(),
+                    [Accepted::Reveal]
+                );
+            } else {
+                resolver.apply_block(&block).unwrap();
+            }
+            previous_hash = block_hash;
+        }
+        assert_eq!(resolver.resolve(reveal_height).lifecycle, Lifecycle::Active);
+        assert_eq!(resolver.pending_commit(&commit_ref), Some(commitment));
+
+        resolver.rollback_tip(hash(reveal_height)).unwrap();
+        assert_eq!(resolver.pending_commit(&commit_ref), None);
+        let alternate = Block {
+            height: reveal_height,
+            hash: [55; 32],
+            prev_hash: hash(reveal_height - 1),
+            transactions: vec![Transaction {
+                tx_index: 0,
+                txid: [20; 32],
+                actions: vec![Action {
+                    action_index: 0,
+                    nullifier: field(2),
+                    commitment: field(3),
+                }],
+                operation: Some(reveal),
+            }],
+        };
+        assert!(resolver.apply_block(&alternate).unwrap().is_empty());
+        assert_eq!(
+            resolver.resolve(reveal_height).lifecycle,
+            Lifecycle::Missing
         );
     }
 }

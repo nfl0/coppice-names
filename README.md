@@ -21,6 +21,10 @@ The application uses Coppice's generic transport and canonical source
 interfaces. Zcash consensus is the sole transaction and fork-choice authority;
 Names ZK proves hidden-authority and exact bond-note relations, while the
 canonical reducer and `ExactResolver` decide applicability and currentness.
+Exact resolution discovers REVEALs in the requested name's deterministic
+windows and then authenticates only the historical COMMIT named by the
+REVEAL's bounded `CommitRef`; it does not continuously download unrelated
+generic-rendezvous traffic.
 
 The current normative protocol is documented in
 [`docs/SPECIFICATION.md`](docs/SPECIFICATION.md). The checked-in conformance

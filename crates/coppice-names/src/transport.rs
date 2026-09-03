@@ -11,7 +11,7 @@ use coppice::{
     application::ApplicationKey,
     carrier::{CoreRendezvous, RendezvousError},
     identity::ValidatedCoreRuntimeParameters,
-    replay::{CoreBlockContext, CoreTransactionContext},
+    replay::{CoreBlockContext, CoreTransactionContext, ValidatedFullTransaction},
     runtime::{ApplicationMessageStatus, RoutedFrame, inspect_transaction_at_rendezvous},
     transport::Error as Cpv1Error,
 };
@@ -129,6 +129,25 @@ pub fn inspect_commit_transaction(
     )
 }
 
+/// Decodes a historical COMMIT after Core has authenticated its full bytes
+/// against the canonical compact transaction named by a REVEAL.
+pub fn inspect_validated_commit_transaction(
+    transaction: &ValidatedFullTransaction,
+    runtime: &ValidatedCoreRuntimeParameters,
+    deployment: DeploymentParameters,
+    network: Network,
+) -> Result<NamesTransportStatus, TransportConfigurationError> {
+    let validated = validate_runtime(deployment, runtime)?;
+    let public_rendezvous = CoreRendezvous::from_validated(runtime);
+    Ok(inspect_validated(
+        transaction,
+        &public_rendezvous,
+        validated,
+        network,
+        ExpectedRoute::Commit,
+    ))
+}
+
 /// Derives the public name route and decodes only a REVEAL or REFRESH for that
 /// exact name. This is the arbitrary-name lookup boundary; it requires no
 /// saved per-name secret or trusted index.
@@ -157,6 +176,36 @@ pub fn inspect_name_transaction(
         network,
         ExpectedRoute::Name(name),
     )
+}
+
+/// Decodes a name-routed transaction after stateless Core authentication.
+/// Hosts use this during batch pre-acquisition to discover bounded COMMIT
+/// references without trusting raw full-transaction bytes.
+pub fn inspect_validated_name_transaction(
+    transaction: &ValidatedFullTransaction,
+    runtime: &ValidatedCoreRuntimeParameters,
+    deployment: DeploymentParameters,
+    network: Network,
+    name: &Name,
+) -> Result<NamesTransportStatus, TransportConfigurationError> {
+    let validated = validate_runtime(deployment, runtime)?;
+    let deployment_id = validated
+        .deployment_id()
+        .map_err(TransportConfigurationError::InvalidDeployment)?;
+    let name_id = name
+        .id()
+        .map_err(TransportConfigurationError::InvalidName)?;
+    let route = NameRoute::derive(deployment_id, name_id)
+        .map_err(TransportConfigurationError::InvalidName)?;
+    let rendezvous = CoreRendezvous::try_new(&route.incoming_viewing_key(), &route.receiver())
+        .map_err(TransportConfigurationError::InvalidRendezvous)?;
+    Ok(inspect_validated(
+        transaction,
+        &rendezvous,
+        validated,
+        network,
+        ExpectedRoute::Name(name),
+    ))
 }
 
 /// Converts one Core-authenticated block into the exact reducer input for an
@@ -289,18 +338,30 @@ fn inspect_authenticated(
             TransportRejection::UnauthenticatedFullTransaction,
         ));
     };
+    Ok(inspect_validated(
+        full, rendezvous, validated, network, expected,
+    ))
+}
+
+fn inspect_validated(
+    transaction: &ValidatedFullTransaction,
+    rendezvous: &CoreRendezvous,
+    deployment: DeploymentParameters,
+    network: Network,
+    expected: ExpectedRoute<'_>,
+) -> NamesTransportStatus {
     let inspection = inspect_transaction_at_rendezvous(
-        full.transaction(),
+        transaction.transaction(),
         rendezvous,
-        validated.core_runtime_id,
+        deployment.core_runtime_id,
     );
-    Ok(classify_inspection(
+    classify_inspection(
         inspection.routed_frames(),
         inspection.message(),
-        validated,
+        deployment,
         network,
         expected,
-    ))
+    )
 }
 
 fn classify_inspection(

@@ -43,6 +43,19 @@ pub struct Block {
     pub transactions: Vec<Transaction>,
 }
 
+/// A historical COMMIT authenticated against the canonical compact transaction
+/// named by `reference`.
+///
+/// Exact resolvers may obtain this evidence on demand after a REVEAL exposes
+/// its bounded [`CommitRef`]. It is semantically identical to having observed
+/// the COMMIT during forward replay, but avoids continuous acquisition at the
+/// public generic rendezvous.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReferencedCommit {
+    pub reference: CommitRef,
+    pub commitment: Commitment,
+}
+
 /// Narrow cryptographic boundary consumed by canonical replay.
 pub trait ProofVerifier {
     fn verify_reveal(&self, statement: &RevealStatement, proof: &[u8]) -> bool;
@@ -122,6 +135,8 @@ pub enum ApplyError {
     WrongPreviousHash,
     NonCanonicalTransactionIndex,
     NonCanonicalActionIndex,
+    InvalidReferencedCommit,
+    ConflictingReferencedCommit,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -240,6 +255,20 @@ impl<V: ProofVerifier> Reducer<V> {
     }
 
     pub fn apply_block(&mut self, block: &Block) -> Result<Vec<Accepted>, ApplyError> {
+        self.apply_block_with_referenced_commits(block, &[])
+    }
+
+    /// Applies a block with independently authenticated historical COMMITs
+    /// referenced by candidate REVEALs in this block.
+    ///
+    /// Evidence is admitted atomically with the block and journaled for exact
+    /// rollback. A host must authenticate each referenced transaction against
+    /// its canonical compact effects before using this boundary.
+    pub fn apply_block_with_referenced_commits(
+        &mut self,
+        block: &Block,
+        referenced_commits: &[ReferencedCommit],
+    ) -> Result<Vec<Accepted>, ApplyError> {
         if Some(block.height) != self.next_height {
             return Err(ApplyError::WrongHeight);
         }
@@ -259,8 +288,32 @@ impl<V: ProofVerifier> Reducer<V> {
             }
         }
 
+        let mut supplied = BTreeMap::new();
+        for evidence in referenced_commits {
+            if evidence.reference.height < self.parameters.activation_height
+                || evidence.reference.height >= block.height
+                || block.height - evidence.reference.height >= self.parameters.commit_ttl_blocks
+            {
+                return Err(ApplyError::InvalidReferencedCommit);
+            }
+            if supplied
+                .insert(evidence.reference, evidence.commitment)
+                .is_some_and(|prior| prior != evidence.commitment)
+                || self
+                    .commits
+                    .get(&evidence.reference)
+                    .is_some_and(|prior| prior != &evidence.commitment)
+            {
+                return Err(ApplyError::ConflictingReferencedCommit);
+            }
+        }
+
         let mut undo = self.new_undo(block.height, block.hash);
         self.prune_commits(block.height, &mut undo);
+        for (reference, commitment) in supplied {
+            self.remember_commit(&mut undo, reference);
+            self.commits.insert(reference, commitment);
+        }
         let mut accepted = Vec::new();
         for transaction in &block.transactions {
             self.mark_expired(block.height, &mut undo);

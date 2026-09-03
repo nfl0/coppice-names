@@ -11,7 +11,10 @@ use coppice::{
     application::ApplicationKey,
     carrier::{CoreRendezvous, RendezvousError},
     identity::ValidatedCoreRuntimeParameters,
-    replay::{CoreBlockContext, CoreTransactionContext, ValidatedFullTransaction},
+    replay::{
+        CoreBlockContext, CorePositionedBlockContext, CoreTransactionContext,
+        ValidatedFullTransaction,
+    },
     runtime::{ApplicationMessageStatus, RoutedFrame, inspect_transaction_at_rendezvous},
     transport::Error as Cpv1Error,
 };
@@ -92,6 +95,50 @@ pub fn authenticated_action_position(
         .checked_sub(total_actions)
         .ok_or(BlockTransportError::InvalidActionPosition)?;
     for transaction in block.transactions() {
+        let action_count = u32::try_from(transaction.ironwood_effects().commitments().len())
+            .map_err(|_| BlockTransportError::InvalidActionPosition)?;
+        if transaction.tx_index() == tx_index {
+            if action_index >= action_count {
+                return Err(BlockTransportError::InvalidActionPosition);
+            }
+            return position
+                .checked_add(action_index)
+                .ok_or(BlockTransportError::InvalidActionPosition);
+        }
+        position = position
+            .checked_add(action_count)
+            .ok_or(BlockTransportError::InvalidActionPosition)?;
+    }
+    Err(BlockTransportError::InvalidActionPosition)
+}
+
+/// Returns the canonical global Ironwood position of one action when the
+/// commitment tree is authenticated and owned by the calling wallet.
+pub fn positioned_action_position(
+    block: &CorePositionedBlockContext,
+    tx_index: u32,
+    action_index: u32,
+) -> Result<u32, BlockTransportError> {
+    action_position(
+        block.transactions(),
+        block.pre_ironwood_tree_size(),
+        tx_index,
+        action_index,
+    )
+}
+
+fn action_position(
+    transactions: &[CoreTransactionContext],
+    mut position: u32,
+    tx_index: u32,
+    action_index: u32,
+) -> Result<u32, BlockTransportError> {
+    for transaction in transactions {
+        if transaction.ironwood_effects().nullifiers().len()
+            != transaction.ironwood_effects().commitments().len()
+        {
+            return Err(BlockTransportError::InvalidActionEffects);
+        }
         let action_count = u32::try_from(transaction.ironwood_effects().commitments().len())
             .map_err(|_| BlockTransportError::InvalidActionPosition)?;
         if transaction.tx_index() == tx_index {
@@ -224,10 +271,53 @@ pub fn inspect_exact_name_block(
     network: Network,
     name: &Name,
 ) -> Result<Block, BlockTransportError> {
+    inspect_exact_name_block_parts(
+        block.height(),
+        block.block_hash(),
+        block.prev_block_hash(),
+        block.transactions(),
+        runtime,
+        deployment,
+        network,
+        name,
+    )
+}
+
+/// Position-only counterpart to [`inspect_exact_name_block`] for a wallet
+/// that already owns and authenticates the Ironwood commitment tree.
+pub fn inspect_exact_name_positioned_block(
+    block: &CorePositionedBlockContext,
+    runtime: &ValidatedCoreRuntimeParameters,
+    deployment: DeploymentParameters,
+    network: Network,
+    name: &Name,
+) -> Result<Block, BlockTransportError> {
+    inspect_exact_name_block_parts(
+        block.height(),
+        block.block_hash(),
+        block.prev_block_hash(),
+        block.transactions(),
+        runtime,
+        deployment,
+        network,
+        name,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn inspect_exact_name_block_parts(
+    height: u32,
+    hash: [u8; 32],
+    prev_hash: [u8; 32],
+    core_transactions: &[CoreTransactionContext],
+    runtime: &ValidatedCoreRuntimeParameters,
+    deployment: DeploymentParameters,
+    network: Network,
+    name: &Name,
+) -> Result<Block, BlockTransportError> {
     let validated =
         validate_runtime(deployment, runtime).map_err(BlockTransportError::Configuration)?;
-    let transactions = block
-        .transactions()
+    let transactions = core_transactions
         .iter()
         .map(|transaction| {
             let effects = transaction.ironwood_effects();
@@ -273,9 +363,9 @@ pub fn inspect_exact_name_block(
         })
         .collect::<Result<Vec<_>, _>>()?;
     Ok(Block {
-        height: block.height(),
-        hash: block.block_hash(),
-        prev_hash: block.prev_block_hash(),
+        height,
+        hash,
+        prev_hash,
         transactions,
     })
 }

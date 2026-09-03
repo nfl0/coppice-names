@@ -26,7 +26,9 @@ windows and then authenticates only the historical COMMIT named by the
 REVEAL's bounded `CommitRef`; it does not continuously download unrelated
 generic-rendezvous traffic.
 
-The [draft whitepaper](docs/WHITEPAPER.md) explains the design, security model,
+The draft whitepaper is available as
+[PDF](docs/WHITEPAPER.pdf), [LaTeX](docs/WHITEPAPER.tex), and
+[Markdown](docs/WHITEPAPER.md). It explains the design, security model,
 privacy properties, and preliminary performance evidence. The current
 normative protocol is documented in
 [`docs/SPECIFICATION.md`](docs/SPECIFICATION.md). The checked-in conformance

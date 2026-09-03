@@ -447,6 +447,17 @@ mod tests {
                     .collect(),
             };
             if height == reveal_height {
+                let unrelated = ReferencedCommit {
+                    reference: CommitRef {
+                        txid: [99; 32],
+                        ..commit_ref
+                    },
+                    commitment,
+                };
+                assert_eq!(
+                    resolver.apply_block_with_referenced_commits(&block, &[unrelated]),
+                    Err(ApplyError::InvalidReferencedCommit)
+                );
                 assert_eq!(
                     resolver
                         .apply_block_with_referenced_commits(

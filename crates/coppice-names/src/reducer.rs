@@ -1,7 +1,7 @@
 //! Deterministic canonical Names reducer.
 
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     sync::Arc,
 };
 
@@ -288,9 +288,18 @@ impl<V: ProofVerifier> Reducer<V> {
             }
         }
 
+        let reveal_references = block
+            .transactions
+            .iter()
+            .filter_map(|transaction| match transaction.operation.as_ref() {
+                Some(Operation::Reveal { commit, .. }) => Some(*commit),
+                _ => None,
+            })
+            .collect::<BTreeSet<_>>();
         let mut supplied = BTreeMap::new();
         for evidence in referenced_commits {
-            if evidence.reference.height < self.parameters.activation_height
+            if !reveal_references.contains(&evidence.reference)
+                || evidence.reference.height < self.parameters.activation_height
                 || evidence.reference.height >= block.height
                 || block.height - evidence.reference.height >= self.parameters.commit_ttl_blocks
             {

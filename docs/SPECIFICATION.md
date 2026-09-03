@@ -364,6 +364,12 @@ party, including the former owner, can REFRESH or install a replacement
 REVEAL. Once claimable, the first canonically ordered valid REVEAL may replace
 the old head. The former owner has no special protocol priority.
 
+Cooldown is a uniform anti-impersonation quarantine, not an ownership grace
+period. Its purpose is to force a visible non-resolving interval before a
+recently terminated name can begin resolving to a different address. The same
+rule applies whether termination resulted from natural expiry or an explicit
+bond spend.
+
 Resolution returns the UA only for `Active`. Cooldown and claimable results may
 include head metadata for auditing but MUST NOT return it as a payable current
 record.

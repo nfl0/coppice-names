@@ -26,7 +26,9 @@ windows and then authenticates only the historical COMMIT named by the
 REVEAL's bounded `CommitRef`; it does not continuously download unrelated
 generic-rendezvous traffic.
 
-The current normative protocol is documented in
+The [draft whitepaper](docs/WHITEPAPER.md) explains the design, security model,
+privacy properties, and preliminary performance evidence. The current
+normative protocol is documented in
 [`docs/SPECIFICATION.md`](docs/SPECIFICATION.md). The checked-in conformance
 artifact and its independent consumers are described in
 [`test-vectors/MANIFEST.md`](test-vectors/MANIFEST.md).

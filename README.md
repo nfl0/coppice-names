@@ -22,6 +22,11 @@ interfaces. Zcash consensus is the sole transaction and fork-choice authority;
 Names ZK proves hidden-authority and exact bond-note relations, while the
 canonical reducer and `ExactResolver` decide applicability and currentness.
 
+The current normative protocol is documented in
+[`docs/SPECIFICATION.md`](docs/SPECIFICATION.md). The checked-in conformance
+artifact and its independent consumers are described in
+[`test-vectors/MANIFEST.md`](test-vectors/MANIFEST.md).
+
 ## License
 
 Apache-2.0.

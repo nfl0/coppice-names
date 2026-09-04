@@ -1,11 +1,11 @@
 # Coppice Names Protocol Specification
 
-Status: implemented replacement protocol; not deployed.
+Status: implemented current protocol; not deployed.
 
 This document specifies the current Coppice Names protocol implemented by
-`coppice-names`. It describes the application identified by the canonical
-identity `coppice.names` and CA01 application version `2`. There is no legacy
-compatibility mode in this specification.
+`coppice-names`. `coppice.names` is its stable family label; each immutable
+deployment has a deployment-specific Coppice `ApplicationId`. There is no
+sequential protocol version or legacy compatibility mode in this specification.
 
 This specification is normative. The companion whitepaper
 ([`WHITEPAPER.tex`](WHITEPAPER.tex), [`WHITEPAPER.pdf`](WHITEPAPER.pdf)) is
@@ -78,7 +78,7 @@ The nonzero Pallas base-field `NameId` is derived by trying counters `0..255`:
 
 ```text
 input = u8(name_length) || name_bytes || u8(counter)
-candidate = ToPallas(BLAKE2b-512(personal="CoppiceN2Name", input))
+candidate = ToPallas(BLAKE2b-512(personal="CoppiceNmName", input))
 ```
 
 The first nonzero candidate is the `NameId`. Exhaustion is an error.
@@ -119,23 +119,21 @@ bytes supplied by Coppice replay, not display-order strings.
 One deployment fixes:
 
 - the validated Coppice Core runtime identity;
-- Names application identity and application version;
-- semantic ruleset revision and fingerprint;
+- the stable Names family identity;
+- the semantic ruleset fingerprint;
 - activation height;
 - every schedule duration;
 - the exact 1 ZEC bond amount;
 - maximum name and UA lengths; and
 - the REVEAL and REFRESH verifier identities.
 
-The deployment preimage is exactly 206 bytes:
+The deployment preimage is exactly 203 bytes:
 
 | Field | Encoding |
 | --- | --- |
-| magic | `CND2` |
-| deployment-preimage encoding revision | `u8`, value `1` |
+| domain marker | `CNDP` |
 | Core runtime ID | 32 bytes |
-| Names application ID | 32 bytes, derived from `coppice.names` |
-| application version | `u16` big-endian, value `2` |
+| Names family ID | 32 bytes, derived from `coppice.names` |
 | semantic ruleset fingerprint | 32 bytes |
 | activation height | `u32` big-endian |
 | epoch blocks | `u32` big-endian |
@@ -153,27 +151,37 @@ The deployment preimage is exactly 206 bytes:
 The deployment ID is:
 
 ```text
-BLAKE2b-256(personal="CoppiceN2Dep", canonical_deployment_preimage)
+BLAKE2b-256(personal="CoppiceNmDep", canonical_deployment_preimage)
 ```
+
+The deployment-specific Core routing identity is:
+
+```text
+ApplicationId = DeriveApplicationId("coppice.names" || 0x00 || deployment_id)
+```
+
+The stable family ID is an input to deployment identity; the resulting
+ApplicationId selects the exact immutable decoder, proof system, parameters,
+and reducer rules. Any normative change therefore produces a new deployment
+identity and routing identity without a sequential protocol version.
 
 Verifier IDs bind the verifier-suite manifest, operation tag, Halo2 parameter
 exponent, fixed proof length, and generated verifying-key fingerprint. A
 deployment MUST NOT accept a caller-selected verifier.
 
-The normative machine-readable ruleset is `ruleset/names-v2.json`. Its stable
+The normative machine-readable ruleset is `ruleset/names.json`. Its stable
 clause identifiers are never reused. Restricted RFC 8785 canonical JSON is
 hashed as:
 
 ```text
-BLAKE2b-256(personal="CoppiceN2Rule", canonical_ruleset_manifest)
+BLAKE2b-256(personal="CoppiceNmRule", canonical_ruleset_manifest)
 ```
 
-The checked-in ruleset revision is human-readable coordination metadata and is
-also covered by that fingerprint. Every normative semantic change MUST advance
-the revision and fingerprint. Editorial prose, repository revisions, build
-dates, and test evidence are not ruleset inputs. An implementation MUST
-recompute its bundled manifest fingerprint and reject configuration or state
-for an unknown value.
+Every normative semantic change MUST change the manifest and therefore its
+fingerprint. Clause identifiers are stable and MUST NOT be reused. Editorial
+prose, repository revisions, build dates, and test evidence are not ruleset
+inputs. An implementation MUST recompute its bundled manifest fingerprint and
+reject configuration or state for an unknown value.
 
 ### 3.1 Timing profiles
 
@@ -208,7 +216,7 @@ name identifier `N`:
 ```text
 epoch(h) = floor((h - A) / E), for h >= A
 epoch_start(e) = A + e * E
-offset(N) = LE64(BLAKE2b-256(personal="CoppiceN2Off", D || N)[0..8])
+offset(N) = LE64(BLAKE2b-256(personal="CoppiceNmOff", D || N)[0..8])
             mod (E - W + 1)
 window(N, e) = [epoch_start(e) + offset(N),
                 epoch_start(e) + offset(N) + W)
@@ -229,8 +237,8 @@ the TTL.
 
 ## 5. Publication and discovery
 
-All Names bulletins use Coppice CPV1 framing inside a CA01 application envelope
-for `(Names application ID, version 2)`.
+All Names bulletins use Coppice CPCF framing inside a CAPP application envelope
+for the deployment-specific Names `ApplicationId`.
 
 Every carrier note MUST have value zero. The 1 ZEC bond is a distinct,
 designated Ironwood action; carrier notes never hold or burn the bond.
@@ -268,10 +276,12 @@ transaction locator or COMMIT cache.
 Every operation begins with:
 
 ```text
-"CNV2" || revision=1 || operation_tag
+operation_tag
 ```
 
-The tags are `0=COMMIT`, `1=REVEAL`, and `2=REFRESH`.
+The tags are `0=COMMIT`, `1=REVEAL`, and `2=REFRESH`. The enclosing
+deployment-specific `ApplicationId` selects this exact codec before the tag is
+interpreted; no inner version discriminator is needed.
 
 Variable-length values use `u8` name length or `u16` UA length followed by the
 exact bytes. Integers are big-endian. Trailing bytes are forbidden. Proof
@@ -303,14 +313,14 @@ For name length `N` (1..=63), UA length `U` (1..=1024), and deployment proof
 lengths `P_r` and `P_f`:
 
 ```text
-COMMIT  = 38 bytes
-REVEAL  = 6 + (1 + N) + 40 + (2 + U) + 4 + 32 + P_r
-REFRESH = 6 + (1 + N) + 44 + (2 + U) + 4 + 32 + P_f
+COMMIT  = 33 bytes
+REVEAL  = 1 + (1 + N) + 40 + (2 + U) + 4 + 32 + P_r
+REFRESH = 1 + (1 + N) + 44 + (2 + U) + 4 + 32 + P_f
 ```
 
-The codec additionally bounds deployment proof lengths at 14,883 bytes
-(REVEAL) and 14,879 bytes (REFRESH); a deployment announcing longer proofs is
-invalid. Encoded bulletins MUST fit the CPV1 authenticated payload bound of
+The codec additionally bounds deployment proof lengths at 14,890 bytes
+(REVEAL) and 14,886 bytes (REFRESH); a deployment announcing longer proofs is
+invalid. Encoded bulletins MUST fit the CPCF authenticated payload bound of
 the carrier protocol.
 
 ## 7. Canonical replay model
@@ -521,9 +531,11 @@ neither is an independent or trusted source of truth.
 
 ## 12. Reorganizations and cached state
 
-Snapshots contain derived reducer state and rollback journals. They bind the
-canonical tip, deployment ID, ruleset revision, ruleset fingerprint, and
-inclusive rollback-journal range. They are not a
+Snapshots contain derived reducer state and rollback journals. Snapshot schema
+3 binds the canonical tip, deployment ID, ruleset fingerprint, and inclusive
+rollback-journal range. The schema identifier belongs to independently
+persisted local bytes and controls migration or rejection; it is not a
+protocol-family version. Snapshots are not a
 Zcash consensus commitment. A host restoring a snapshot MUST independently
 bind it to the deployment, requested name, network, canonical height, and
 canonical block hash, and MUST integrity-protect it or replay from an
@@ -596,7 +608,6 @@ action effects remain visible to spentness processing (Section 5).
 
 | Condition | Reference variant |
 | --- | --- |
-| Magic or revision mismatch | `CodecError::WrongVersion` |
 | Unknown operation tag | `CodecError::InvalidTag` |
 | Encoding ends before a complete value | `CodecError::Truncated` |
 | Trailing bytes after a complete operation | `CodecError::TrailingBytes` |
@@ -611,9 +622,9 @@ action effects remain visible to spentness processing (Section 5).
 | --- | --- |
 | Full-transaction bytes were not authenticated against canonical compact effects | `TransportRejection::UnauthenticatedFullTransaction` |
 | A carrier note carries nonzero value | `TransportRejection::NonZeroCarrierValue` |
-| CPV1 framing is malformed | `TransportRejection::MalformedCpv1` |
-| CA01 envelope is malformed | `TransportRejection::MalformedCa01` |
-| Envelope addresses a different application identity or version | `TransportRejection::WrongApplication` |
+| CPCF framing is malformed | `TransportRejection::MalformedCarrier` |
+| CAPP envelope is malformed | `TransportRejection::MalformedEnvelope` |
+| Envelope addresses a different deployment-specific application identity | `TransportRejection::WrongApplication` |
 | Payload fails operation decoding | `TransportRejection::InvalidOperation` |
 | Bulletin is published on a route other than the one fixed for its operation type | `TransportRejection::WrongRoute` |
 
@@ -658,7 +669,7 @@ every earlier stage's rejections apply independently.
 
 ## 16. Conformance
 
-`test-vectors/replacement_protocol.json` is the normative positive
+`test-vectors/protocol.json` is the normative positive
 conformance artifact for the current implementation. It freezes deployment,
 verifier suite, route derivation, schedule, statements, real proofs, operation
 encoding, and resolved heads. Its manifest records the vector-set digest and

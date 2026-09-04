@@ -1,4 +1,4 @@
-//! Frozen positive vectors for the replacement Names protocol.
+//! Frozen positive vectors for Coppice Names.
 //!
 //! The ordinary conformance test consumes the checked-in artifact and proves
 //! that deterministic key generation, proofs, encoding, and replay reproduce
@@ -7,11 +7,8 @@
 use coppice::identity::CoreRuntimeId;
 use coppice_names::{
     codec::{CodecParameters, Operation, decode, encode},
-    deployment::{
-        DEPLOYMENT_PREIMAGE_REVISION, DeploymentParameters, NAMES_APPLICATION_VERSION,
-        verifier_suite_id,
-    },
-    names_application_id,
+    deployment::{DeploymentParameters, verifier_suite_id},
+    names_application_id, names_family_id,
     proof::keygen,
     protocol::{
         BOND_ZATOSHIS, CanonicalUa, CommitRef, Commitment, FieldElement, Name, NameRoute, Network,
@@ -39,11 +36,11 @@ use rand_chacha::{ChaCha20Rng, rand_core::SeedableRng};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-const VECTOR_JSON: &str = include_str!("../../../test-vectors/replacement_protocol.json");
+const VECTOR_JSON: &str = include_str!("../../../test-vectors/protocol.json");
 const WORKSPACE_MANIFEST: &str = include_str!("../../../Cargo.toml");
 const WORKSPACE_LOCK: &str = include_str!("../../../Cargo.lock");
 const UA: &str = "uregtest1rxnn8qurdex552draeuvvvucggeknmmsxazg52mkatf0hrclhppe5jeqj6w7svqtxvxq320tw6ejsk4nm8zk8f35274vlwqerfx74904pydaxe27wnpq8llqxclaa0n04zg764ppzfruu4gsagmqw0mlvx";
-const CORE_RUNTIME_ID: &str = "6d9370bb8eb3f6cf28fc2c1a943196b630233eb89d03625877910a49320a8cb0";
+const CORE_RUNTIME_ID: &str = "fa787a8cd3121b698e549c9a3e551e77c9888fb707830303cba0319ba2481cf7";
 const ORCHARD_REVISION: &str = "e702d0525d5086d41b66ab870ede0a94b05fdcae";
 
 fn bytes32(value: &str) -> [u8; 32] {
@@ -318,9 +315,8 @@ fn build_document() -> Value {
 
     json!({
         "status": "qualification-only; no public deployment is declared",
-        "protocol": "coppice-names-replacement",
-        "application_version": NAMES_APPLICATION_VERSION,
-        "wire": "CNV2 || 0x01 || operation_tag || canonical fields",
+        "protocol": "coppice-names",
+        "wire": "operation_tag || canonical fields",
         "vector_set_sha256": vector_set_digest(&identity_parts),
         "dependencies": {
             "orchard_coppice_revision": ORCHARD_REVISION,
@@ -329,9 +325,8 @@ fn build_document() -> Value {
         },
         "identity": {
             "core_runtime_id_hex": CORE_RUNTIME_ID,
-            "names_application_id_hex": hex::encode(names_application_id().to_bytes()),
-            "deployment_preimage_revision": DEPLOYMENT_PREIMAGE_REVISION,
-            "ruleset_revision": coppice_names::ruleset::RULESET_REVISION,
+            "names_family_id_hex": hex::encode(names_family_id().to_bytes()),
+            "application_id_hex": hex::encode(names_application_id(deployment_id).to_bytes()),
             "ruleset_fingerprint_hex": hex::encode(deployment.ruleset_fingerprint),
             "verifier_suite_manifest_utf8": String::from_utf8_lossy(coppice_names::deployment::VERIFIER_SUITE_MANIFEST),
             "verifier_suite_id_hex": hex::encode(verifier_suite_id()),
@@ -420,7 +415,7 @@ fn canonical_json() -> String {
 }
 
 #[test]
-fn frozen_replacement_vectors_reproduce_exactly() {
+fn frozen_protocol_vectors_reproduce_exactly() {
     assert!(WORKSPACE_MANIFEST.contains(ORCHARD_REVISION));
     assert!(WORKSPACE_LOCK.contains(ORCHARD_REVISION));
     assert!(WORKSPACE_LOCK.contains(
@@ -432,15 +427,15 @@ fn frozen_replacement_vectors_reproduce_exactly() {
     assert_eq!(
         canonical_json(),
         VECTOR_JSON,
-        "checked-in replacement protocol vectors drifted; regenerate only after review"
+        "checked-in current protocol vectors drifted; regenerate only after review"
     );
 }
 
 #[test]
-#[ignore = "explicit generator: cargo test -p coppice-names --test replacement_protocol_vectors -- --ignored --exact regenerate_replacement_protocol_vectors"]
-fn regenerate_replacement_protocol_vectors() {
-    let output = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../test-vectors/replacement_protocol.json");
+#[ignore = "explicit generator: cargo test -p coppice-names --test protocol_vectors -- --ignored --exact regenerate_protocol_vectors"]
+fn regenerate_protocol_vectors() {
+    let output =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test-vectors/protocol.json");
     std::fs::write(&output, canonical_json()).unwrap();
     println!("regenerated {}", output.display());
 }

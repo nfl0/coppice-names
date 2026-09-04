@@ -19,7 +19,7 @@ from typing import Any
 PALLAS_BASE_MODULUS = int(
     "40000000000000000000000000000000224698fc094cf91b992d30ed00000001", 16
 )
-RULESET_PATH = Path(__file__).resolve().parents[1] / "ruleset" / "names-v2.json"
+RULESET_PATH = Path(__file__).resolve().parents[1] / "ruleset" / "names.json"
 
 
 def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -35,9 +35,8 @@ RULESET_MANIFEST = json.loads(RULESET_PATH.read_text(), object_pairs_hook=_uniqu
 RULESET_CANONICAL = json.dumps(
     RULESET_MANIFEST, sort_keys=True, ensure_ascii=True, separators=(",", ":")
 ).encode()
-RULESET_REVISION = RULESET_MANIFEST["ruleset_revision"]
 RULESET_FINGERPRINT = hashlib.blake2b(
-    RULESET_CANONICAL, digest_size=32, person=b"CoppiceN2Rule"
+    RULESET_CANONICAL, digest_size=32, person=b"CoppiceNmRule"
 ).hexdigest()
 
 
@@ -83,7 +82,7 @@ def name_id(name: str) -> bytes:
         digest = hashlib.blake2b(
             bytes([len(encoded)]) + encoded + bytes([counter]),
             digest_size=64,
-            person=b"CoppiceN2Name",
+            person=b"CoppiceNmName",
         ).digest()
         candidate = int.from_bytes(digest, "little") % PALLAS_BASE_MODULUS
         if candidate:
@@ -164,7 +163,7 @@ class Reducer:
         identity = name_id(name)
         deployment = bytes.fromhex(p["deployment_id_hex"])
         digest = hashlib.blake2b(
-            deployment + identity, digest_size=32, person=b"CoppiceN2Off"
+            deployment + identity, digest_size=32, person=b"CoppiceNmOff"
         ).digest()
         span = p["epoch_blocks"] - p["window_blocks"] + 1
         start = epoch_start + int.from_bytes(digest[:8], "little") % span
@@ -303,12 +302,12 @@ class Reducer:
     @staticmethod
     def _apply_error_clause(error: str) -> str:
         if error in ("WrongHeight", "WrongPreviousHash"):
-            return "N2.BLOCK.CONTINUITY"
+            return "NAMES.BLOCK.CONTINUITY"
         if error in ("NonCanonicalTransactionIndex", "NonCanonicalActionIndex"):
-            return "N2.BLOCK.ORDER"
+            return "NAMES.BLOCK.ORDER"
         if error in ("InvalidReferencedCommit", "ConflictingReferencedCommit"):
-            return "N2.REVEAL.COMMIT"
-        return "N2.BLOCK.ACTIVATION"
+            return "NAMES.REVEAL.COMMIT"
+        return "NAMES.BLOCK.ACTIVATION"
 
     @staticmethod
     def _not_evaluated(block: dict[str, Any], clause_id: str) -> list[dict[str, Any]]:
@@ -341,7 +340,7 @@ class Reducer:
             if terminal is not None and height >= terminal + self.parameters["cooldown_blocks"]:
                 compacted.append(
                     {
-                        "clause_id": "N2.LIFECYCLE.COMPACT",
+                        "clause_id": "NAMES.LIFECYCLE.COMPACT",
                         "height": height,
                         "name_id_hex": identity,
                         "previous_head": copy.deepcopy(head["producer"]),
@@ -363,12 +362,12 @@ class Reducer:
             if any(parse_field(action["nullifier"]) == head["future_nf"] for action in transaction.get("actions", []))
         ]
         accepted = False
-        clause_id = "N2.BLOCK.ORDER"
+        clause_id = "NAMES.BLOCK.ORDER"
         if kind == "commit":
             reference = (height, transaction["tx_index"], transaction["txid_hex"])
             self.commits[reference] = parse_field(operation["commitment"])
             accepted = True
-            clause_id = "N2.COMMIT.ACCEPT"
+            clause_id = "NAMES.COMMIT.ACCEPT"
         elif kind == "reveal":
             accepted, clause_id = self._apply_reveal(height, transaction, operation)
         elif kind == "refresh":
@@ -383,7 +382,7 @@ class Reducer:
                 head["terminal_height"] = height
                 transitions.append(
                     {
-                        "clause_id": "N2.SPEND.CURRENT",
+                        "clause_id": "NAMES.SPEND.CURRENT",
                         "height": height,
                         "name_id_hex": identity,
                         "previous_head": producer,
@@ -407,7 +406,7 @@ class Reducer:
         identity = name_id(canonical).hex()
         current = self.heads.get(identity)
         if current is not None:
-            return False, "N2.REVEAL.MISSING"
+            return False, "NAMES.REVEAL.MISSING"
         commit = operation["commit"]
         age = height - commit["height"]
         if (
@@ -416,16 +415,16 @@ class Reducer:
             or age < self.parameters["commit_maturity_blocks"]
             or age >= self.parameters["commit_ttl_blocks"]
         ):
-            return False, "N2.REVEAL.SCHEDULE" if not self.operation_window(canonical, height) else "N2.REVEAL.COMMIT"
+            return False, "NAMES.REVEAL.SCHEDULE" if not self.operation_window(canonical, height) else "NAMES.REVEAL.COMMIT"
         commitment = self.commits.get(ref_key(commit))
         if commitment is None:
-            return False, "N2.REVEAL.COMMIT"
+            return False, "NAMES.REVEAL.COMMIT"
         action_index = operation["action_index"]
         actions = transaction.get("actions", [])
         if action_index >= len(actions) or actions[action_index]["action_index"] != action_index:
-            return False, "N2.REVEAL.ACTION"
+            return False, "NAMES.REVEAL.ACTION"
         if not operation["proof_valid"]:
-            return False, "N2.REVEAL.PROOF"
+            return False, "NAMES.REVEAL.PROOF"
         action = actions[action_index]
         epoch = (height - self.parameters["activation_height"]) // self.parameters["epoch_blocks"]
         self.heads[identity] = {
@@ -439,7 +438,7 @@ class Reducer:
             "expiry_height": height + self.parameters["lease_blocks"],
             "terminal_height": None,
         }
-        return True, "N2.REVEAL.ACCEPT"
+        return True, "NAMES.REVEAL.ACCEPT"
 
     def _apply_refresh(
         self, height: int, transaction: dict[str, Any], operation: dict[str, Any]
@@ -448,26 +447,26 @@ class Reducer:
         identity = name_id(canonical).hex()
         predecessor = self.heads.get(identity)
         if predecessor is None:
-            return False, "N2.REFRESH.CURRENT"
+            return False, "NAMES.REFRESH.CURRENT"
         epoch = (height - self.parameters["activation_height"]) // self.parameters["epoch_blocks"]
         if self.lifecycle(predecessor, height) != "Active" or predecessor["producer"] != operation["predecessor"]:
-            return False, "N2.REFRESH.CURRENT"
+            return False, "NAMES.REFRESH.CURRENT"
         if predecessor["producer_epoch"] >= epoch:
-            return False, "N2.REFRESH.EPOCH"
+            return False, "NAMES.REFRESH.EPOCH"
         if not self.operation_window(canonical, height):
-            return False, "N2.REFRESH.SCHEDULE"
+            return False, "NAMES.REFRESH.SCHEDULE"
         action_index = operation["action_index"]
         actions = transaction.get("actions", [])
         if action_index >= len(actions):
-            return False, "N2.REFRESH.ACTION"
+            return False, "NAMES.REFRESH.ACTION"
         action = actions[action_index]
         if (
             action["action_index"] != action_index
             or parse_field(action["nullifier"]) != predecessor["future_nf"]
         ):
-            return False, "N2.REFRESH.ACTION"
+            return False, "NAMES.REFRESH.ACTION"
         if not operation["proof_valid"]:
-            return False, "N2.REFRESH.PROOF"
+            return False, "NAMES.REFRESH.PROOF"
         self.heads[identity] = {
             "name": canonical,
             "ua": operation["ua"],
@@ -479,7 +478,7 @@ class Reducer:
             "expiry_height": height + self.parameters["lease_blocks"],
             "terminal_height": None,
         }
-        return True, "N2.REFRESH.ACCEPT"
+        return True, "NAMES.REFRESH.ACCEPT"
 
     def rollback(self, expected_hash: str) -> str | None:
         if not self.history:
@@ -528,7 +527,6 @@ def snapshot(reducer: Reducer, tracked_names: list[str], known_refs: list[dict[s
         "protocol_identity": {
             "deployment_id_hex": reducer.parameters["deployment_id_hex"],
             "ruleset_fingerprint_hex": RULESET_FINGERPRINT,
-            "ruleset_revision": RULESET_REVISION,
         },
         "tip": copy.deepcopy(reducer.tip),
         "resolutions": {
@@ -536,7 +534,7 @@ def snapshot(reducer: Reducer, tracked_names: list[str], known_refs: list[dict[s
                 reducer.resolve(name, height)
                 if reducer.tip is not None
                 else {
-                    "clause_id": "N2.EXACT.PARITY",
+                    "clause_id": "NAMES.EXACT.PARITY",
                     "error": "IncompleteHistory",
                     "requested_height": height,
                     "tip_height": None,
@@ -612,13 +610,13 @@ def run_case(case: dict[str, Any]) -> dict[str, Any]:
                 {
                     "ok": full_error is None,
                     "error": full_error,
-                    "clause_id": "N2.ROLLBACK.EXACT",
+                    "clause_id": "NAMES.ROLLBACK.EXACT",
                 },
                 {
                     name: {
                         "ok": error is None,
                         "error": error,
-                        "clause_id": "N2.ROLLBACK.EXACT",
+                        "clause_id": "NAMES.ROLLBACK.EXACT",
                     }
                     for name, error in exact_errors.items()
                 },
@@ -639,9 +637,9 @@ def main() -> None:
     parser.add_argument("--pretty", action="store_true")
     args = parser.parse_args()
     fixture = json.loads(args.path.read_text())
-    if fixture.get("format") != "coppice-names-semantic-history-v1":
+    if fixture.get("format") != "coppice-names-semantic-history":
         raise SemanticError("unsupported corpus format")
-    output = {"format": "coppice-names-semantic-trace-v1", "cases": [run_case(case) for case in fixture["cases"]]}
+    output = {"format": "coppice-names-semantic-trace", "cases": [run_case(case) for case in fixture["cases"]]}
     print(json.dumps(output, sort_keys=True, indent=2 if args.pretty else None, separators=None if args.pretty else (",", ":")))
 
 

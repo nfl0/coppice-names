@@ -2,16 +2,16 @@
 
 use crate::{
     codec::{self, CodecError, CodecParameters, Operation},
-    deployment::{DeploymentError, DeploymentParameters, NAMES_APPLICATION_VERSION},
+    deployment::{DeploymentError, DeploymentParameters},
     names_application_id,
     protocol::{NameRoute, ValueError},
 };
 use coppice::{
-    application::{ApplicationEnvelopeError, ApplicationEnvelopeV1, ApplicationKey},
-    transport::{self, Error as Cpv1Error},
+    application::{ApplicationEnvelope, ApplicationEnvelopeError, ApplicationKey},
+    transport::{self, Error as CarrierError},
 };
 
-/// Every replacement-protocol carrier note has exactly zero zatoshis.
+/// Every current-protocol carrier note has exactly zero zatoshis.
 pub const NAMES_CARRIER_VALUE_ZATOSHIS: u64 = 0;
 
 /// Public rendezvous selected by the operation itself.
@@ -65,7 +65,7 @@ pub enum PublicationError {
     InvalidName(ValueError),
     InvalidOperation(CodecError),
     InvalidEnvelope(ApplicationEnvelopeError),
-    InvalidTransport(Cpv1Error),
+    InvalidTransport(CarrierError),
 }
 
 /// Encodes exactly one operation using deployment-bound proof lengths and
@@ -95,8 +95,8 @@ pub fn prepare_publication(
     };
     let encoded_operation =
         codec::encode(&operation, codec_parameters).map_err(PublicationError::InvalidOperation)?;
-    let envelope = ApplicationEnvelopeV1::new(
-        ApplicationKey::new(names_application_id(), NAMES_APPLICATION_VERSION),
+    let envelope = ApplicationEnvelope::new(
+        ApplicationKey::new(names_application_id(deployment_id)),
         encoded_operation.clone(),
     )
     .map_err(PublicationError::InvalidEnvelope)?;
@@ -157,7 +157,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(reconstructed, prepared.encoded_envelope());
-        let envelope = ApplicationEnvelopeV1::decode(&reconstructed).unwrap();
+        let envelope = ApplicationEnvelope::decode(&reconstructed).unwrap();
         assert_eq!(
             codec::decode(
                 envelope.payload(),

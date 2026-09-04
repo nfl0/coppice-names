@@ -32,19 +32,18 @@ def framed_digest(parts: list[bytes]) -> str:
 
 
 def verifier_id(person: bytes, tag: int, suite: bytes, k: int, proof_bytes: int, fp: bytes) -> bytes:
-    manifest = b"CNV2V" + bytes([1, tag]) + suite + bytes([k]) + proof_bytes.to_bytes(2, "big") + fp
-    assert len(manifest) == 74
+    manifest = b"CNVERIFY" + bytes([tag]) + suite + bytes([k]) + proof_bytes.to_bytes(2, "big") + fp
+    assert len(manifest) == 76
     return h(person, manifest)
 
 
 def parse_operation(raw: bytes, reveal_proof_bytes: int, refresh_proof_bytes: int) -> dict:
-    assert raw[:4] == b"CNV2" and raw[4] == 1
-    tag = raw[5]
+    tag = raw[0]
     if tag == 0:
-        assert len(raw) == 38 and int.from_bytes(raw[6:], "little") not in (0,) and int.from_bytes(raw[6:], "little") < PALLAS_BASE_MODULUS
-        return {"tag": tag, "commitment": raw[6:]}
+        assert len(raw) == 33 and int.from_bytes(raw[1:], "little") not in (0,) and int.from_bytes(raw[1:], "little") < PALLAS_BASE_MODULUS
+        return {"tag": tag, "commitment": raw[1:]}
 
-    cursor = 6
+    cursor = 1
     name_len = raw[cursor]
     cursor += 1
     name = raw[cursor : cursor + name_len]
@@ -90,7 +89,7 @@ def parse_operation(raw: bytes, reveal_proof_bytes: int, refresh_proof_bytes: in
 
 
 def encode_operation(operation: dict) -> bytes:
-    out = bytearray(b"CNV2\x01" + bytes([operation["tag"]]))
+    out = bytearray(bytes([operation["tag"]]))
     if operation["tag"] == 0:
         out += operation["commitment"]
         return bytes(out)
@@ -106,7 +105,7 @@ def encode_operation(operation: dict) -> bytes:
 
 
 def main() -> None:
-    default = Path(__file__).resolve().parents[1] / "test-vectors" / "replacement_protocol.json"
+    default = Path(__file__).resolve().parents[1] / "test-vectors" / "protocol.json"
     path = Path(sys.argv[1]) if len(sys.argv) > 1 else default
     fixture = json.loads(path.read_text())
     identity = fixture["identity"]
@@ -114,37 +113,34 @@ def main() -> None:
     name = fixture["name"]
     fields = fixture["fields"]
 
-    application_id = h(b"CoppiceAppIdV1\0\0", b"coppice.names")
-    assert application_id.hex() == identity["names_application_id_hex"]
+    family_id = h(b"CoppiceAppRoute\0", b"coppice.names")
+    assert family_id.hex() == identity["names_family_id_hex"]
     suite_manifest = identity["verifier_suite_manifest_utf8"].encode()
-    suite = h(b"CoppiceN2VrfS", suite_manifest)
+    suite = h(b"CoppiceNmVrfS", suite_manifest)
     assert suite.hex() == identity["verifier_suite_id_hex"]
     reveal_fp = bytes.fromhex(identity["reveal_key_fingerprint_hex"])
     refresh_fp = bytes.fromhex(identity["refresh_key_fingerprint_hex"])
     reveal_id = verifier_id(
-        b"CoppiceN2ReVr", 1, suite, identity["circuit_k"], identity["reveal_proof_bytes"], reveal_fp
+        b"CoppiceNmReVr", 1, suite, identity["circuit_k"], identity["reveal_proof_bytes"], reveal_fp
     )
     refresh_id = verifier_id(
-        b"CoppiceN2RfVr", 2, suite, identity["circuit_k"], identity["refresh_proof_bytes"], refresh_fp
+        b"CoppiceNmRfVr", 2, suite, identity["circuit_k"], identity["refresh_proof_bytes"], refresh_fp
     )
     assert reveal_id.hex() == identity["reveal_verifier_id_hex"]
     assert refresh_id.hex() == identity["refresh_verifier_id_hex"]
 
-    manifest_path = Path(__file__).resolve().parents[1] / "ruleset" / "names-v2.json"
+    manifest_path = Path(__file__).resolve().parents[1] / "ruleset" / "names.json"
     manifest = json.loads(manifest_path.read_text())
     canonical_manifest = json.dumps(
         manifest, sort_keys=True, ensure_ascii=True, separators=(",", ":")
     ).encode()
-    assert manifest["ruleset_revision"] == identity["ruleset_revision"]
-    ruleset_fingerprint = h(b"CoppiceN2Rule", canonical_manifest)
+    ruleset_fingerprint = h(b"CoppiceNmRule", canonical_manifest)
     assert ruleset_fingerprint.hex() == identity["ruleset_fingerprint_hex"]
 
     preimage = (
-        b"CND2"
-        + bytes([identity["deployment_preimage_revision"]])
+        b"CNDP"
         + bytes.fromhex(identity["core_runtime_id_hex"])
-        + application_id
-        + fixture["application_version"].to_bytes(2, "big")
+        + family_id
         + ruleset_fingerprint
         + params["activation_height"].to_bytes(4, "big")
         + params["epoch_blocks"].to_bytes(4, "big")
@@ -159,19 +155,21 @@ def main() -> None:
         + reveal_id
         + refresh_id
     )
-    assert len(preimage) == 206 and preimage.hex() == identity["deployment_preimage_hex"]
-    deployment_id = h(b"CoppiceN2Dep", preimage)
+    assert len(preimage) == 203 and preimage.hex() == identity["deployment_preimage_hex"]
+    deployment_id = h(b"CoppiceNmDep", preimage)
     assert deployment_id.hex() == identity["deployment_id_hex"]
+    application_id = h(b"CoppiceAppRoute\0", b"coppice.names\0" + deployment_id)
+    assert application_id.hex() == identity["application_id_hex"]
 
     canonical_name = name["canonical"].encode()
-    name_id = wide(b"CoppiceN2Name", bytes([len(canonical_name)]) + canonical_name + b"\0")
+    name_id = wide(b"CoppiceNmName", bytes([len(canonical_name)]) + canonical_name + b"\0")
     assert name_id.hex() == name["name_id_hex"] and int.from_bytes(name_id, "little") != 0
     route_common = deployment_id + name_id
-    route_ivk = h(b"CoppiceN2RteD", route_common) + wide(b"CoppiceN2RteI", route_common + b"\0")
+    route_ivk = h(b"CoppiceNmRteD", route_common) + wide(b"CoppiceNmRteI", route_common + b"\0")
     assert route_ivk.hex() == name["route_ivk_hex"]
 
     span = params["epoch_blocks"] - params["window_blocks"] + 1
-    offset = int.from_bytes(h(b"CoppiceN2Off", route_common)[:8], "little") % span
+    offset = int.from_bytes(h(b"CoppiceNmOff", route_common)[:8], "little") % span
     for epoch_key, window_key in (("reveal_epoch", "reveal_window"), ("refresh_epoch", "refresh_window")):
         epoch = fixture["schedule"][epoch_key]
         start = params["activation_height"] + epoch * params["epoch_blocks"] + offset
@@ -220,7 +218,7 @@ def main() -> None:
         *encoded,
     ]
     assert framed_digest(digest_parts) == fixture["vector_set_sha256"]
-    print(f"independent replacement vectors verified: {fixture['vector_set_sha256']}")
+    print(f"independent protocol vectors verified: {fixture['vector_set_sha256']}")
 
 
 if __name__ == "__main__":

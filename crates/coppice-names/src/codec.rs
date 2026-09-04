@@ -2,16 +2,14 @@
 
 use crate::protocol::{CanonicalUa, CommitRef, Commitment, FieldElement, Name, Network, StateRef};
 
-const MAGIC: [u8; 4] = *b"CNV2";
-const REVISION: u8 = 1;
 const COMMIT_TAG: u8 = 0;
 const REVEAL_TAG: u8 = 1;
 const REFRESH_TAG: u8 = 2;
 
 /// Largest deployment-frozen REVEAL proof compatible with maximum inputs.
-pub const MAX_REVEAL_PROOF_BYTES: usize = 14_883;
+pub const MAX_REVEAL_PROOF_BYTES: usize = 14_890;
 /// Largest deployment-frozen REFRESH proof compatible with maximum inputs.
-pub const MAX_REFRESH_PROOF_BYTES: usize = 14_879;
+pub const MAX_REFRESH_PROOF_BYTES: usize = 14_886;
 
 /// Fixed proof lengths selected by one deployment.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -57,7 +55,6 @@ pub enum Operation {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CodecError {
-    WrongVersion,
     InvalidTag,
     Truncated,
     TrailingBytes,
@@ -71,8 +68,6 @@ pub enum CodecError {
 pub fn encode(operation: &Operation, parameters: CodecParameters) -> Result<Vec<u8>, CodecError> {
     parameters.validate()?;
     let mut out = Vec::new();
-    out.extend_from_slice(&MAGIC);
-    out.push(REVISION);
     match operation {
         Operation::Commit { commitment } => {
             out.push(COMMIT_TAG);
@@ -122,7 +117,7 @@ pub fn encode(operation: &Operation, parameters: CodecParameters) -> Result<Vec<
             out.extend_from_slice(proof);
         }
     }
-    if out.len() > coppice::carrier::MAX_CPV1_PAYLOAD_LEN {
+    if out.len() > coppice::application::MAX_APPLICATION_PAYLOAD_LEN {
         return Err(CodecError::TooLarge);
     }
     Ok(out)
@@ -135,9 +130,6 @@ pub fn decode(
 ) -> Result<Operation, CodecError> {
     parameters.validate()?;
     let mut input = Decoder::new(bytes);
-    if input.take::<4>()? != MAGIC || input.u8()? != REVISION {
-        return Err(CodecError::WrongVersion);
-    }
     let operation = match input.u8()? {
         COMMIT_TAG => Operation::Commit {
             commitment: Commitment::from_bytes(input.take::<32>()?)
@@ -325,9 +317,9 @@ mod tests {
         let commit_bytes = encode(&commit, parameters()).unwrap();
         let reveal_bytes = encode(&reveal, parameters()).unwrap();
         let refresh_bytes = encode(&refresh, parameters()).unwrap();
-        assert_eq!(commit_bytes.len(), 38);
-        assert_eq!(reveal_bytes.len(), 85 + 5 + UA.len() + 64);
-        assert_eq!(refresh_bytes.len(), 89 + 5 + UA.len() + 96);
+        assert_eq!(commit_bytes.len(), 33);
+        assert_eq!(reveal_bytes.len(), 85 + UA.len() + 64);
+        assert_eq!(refresh_bytes.len(), 89 + UA.len() + 96);
         for (operation, bytes) in [
             (commit, commit_bytes),
             (reveal, reveal_bytes),
@@ -365,7 +357,7 @@ mod tests {
             Err(CodecError::InvalidUa)
         );
         let mut zero_commit = encode(&commit, parameters()).unwrap();
-        zero_commit[6..].fill(0);
+        zero_commit[1..].fill(0);
         assert_eq!(
             decode(&zero_commit, Network::Regtest, parameters()),
             Err(CodecError::InvalidField)

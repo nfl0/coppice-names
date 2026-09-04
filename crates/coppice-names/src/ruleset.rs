@@ -1,25 +1,22 @@
-//! Canonical machine-readable identity for Names v2 reducer semantics.
+//! Canonical machine-readable identity for Names reducer semantics.
 
 use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// Schema version for the machine-readable semantic manifest.
-pub const RULESET_SCHEMA: &str = "coppice-names-semantics-v1";
-/// Human-readable monotonic revision for the current Names v2 semantics.
-pub const RULESET_REVISION: u32 = 1;
+/// Stable domain for the machine-readable semantic manifest.
+pub const RULESET_DOMAIN: &str = "coppice-names-semantics";
 /// BLAKE2b personalization used only for semantic-ruleset identities.
-pub const RULESET_PERSONALIZATION: &[u8] = b"CoppiceN2Rule";
+pub const RULESET_PERSONALIZATION: &[u8] = b"CoppiceNmRule";
 
-const EMBEDDED_MANIFEST: &[u8] = include_bytes!("../../../ruleset/names-v2.json");
+const EMBEDDED_MANIFEST: &[u8] = include_bytes!("../../../ruleset/names.json");
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Manifest {
     clauses: Vec<Clause>,
-    ruleset_revision: u32,
-    schema: String,
+    domain: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -39,11 +36,7 @@ fn validate_ascii(value: &str) -> bool {
 fn parsed_manifest() -> Manifest {
     let manifest: Manifest =
         serde_json::from_slice(EMBEDDED_MANIFEST).expect("embedded ruleset manifest is valid JSON");
-    assert_eq!(manifest.schema, RULESET_SCHEMA, "ruleset schema mismatch");
-    assert_eq!(
-        manifest.ruleset_revision, RULESET_REVISION,
-        "ruleset revision mismatch"
-    );
+    assert_eq!(manifest.domain, RULESET_DOMAIN, "ruleset domain mismatch");
     let mut identifiers = BTreeSet::new();
     for clause in &manifest.clauses {
         assert!(
@@ -64,8 +57,8 @@ fn parsed_manifest() -> Manifest {
 
 /// Returns the RFC 8785-compatible canonical bytes for the restricted schema.
 ///
-/// The schema admits only objects, arrays, printable-ASCII strings, and a
-/// single bounded `u32`. `serde_json::Value` stores object keys in lexical
+/// The schema admits only objects, arrays, and printable-ASCII strings.
+/// `serde_json::Value` stores object keys in lexical
 /// order without the `preserve_order` feature, so its compact encoding is the
 /// RFC 8785 representation for this deliberately restricted value domain.
 pub fn canonical_manifest() -> Vec<u8> {
@@ -115,7 +108,7 @@ mod tests {
             fingerprint,
             blake2b_simd::Params::new()
                 .hash_length(32)
-                .personal(b"CoppiceN2Dep")
+                .personal(b"CoppiceNmDep")
                 .hash(&canonical_manifest())
                 .as_bytes()
         );

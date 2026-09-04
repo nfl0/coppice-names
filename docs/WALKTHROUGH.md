@@ -71,13 +71,13 @@ the chain.
 
 At height 1,000,500 the wallet publishes a **COMMIT**:
 
-- the bulletin is the 38-byte encoding `CNV2 ‖ 0x01 ‖ 0x00 ‖ commitment[32]`
+- the bulletin is the 33-byte encoding `0x00 ‖ commitment[32]`
   [SPEC §6](SPECIFICATION.md#6-operation-codec);
 - the commitment opens, inside the proof system only, to
   `(deployment_id, NameId, target_epoch, hidden_owner_commitment, nonzero_secret)`
   [SPEC §8.1](SPECIFICATION.md#81-commit);
-- the bulletin travels in CPV1 framing inside a CA01 envelope for
-  `(coppice.names, version 2)`, carried by a **zero-value** Orchard output
+- the bulletin travels in CPCF framing inside a CAPP envelope for the exact
+  deployment-specific Names `ApplicationId`, carried by a **zero-value** Orchard output
   addressed to the deployment's *generic* rendezvous route
   [SPEC §5](SPECIFICATION.md#5-publication-and-discovery);
 - the transaction is otherwise ordinary and pays a normal Zcash fee. In the
@@ -130,7 +130,7 @@ COMMIT secret, and all note plaintexts remain hidden.
 **Checks the reducer applies, in order** (cheap before expensive
 [SPEC §8.2](SPECIFICATION.md#82-reveal), [SPEC §15](SPECIFICATION.md#15-rejection-taxonomy)):
 
-1. codec: magic, revision, tag 1, no trailing bytes, canonical embedded values;
+1. codec: tag 1, no trailing bytes, canonical embedded values;
 2. transport: carrier value zero, correct application identity, **name route**
    (a REVEAL on the generic route is inert);
 3. schedule: `1,000,630 ∈ window(alice, 0)` ✓;
@@ -294,6 +294,6 @@ names is [SPEC §15](SPECIFICATION.md#15-rejection-taxonomy).
 - [WHITEPAPER.pdf](WHITEPAPER.pdf) / [WHITEPAPER.tex](WHITEPAPER.tex) — why the
   protocol is built this way: trust model, threat analysis, privacy, economics,
   and measured performance.
-- [../test-vectors/replacement_protocol.json](../test-vectors/replacement_protocol.json)
+- [../test-vectors/protocol.json](../test-vectors/protocol.json)
   and its [manifest](../test-vectors/MANIFEST.md) — the frozen conformance
   artifact, with independent Rust and Python consumers.

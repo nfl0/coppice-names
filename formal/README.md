@@ -1,7 +1,7 @@
 # Coppice Names formal semantic model
 
 This is the pinned consumer for the internally reviewed Lean 4 model of the
-normative Names v2 state semantics. The authoritative sources live in the
+normative Names state semantics. The authoritative sources live in the
 [`nfl0/ironwood`](https://github.com/nfl0/ironwood) fork under
 `Zcash/Coppice/Names/` at commit
 `57004513532fea990ae760ce573497bcade02312`, based on upstream

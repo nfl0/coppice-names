@@ -8,13 +8,13 @@ use std::{
 use crate::{
     codec::Operation,
     protocol::{CanonicalUa, CommitRef, Commitment, FieldElement, Name, NameId, Network, StateRef},
-    ruleset::{RULESET_REVISION, ruleset_fingerprint},
+    ruleset::ruleset_fingerprint,
     schedule::Parameters,
     statement::{RefreshStatement, RevealStatement},
 };
 use serde::{Deserialize, Serialize};
 
-const REDUCER_SNAPSHOT_FORMAT_VERSION: u32 = 2;
+const REDUCER_SNAPSHOT_FORMAT_VERSION: u32 = 3;
 
 /// One authenticated Ironwood action in canonical transaction order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -145,7 +145,6 @@ pub struct ReducerTip {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ProtocolIdentity {
     pub deployment_id: [u8; 32],
-    pub ruleset_revision: u32,
     pub ruleset_fingerprint: [u8; 32],
 }
 
@@ -232,7 +231,6 @@ pub enum SnapshotError {
 struct StoredReducer {
     format_version: u32,
     deployment_id: [u8; 32],
-    ruleset_revision: u32,
     ruleset_fingerprint: [u8; 32],
     rollback_range: Option<RollbackRange>,
     parameters: StoredParameters,
@@ -507,7 +505,6 @@ impl<V: ProofVerifier> Reducer<V> {
         let stored = StoredReducer {
             format_version: REDUCER_SNAPSHOT_FORMAT_VERSION,
             deployment_id: self.parameters.deployment_id,
-            ruleset_revision: RULESET_REVISION,
             ruleset_fingerprint: ruleset_fingerprint(),
             rollback_range: self.rollback_range(),
             parameters: self.parameters.into(),
@@ -546,7 +543,6 @@ impl<V: ProofVerifier> Reducer<V> {
             return Err(SnapshotError::UnsupportedFormat);
         }
         if stored.deployment_id != parameters.deployment_id
-            || stored.ruleset_revision != RULESET_REVISION
             || stored.ruleset_fingerprint != ruleset_fingerprint()
             || stored.parameters != StoredParameters::from(parameters)
         {
@@ -607,7 +603,6 @@ impl<V: ProofVerifier> Reducer<V> {
     pub fn protocol_identity(&self) -> ProtocolIdentity {
         ProtocolIdentity {
             deployment_id: self.parameters.deployment_id,
-            ruleset_revision: RULESET_REVISION,
             ruleset_fingerprint: ruleset_fingerprint(),
         }
     }
@@ -795,14 +790,14 @@ impl<V: ProofVerifier> Reducer<V> {
                 self.commits.insert(commit_ref, *commitment);
                 OperationDecision {
                     accepted: Some(Accepted::Commit),
-                    clause_id: "N2.COMMIT.ACCEPT",
+                    clause_id: "NAMES.COMMIT.ACCEPT",
                 }
             }
             Some(operation @ Operation::Reveal { .. }) => {
                 match self.apply_reveal(height, transaction, operation, undo) {
                     Ok(_) => OperationDecision {
                         accepted: Some(Accepted::Reveal),
-                        clause_id: "N2.REVEAL.ACCEPT",
+                        clause_id: "NAMES.REVEAL.ACCEPT",
                     },
                     Err(clause_id) => OperationDecision {
                         accepted: None,
@@ -814,7 +809,7 @@ impl<V: ProofVerifier> Reducer<V> {
                 match self.apply_refresh(height, transaction, operation, undo) {
                     Ok(_) => OperationDecision {
                         accepted: Some(Accepted::Refresh),
-                        clause_id: "N2.REFRESH.ACCEPT",
+                        clause_id: "NAMES.REFRESH.ACCEPT",
                     },
                     Err(clause_id) => OperationDecision {
                         accepted: None,
@@ -824,7 +819,7 @@ impl<V: ProofVerifier> Reducer<V> {
             }
             None => OperationDecision {
                 accepted: None,
-                clause_id: "N2.BLOCK.ORDER",
+                clause_id: "NAMES.BLOCK.ORDER",
             },
         };
 
@@ -864,30 +859,30 @@ impl<V: ProofVerifier> Reducer<V> {
             proof,
         } = operation
         else {
-            return Err("N2.REVEAL.MISSING");
+            return Err("NAMES.REVEAL.MISSING");
         };
-        let name_id = name.id().map_err(|_| "N2.REVEAL.MISSING")?;
+        let name_id = name.id().map_err(|_| "NAMES.REVEAL.MISSING")?;
         if self.heads.contains_key(&name_id) {
-            return Err("N2.REVEAL.MISSING");
+            return Err("NAMES.REVEAL.MISSING");
         }
         if !self.parameters.accepts_operation(name_id, height) {
-            return Err("N2.REVEAL.SCHEDULE");
+            return Err("NAMES.REVEAL.SCHEDULE");
         }
         if !self.parameters.accepts_commit(commit.height, height) {
-            return Err("N2.REVEAL.COMMIT");
+            return Err("NAMES.REVEAL.COMMIT");
         }
-        let commitment = *self.commits.get(commit).ok_or("N2.REVEAL.COMMIT")?;
+        let commitment = *self.commits.get(commit).ok_or("NAMES.REVEAL.COMMIT")?;
         let action = transaction
             .actions
-            .get(usize::try_from(*action_index).map_err(|_| "N2.REVEAL.ACTION")?)
-            .ok_or("N2.REVEAL.ACTION")?;
+            .get(usize::try_from(*action_index).map_err(|_| "NAMES.REVEAL.ACTION")?)
+            .ok_or("NAMES.REVEAL.ACTION")?;
         if action.action_index != *action_index {
-            return Err("N2.REVEAL.ACTION");
+            return Err("NAMES.REVEAL.ACTION");
         }
         let epoch = self
             .parameters
             .epoch(height)
-            .map_err(|_| "N2.REVEAL.SCHEDULE")?;
+            .map_err(|_| "NAMES.REVEAL.SCHEDULE")?;
         let statement = RevealStatement {
             deployment_id: self.parameters.deployment_id,
             name_id,
@@ -901,12 +896,12 @@ impl<V: ProofVerifier> Reducer<V> {
             successor_future_nf: *successor_future_nf,
         };
         if !self.verifier.verify_reveal(&statement, proof) {
-            return Err("N2.REVEAL.PROOF");
+            return Err("NAMES.REVEAL.PROOF");
         }
         let expiry_height = self
             .parameters
             .expiry(height)
-            .map_err(|_| "N2.REVEAL.SCHEDULE")?;
+            .map_err(|_| "NAMES.REVEAL.SCHEDULE")?;
         self.remember_head(undo, name_id);
         self.heads.insert(
             name_id,
@@ -945,35 +940,35 @@ impl<V: ProofVerifier> Reducer<V> {
             proof,
         } = operation
         else {
-            return Err("N2.REFRESH.CURRENT");
+            return Err("NAMES.REFRESH.CURRENT");
         };
-        let name_id = name.id().map_err(|_| "N2.REFRESH.CURRENT")?;
+        let name_id = name.id().map_err(|_| "NAMES.REFRESH.CURRENT")?;
         let predecessor_head = self
             .heads
             .get(&name_id)
-            .ok_or("N2.REFRESH.CURRENT")?
+            .ok_or("NAMES.REFRESH.CURRENT")?
             .clone();
         let epoch = self
             .parameters
             .epoch(height)
-            .map_err(|_| "N2.REFRESH.SCHEDULE")?;
+            .map_err(|_| "NAMES.REFRESH.SCHEDULE")?;
         if predecessor_head.lifecycle(height, self.parameters) != Lifecycle::Active
             || predecessor_head.producer != *predecessor
         {
-            return Err("N2.REFRESH.CURRENT");
+            return Err("NAMES.REFRESH.CURRENT");
         }
         if predecessor_head.producer_epoch >= epoch {
-            return Err("N2.REFRESH.EPOCH");
+            return Err("NAMES.REFRESH.EPOCH");
         }
         if !self.parameters.accepts_operation(name_id, height) {
-            return Err("N2.REFRESH.SCHEDULE");
+            return Err("NAMES.REFRESH.SCHEDULE");
         }
         let action = transaction
             .actions
-            .get(usize::try_from(*action_index).map_err(|_| "N2.REFRESH.ACTION")?)
-            .ok_or("N2.REFRESH.ACTION")?;
+            .get(usize::try_from(*action_index).map_err(|_| "NAMES.REFRESH.ACTION")?)
+            .ok_or("NAMES.REFRESH.ACTION")?;
         if action.action_index != *action_index || action.nullifier != predecessor_head.future_nf {
-            return Err("N2.REFRESH.ACTION");
+            return Err("NAMES.REFRESH.ACTION");
         }
         let statement = RefreshStatement {
             deployment_id: self.parameters.deployment_id,
@@ -990,12 +985,12 @@ impl<V: ProofVerifier> Reducer<V> {
             successor_future_nf: *successor_future_nf,
         };
         if !self.verifier.verify_refresh(&statement, proof) {
-            return Err("N2.REFRESH.PROOF");
+            return Err("NAMES.REFRESH.PROOF");
         }
         let expiry_height = self
             .parameters
             .expiry(height)
-            .map_err(|_| "N2.REFRESH.SCHEDULE")?;
+            .map_err(|_| "NAMES.REFRESH.SCHEDULE")?;
         self.remember_head(undo, name_id);
         self.heads.insert(
             name_id,

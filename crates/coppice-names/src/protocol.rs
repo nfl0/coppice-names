@@ -87,7 +87,7 @@ impl Name {
             input.push(u8::try_from(self.0.len()).expect("name length is bounded"));
             input.extend_from_slice(self.0.as_bytes());
             input.push(counter);
-            let candidate = wide_field(b"CoppiceN2Name", &input);
+            let candidate = wide_field(b"CoppiceNmName", &input);
             if candidate != pallas::Base::zero() {
                 return Ok(NameId(candidate.to_repr()));
             }
@@ -133,7 +133,7 @@ impl NameRoute {
         common.extend_from_slice(&name_id.to_bytes());
         let dk: [u8; 32] = blake2b_simd::Params::new()
             .hash_length(32)
-            .personal(b"CoppiceN2RteD")
+            .personal(b"CoppiceNmRteD")
             .hash(&common)
             .as_bytes()
             .try_into()
@@ -141,7 +141,7 @@ impl NameRoute {
         for counter in 0..=u8::MAX {
             let mut input = common.clone();
             input.push(counter);
-            let ivk = wide_field(b"CoppiceN2RteI", &input);
+            let ivk = wide_field(b"CoppiceNmRteI", &input);
             if ivk == pallas::Base::zero() {
                 continue;
             }
@@ -285,7 +285,7 @@ mod tests {
         assert_eq!(name.as_str(), "alice");
         assert_eq!(
             hex::encode(name.id().unwrap().to_bytes()),
-            "b646f07d05366fb8127c706843da84c62e42eec3ba2e66af0188c20d0093710a"
+            "9ebb8d8f6798e1f075a515f9913eab2d3d49b93adbb0ed693e2327a0c4ea5f38"
         );
         for invalid in [
             "",
@@ -323,11 +323,11 @@ mod tests {
             NameRoute::derive(deployment_id, Name::parse("alice").unwrap().id().unwrap()).unwrap();
         assert_eq!(
             hex::encode(route.incoming_viewing_key()),
-            "09b2fdd10a05a9e201463d22b59299962944c22f481c66013895d928befb227ba8ac90539dfe62080f89fa700e20963c1a1c78d3cd6464bc9377b45cb3e0f802"
+            "95c569897809153299433b0f30b0ec2f15df9e22eba0a3f55bb254e382d95cb5b7da6614241d5612a274298f0d6e036e497b7654d18325d6d8e08955d7ca9d0d"
         );
         assert_eq!(
             hex::encode(route.receiver()),
-            "8afcc90c3230fdce15e081d8095158d5530804fc764f1041a62804d9a821145c718993796e7d23f2524b8d"
+            "3b4df551d13814cbf726eb9733e0939b2c66c4cda700dd59f1e0ab2aa9c0e3a7c20c8fe993ea4eebdbe18d"
         );
     }
 }

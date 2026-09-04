@@ -322,7 +322,7 @@ fn accepted(values: &[Accepted]) -> Value {
 
 fn compaction(value: Compaction) -> Value {
     json!({
-        "clause_id": "N2.LIFECYCLE.COMPACT",
+        "clause_id": "NAMES.LIFECYCLE.COMPACT",
         "height": value.height,
         "name_id_hex": hex::encode(value.name_id.to_bytes()),
         "previous_head": state_ref_json(value.previous_head),
@@ -332,7 +332,7 @@ fn compaction(value: Compaction) -> Value {
 
 fn termination(value: Termination) -> Value {
     json!({
-        "clause_id": "N2.SPEND.CURRENT",
+        "clause_id": "NAMES.SPEND.CURRENT",
         "height": value.height,
         "name_id_hex": hex::encode(value.name_id.to_bytes()),
         "previous_head": state_ref_json(value.previous_head),
@@ -408,7 +408,7 @@ fn apply_result<V: ProofVerifier>(
     match result {
         Ok(outcome) => json!({
             "ok": accepted(&outcome.accepted),
-            "operations": decisions(input, true, exact_name, &outcome.decisions, "N2.BLOCK.ORDER"),
+            "operations": decisions(input, true, exact_name, &outcome.decisions, "NAMES.BLOCK.ORDER"),
             "transitions": transitions(&outcome),
         }),
         Err(error) => json!({
@@ -428,7 +428,7 @@ fn exact_apply_result<V: ProofVerifier>(
     match result {
         Ok(outcome) => json!({
             "ok": accepted(&outcome.accepted),
-            "operations": decisions(input, true, Some(name), &outcome.decisions, "N2.BLOCK.ORDER"),
+            "operations": decisions(input, true, Some(name), &outcome.decisions, "NAMES.BLOCK.ORDER"),
             "transitions": transitions(&outcome),
         }),
         Err(error) => json!({
@@ -441,14 +441,14 @@ fn exact_apply_result<V: ProofVerifier>(
 
 fn apply_error_clause(error: ApplyError) -> &'static str {
     match error {
-        ApplyError::WrongHeight | ApplyError::WrongPreviousHash => "N2.BLOCK.CONTINUITY",
+        ApplyError::WrongHeight | ApplyError::WrongPreviousHash => "NAMES.BLOCK.CONTINUITY",
         ApplyError::NonCanonicalTransactionIndex | ApplyError::NonCanonicalActionIndex => {
-            "N2.BLOCK.ORDER"
+            "NAMES.BLOCK.ORDER"
         }
         ApplyError::InvalidReferencedCommit | ApplyError::ConflictingReferencedCommit => {
-            "N2.REVEAL.COMMIT"
+            "NAMES.REVEAL.COMMIT"
         }
-        ApplyError::InvalidParameters => "N2.BLOCK.ACTIVATION",
+        ApplyError::InvalidParameters => "NAMES.BLOCK.ACTIVATION",
     }
 }
 
@@ -494,7 +494,7 @@ fn resolution_result_json(value: Result<Resolution, ResolutionError>) -> Value {
             requested_height,
             tip_height,
         }) => json!({
-            "clause_id": "N2.EXACT.PARITY",
+            "clause_id": "NAMES.EXACT.PARITY",
             "error": "IncompleteHistory",
             "requested_height": requested_height,
             "tip_height": tip_height,
@@ -503,7 +503,7 @@ fn resolution_result_json(value: Result<Resolution, ResolutionError>) -> Value {
             requested_height,
             tip_height,
         }) => json!({
-            "clause_id": "N2.EXACT.PARITY",
+            "clause_id": "NAMES.EXACT.PARITY",
             "error": "HistoricalResolutionUnavailable",
             "requested_height": requested_height,
             "tip_height": tip_height,
@@ -552,7 +552,6 @@ fn full_snapshot(
         "protocol_identity": {
             "deployment_id_hex": hex::encode(identity.deployment_id),
             "ruleset_fingerprint_hex": hex::encode(identity.ruleset_fingerprint),
-            "ruleset_revision": identity.ruleset_revision,
         },
         "tip": tip_json(reducer.tip()),
         "resolutions": resolutions,
@@ -590,7 +589,6 @@ fn exact_snapshot(
         "protocol_identity": {
             "deployment_id_hex": hex::encode(identity.deployment_id),
             "ruleset_fingerprint_hex": hex::encode(identity.ruleset_fingerprint),
-            "ruleset_revision": identity.ruleset_revision,
         },
         "tip": tip_json(resolver.tip()),
         "resolutions": resolutions,
@@ -600,9 +598,9 @@ fn exact_snapshot(
 
 fn rollback_result(result: Result<(), RollbackError>) -> Value {
     match result {
-        Ok(()) => json!({"ok": true, "error": null, "clause_id": "N2.ROLLBACK.EXACT"}),
+        Ok(()) => json!({"ok": true, "error": null, "clause_id": "NAMES.ROLLBACK.EXACT"}),
         Err(error) => {
-            json!({"ok": false, "error": format!("{error:?}"), "clause_id": "N2.ROLLBACK.EXACT"})
+            json!({"ok": false, "error": format!("{error:?}"), "clause_id": "NAMES.ROLLBACK.EXACT"})
         }
     }
 }
@@ -759,7 +757,7 @@ fn main() -> Result<(), String> {
     let corpus: Corpus =
         serde_json::from_slice(&fs::read(&path).map_err(|error| error.to_string())?)
             .map_err(|error| error.to_string())?;
-    if corpus.format != "coppice-names-semantic-history-v1" {
+    if corpus.format != "coppice-names-semantic-history" {
         return Err(format!("unsupported corpus format: {}", corpus.format));
     }
     let network = match corpus.network.as_str() {
@@ -776,7 +774,7 @@ fn main() -> Result<(), String> {
     println!(
         "{}",
         serde_json::to_string(&json!({
-            "format": "coppice-names-semantic-trace-v1",
+            "format": "coppice-names-semantic-trace",
             "cases": cases,
         }))
         .map_err(|error| error.to_string())?

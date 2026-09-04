@@ -152,7 +152,7 @@ impl Parameters {
         input.extend_from_slice(&name_id.to_bytes());
         let digest = blake2b_simd::Params::new()
             .hash_length(32)
-            .personal(b"CoppiceN2Off")
+            .personal(b"CoppiceNmOff")
             .hash(&input);
         let value = u64::from_le_bytes(digest.as_bytes()[..8].try_into().expect("eight bytes"));
         let span = self.epoch_blocks - self.window_blocks + 1;
@@ -208,7 +208,7 @@ mod tests {
 
     fn alice() -> NameId {
         NameId::from_bytes(
-            hex::decode("b646f07d05366fb8127c706843da84c62e42eec3ba2e66af0188c20d0093710a")
+            hex::decode("9ebb8d8f6798e1f075a515f9913eab2d3d49b93adbb0ed693e2327a0c4ea5f38")
                 .unwrap()
                 .try_into()
                 .unwrap(),
@@ -222,13 +222,13 @@ mod tests {
         assert_eq!(
             parameters.window(alice(), 17).unwrap(),
             Window {
-                start: 120_080,
-                end: 120_104
+                start: 120_488,
+                end: 120_512
             }
         );
-        assert!(parameters.accepts_operation(alice(), 120_080));
-        assert!(parameters.accepts_operation(alice(), 120_103));
-        assert!(!parameters.accepts_operation(alice(), 120_104));
+        assert!(parameters.accepts_operation(alice(), 120_488));
+        assert!(parameters.accepts_operation(alice(), 120_511));
+        assert!(!parameters.accepts_operation(alice(), 120_512));
     }
 
     #[test]
@@ -260,12 +260,12 @@ mod tests {
         let windows = parameters
             .operation_windows_descending(name_id, 120_090, 122_500)
             .unwrap();
-        assert_eq!(windows.len(), 3);
+        assert_eq!(windows.len(), 2);
         assert_eq!(
-            windows[2],
+            windows[1],
             Window {
-                start: 120_090,
-                end: 120_104
+                start: 120_488,
+                end: 120_512
             }
         );
         assert!(windows.windows(2).all(|pair| pair[0].start > pair[1].start));

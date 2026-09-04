@@ -41,7 +41,7 @@ pub fn seal_checkpoint(
     output.extend_from_slice(&deployment_id);
     output.extend_from_slice(&payload_len.to_be_bytes());
     output.extend_from_slice(payload);
-    let tag = keyed_hash32(b"CoppiceN2CTag", &key[..], &output);
+    let tag = keyed_hash32(b"CoppiceNmCTag", &key[..], &output);
     output.extend_from_slice(&tag);
     Ok(output)
 }
@@ -79,7 +79,7 @@ pub fn open_checkpoint(
     }
     let tag_start = HEADER_BYTES + payload_len;
     let key = checkpoint_key(wallet_seed, deployment_id)?;
-    let expected = keyed_hash32(b"CoppiceN2CTag", &key[..], &envelope[..tag_start]);
+    let expected = keyed_hash32(b"CoppiceNmCTag", &key[..], &envelope[..tag_start]);
     if expected.ct_eq(&envelope[tag_start..]).unwrap_u8() != 1 {
         return Err(CheckpointError::AuthenticationFailed);
     }
@@ -95,7 +95,7 @@ fn checkpoint_key(
         _ => unreachable!("master derivation has no retry-dependent failure"),
     })?;
     Ok(Zeroizing::new(keyed_hash32(
-        b"CoppiceN2CKey",
+        b"CoppiceNmCKey",
         &master[..],
         &deployment_id,
     )))

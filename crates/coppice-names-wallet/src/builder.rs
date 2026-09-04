@@ -24,7 +24,7 @@ use zcash_primitives::transaction::{
 use zcash_protocol::consensus::{BlockHeight, BranchId, Parameters};
 use zcash_protocol::value::Zatoshis;
 
-/// One ordinary CPV1 rendezvous output.
+/// One ordinary CPCF rendezvous output.
 pub struct CarrierOutput {
     pub recipient: Address,
     pub value: NoteValue,
@@ -57,7 +57,7 @@ pub struct NamesIronwoodPlan {
     pub(crate) carrier_outputs: Vec<CarrierOutput>,
     pub(crate) funding_spends: Vec<FundingSpend>,
     pub(crate) change_outputs: Vec<ChangeOutput>,
-    /// Canonical action index carried by the CNV2 operation.
+    /// Canonical action index carried by the Names operation.
     pub(crate) designated_action_index: usize,
     /// Earliest intended canonical height of the Names operation. The later
     /// PCZT expiry height must not precede this height.
@@ -104,7 +104,7 @@ pub struct NamesPcztPlan<P: Parameters> {
 /// Complete, still-unproved Names PCZT and the metadata needed by later roles.
 pub struct NamesBuiltPczt {
     pub pczt: pczt::Pczt,
-    /// The canonical CNV2 action index, encoded as `u32` at this boundary.
+    /// The canonical Names action index, encoded as `u32` at this boundary.
     pub designated_action_index: u32,
     pub designated_nullifier: [u8; 32],
     pub designated_commitment: [u8; 32],
@@ -120,7 +120,7 @@ pub struct NamesBuiltPczt {
 /// real spend authorization signatures.
 pub struct NamesFinalizedPczt {
     pub pczt: pczt::Pczt,
-    /// The canonical CNV2 action index, encoded as `u32` at this boundary.
+    /// The canonical Names action index, encoded as `u32` at this boundary.
     pub designated_action_index: u32,
     pub designated_nullifier: [u8; 32],
     pub designated_commitment: [u8; 32],
@@ -150,7 +150,7 @@ pub struct NamesWitnessedPczt {
     pub anchor: orchard::Anchor,
     /// `(nullifier, final PCZT action index)` entries in witness-plan order.
     pub witnessed_action_indices: Vec<([u8; 32], usize)>,
-    /// The canonical CNV2 action index, encoded as `u32` at this boundary.
+    /// The canonical Names action index, encoded as `u32` at this boundary.
     pub designated_action_index: u32,
     pub designated_nullifier: [u8; 32],
     pub designated_commitment: [u8; 32],
@@ -168,7 +168,7 @@ pub struct NamesProvedPczt {
     pub anchor: orchard::Anchor,
     /// `(nullifier, final PCZT action index)` entries in witness-plan order.
     pub witnessed_action_indices: Vec<([u8; 32], usize)>,
-    /// The canonical CNV2 action index, encoded as `u32` at this boundary.
+    /// The canonical Names action index, encoded as `u32` at this boundary.
     pub designated_action_index: u32,
     pub designated_nullifier: [u8; 32],
     pub designated_commitment: [u8; 32],
@@ -198,7 +198,7 @@ pub struct NamesSignedPczt {
     pub anchor: orchard::Anchor,
     /// `(nullifier, final PCZT action index)` entries in witness-plan order.
     pub witnessed_action_indices: Vec<([u8; 32], usize)>,
-    /// The canonical CNV2 action index, encoded as `u32` at this boundary.
+    /// The canonical Names action index, encoded as `u32` at this boundary.
     pub designated_action_index: u32,
     pub designated_nullifier: [u8; 32],
     pub designated_commitment: [u8; 32],
@@ -495,7 +495,7 @@ pub fn build_names_bundle(plan: NamesIronwoodPlan, rng: impl Rng) -> Result<Name
     for carrier in plan.carrier_outputs {
         builder
             .add_output(None, carrier.recipient, carrier.value, carrier.memo)
-            .context("add CPV1 carrier output")?;
+            .context("add CPCF carrier output")?;
     }
     for change in plan.change_outputs {
         builder
@@ -604,7 +604,7 @@ pub fn build_names_pczt<P: Parameters>(plan: NamesPcztPlan<P>) -> Result<NamesBu
         "Names PCZT expiry height {expiry_height} precedes the operation's declared height {operation_height}"
     );
     let designated_action_index = u32::try_from(designated_action_index)
-        .context("convert designated Names action index to CNV2 u32")?;
+        .context("convert designated Names action index to Names u32")?;
     let source_action_layout = action_pair_layout(&bundle);
 
     let pczt = Creator::build_from_parts(PcztParts {
@@ -1472,7 +1472,7 @@ pub fn extract_names_transaction(signed: NamesSignedPczt) -> Result<NamesExtract
     );
 
     let designated_action_index_usize = usize::try_from(designated_action_index)
-        .context("convert extracted CNV2 action index to usize")?;
+        .context("convert extracted Names action index to usize")?;
     let designated_action = ironwood
         .actions()
         .get(designated_action_index_usize)
@@ -1576,7 +1576,7 @@ pub fn verify_embedded_designated_action(
     expected_commitment: [u8; 32],
 ) -> Result<()> {
     let action_index =
-        usize::try_from(action_index).context("convert embedded CNV2 action index to usize")?;
+        usize::try_from(action_index).context("convert embedded Names action index to usize")?;
     let action = pczt
         .ironwood()
         .actions()
@@ -1737,7 +1737,7 @@ mod tests {
         recipient: Address,
     ) -> Vec<CarrierOutput> {
         let frames = coppice::transport::encode_frames([0x42; 32], &vec![0x43; payload_len])
-            .expect("fixture payload fits CPV1");
+            .expect("fixture payload fits CPCF");
         assert_eq!(frames.len(), expected_count);
         frames
             .into_iter()
@@ -1784,7 +1784,7 @@ mod tests {
                 successor_note: successor,
                 successor_ovk: None,
                 successor_memo: [0; 512],
-                // This is deliberately CPV1-sized fixture data; semantic CNV2
+                // This is deliberately CPCF-sized fixture data; semantic Names operation
                 // encoding is outside this structural PCZT test.
                 carrier_outputs: carriers(5_056, 11, carrier_recipient),
                 funding_spends: vec![FundingSpend {

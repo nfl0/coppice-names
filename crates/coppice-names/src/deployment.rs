@@ -1,33 +1,24 @@
 //! Canonical proof-system and deployment identity derivation.
 
 use crate::{
-    names_application_id,
+    names_family_id,
     protocol::{BOND_ZATOSHIS, MAX_NAME_BYTES, MAX_UA_BYTES},
     ruleset::ruleset_fingerprint,
     schedule::Parameters,
 };
 use coppice::identity::CoreRuntimeId;
 
-/// CA01 application version of the replacement protocol.
-pub const NAMES_APPLICATION_VERSION: u16 = 2;
-/// Verifier-manifest encoding revision.
-pub const VERIFIER_MANIFEST_REVISION: u8 = 1;
-/// Verifier-suite manifest encoding revision.
-pub const VERIFIER_SUITE_REVISION: u8 = 1;
-/// Encoding revision for the canonical Names v2 deployment preimage.
-pub const DEPLOYMENT_PREIMAGE_REVISION: u8 = 1;
+const DEPLOYMENT_PERSONALIZATION: &[u8] = b"CoppiceNmDep";
+const REVEAL_VERIFIER_PERSONALIZATION: &[u8] = b"CoppiceNmReVr";
+const REFRESH_VERIFIER_PERSONALIZATION: &[u8] = b"CoppiceNmRfVr";
+const VERIFIER_SUITE_PERSONALIZATION: &[u8] = b"CoppiceNmVrfS";
 
-const DEPLOYMENT_PERSONALIZATION: &[u8] = b"CoppiceN2Dep";
-const REVEAL_VERIFIER_PERSONALIZATION: &[u8] = b"CoppiceN2ReVr";
-const REFRESH_VERIFIER_PERSONALIZATION: &[u8] = b"CoppiceN2RfVr";
-const VERIFIER_SUITE_PERSONALIZATION: &[u8] = b"CoppiceN2VrfS";
-
-/// Exact verifier behavior selected by the first replacement deployment.
+/// Exact verifier behavior selected by the current deployment.
 ///
 /// This manifest is deliberately independent of the Names circuit. The
 /// circuit shape is committed by the generated-key fingerprint; this commits
 /// the proof/transcript verifier that interprets it.
-pub const VERIFIER_SUITE_MANIFEST: &[u8] = b"CNV2S\x01\
+pub const VERIFIER_SUITE_MANIFEST: &[u8] = b"CNSUITE\0\
 curve=VestaAffine;scalar=PallasBase;commitment=Halo2IPA;\
 transcript=Blake2bRead+Blake2bWrite/Halo2-Transcript;challenge=Challenge255;\
 strategy=SingleVerifier;proof_encoding=zakura-halo2-proofs-1.0.0-Blake2bWrite;\
@@ -211,15 +202,13 @@ impl DeploymentParameters {
         Ok(self)
     }
 
-    /// Returns the exact 206-byte, big-endian deployment preimage.
-    pub fn canonical_preimage(self) -> Result<[u8; 206], DeploymentError> {
+    /// Returns the exact canonical, big-endian deployment preimage.
+    pub fn canonical_preimage(self) -> Result<Vec<u8>, DeploymentError> {
         let validated = self.validate()?;
-        let mut output = Vec::with_capacity(206);
-        output.extend_from_slice(b"CND2");
-        output.push(DEPLOYMENT_PREIMAGE_REVISION);
+        let mut output = Vec::with_capacity(203);
+        output.extend_from_slice(b"CNDP");
         output.extend_from_slice(validated.core_runtime_id.as_bytes());
-        output.extend_from_slice(names_application_id().as_bytes());
-        output.extend_from_slice(&NAMES_APPLICATION_VERSION.to_be_bytes());
+        output.extend_from_slice(names_family_id().as_bytes());
         output.extend_from_slice(&validated.ruleset_fingerprint);
         output.extend_from_slice(&validated.activation_height.to_be_bytes());
         output.extend_from_slice(&validated.epoch_blocks.to_be_bytes());
@@ -233,9 +222,8 @@ impl DeploymentParameters {
         output.extend_from_slice(&(MAX_UA_BYTES as u16).to_be_bytes());
         output.extend_from_slice(&validated.proof.reveal.to_bytes());
         output.extend_from_slice(&validated.proof.refresh.to_bytes());
-        Ok(output
-            .try_into()
-            .expect("deployment preimage length is fixed"))
+        assert_eq!(output.len(), 203, "deployment preimage length is fixed");
+        Ok(output)
     }
 
     /// Derives the Names deployment ID.
@@ -274,9 +262,8 @@ fn verifier_id(
     proof_bytes: u16,
     key_fingerprint: [u8; 32],
 ) -> VerifierId {
-    let mut manifest = Vec::with_capacity(74);
-    manifest.extend_from_slice(b"CNV2V");
-    manifest.push(VERIFIER_MANIFEST_REVISION);
+    let mut manifest = Vec::with_capacity(76);
+    manifest.extend_from_slice(b"CNVERIFY");
     manifest.push(operation_tag);
     manifest.extend_from_slice(&suite_id);
     manifest.push(circuit_k);
@@ -343,7 +330,7 @@ mod tests {
     fn verifier_suite_manifest_has_frozen_identity() {
         assert_eq!(
             hex::encode(verifier_suite_id()),
-            "2d39faaba54a731c3f2d4c15ae0d6ca665a2124dc7575926b69217c993b3de67"
+            "dcffff115c9d9354058669c999f0dfabde454d728e27fd2e06253f609ca7422c"
         );
     }
 
@@ -351,7 +338,7 @@ mod tests {
     fn deployment_identity_binds_every_variable_input() {
         let baseline = deployment();
         let expected = baseline.deployment_id().unwrap();
-        assert_eq!(baseline.canonical_preimage().unwrap().len(), 206);
+        assert_eq!(baseline.canonical_preimage().unwrap().len(), 203);
 
         let changes: [fn(&mut DeploymentParameters); 10] = [
             |value| value.core_runtime_id = CoreRuntimeId::from_bytes([4; 32]),

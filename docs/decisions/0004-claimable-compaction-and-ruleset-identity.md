@@ -1,6 +1,6 @@
 # ADR 0004: Claimable-head compaction and ruleset identity
 
-Status: Accepted for undeployed Names v2
+Status: Accepted for undeployed Names
 
 Date: 2026-09-04
 
@@ -13,7 +13,7 @@ verifier identities, but did not bind the complete reducer semantics.
 
 ## Decision
 
-Names v2 remains undeployed and is revised in place without compatibility
+Names remains undeployed and is revised in place without compatibility
 behavior. A terminal head is retained through the half-open cooldown interval
 `[terminal_height, terminal_height + cooldown_blocks)`. At block start at the
 first height at or beyond that boundary, the reducer deletes the head before
@@ -28,18 +28,23 @@ requires replay from the user's archival canonical Zcash source. No permanent
 tombstone or dedicated historical Names state is authoritative. Wallet-local
 history may remain visible but cannot affect resolution or payment.
 
-The canonical semantic manifest is `ruleset/names-v2.json`. Its restricted
-schema uses printable ASCII strings, `u32` numbers, unique non-reusable clause
+The canonical semantic manifest is `ruleset/names.json`. Its restricted
+schema uses printable ASCII strings and unique non-reusable clause
 IDs, and RFC 8785 canonical JSON. Personalized BLAKE2b-256 under
-`CoppiceN2Rule` produces the ruleset fingerprint. The deployment preimage keeps
-application version 2, adds an explicit preimage-encoding revision, and binds
-the 32-byte fingerprint. Unknown rulesets and old snapshots fail closed.
+`CoppiceNmRule` produces the ruleset fingerprint. The deployment preimage keeps
+the stable Names family identifier and binds the 32-byte fingerprint. The
+resulting deployment ID is then included in the deployment-specific Coppice
+ApplicationId. The ApplicationId therefore selects one exact immutable wire,
+circuit, verifier, parameter, and reducer interpretation without a sequential
+protocol version. Unknown deployment identities and old snapshots fail closed.
 
-Versioning has two axes. `Names v2` identifies the protocol family and its
-wire/circuit generation; the monotonic ruleset revision and fingerprint
-identify exact reducer semantics. A future normative semantic change updates
-the manifest and deployment identity, but does not require `v3` unless it also
-introduces an incompatible wire format, circuit family, or authority model.
+Names does not maintain an independent protocol-family revision or monotonic
+ruleset revision. A future normative semantic, wire, circuit, authority, or
+parameter change produces a different ruleset fingerprint or deployment ID
+and therefore a different ApplicationId. Independently persisted local
+snapshot and storage formats retain explicit schema identifiers because their
+bytes require migration or rejection outside canonical replay. This follows
+Core ADR 0001, `Content-addressed protocol identity`.
 
 ## Consequences
 
@@ -68,5 +73,5 @@ introduces an incompatible wire format, circuit family, or authority model.
   or accidental release.
 - **Trusted remote Names snapshots or mutable indexes:** weakens the canonical
   Zcash history trust model and can turn omission into false authority.
-- **Names v3 compatibility layer:** unnecessary before deployment and would
-  preserve obsolete semantics and migration ambiguity.
+- **Sequential Names compatibility layer:** unnecessary before deployment and
+  would preserve obsolete semantics and migration ambiguity.

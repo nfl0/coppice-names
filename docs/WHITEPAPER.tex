@@ -222,8 +222,8 @@ and fork-choice authority, and Coppice consumes one validated canonical scan
 to host native deterministic state machines. Applications publish
 \emph{bulletins} inside ordinary Orchard transactions: a bulletin's bytes are
 carried by zero-value \emph{carrier notes} addressed to a rendezvous
-receiver, framed by the CPV1 carrier protocol and wrapped in a CA01
-application envelope naming the application identity and version. Observers
+receiver, framed by the CPCF carrier protocol and wrapped in a CAPP
+application envelope naming an exact content-addressed application identity. Observers
 detect candidates under the deployment's rendezvous incoming viewing key,
 fetch full transactions only for candidates, and Core authenticates those
 bytes against compact canonical effects before routing them to an application.
@@ -386,11 +386,12 @@ policy.
 Each deployment fixes its activation height, schedule, bond value, data
 bounds, application and runtime identities, and verifier identities. These
 values are hashed into a \emph{deployment identifier}, preventing messages or
-proofs from one deployment from being replayed into another. The current wire
-identity is the \code{coppice.names} application under a CA01 application
-envelope with application version \code{2}; its bulletins use Coppice CPV1
-framing~\cite{coppice}. These identifiers describe the deployed wire domain
-and do not create a separate consensus system.
+proofs from one deployment from being replayed into another. The stable family
+label is \code{coppice.names}; the deployment identifier is included in the
+CAPP \code{ApplicationId}, and bulletins use Coppice CPCF
+framing~\cite{coppice}. That content-addressed identity selects the exact wire,
+proof, parameter, and reducer interpretation without a sequential protocol
+version or a separate consensus system.
 
 \subsection{Operations}
 
@@ -603,7 +604,7 @@ deployment identifier $D$, and name identifier $N$, the protocol derives one
 offset:
 
 \begin{align*}
-H_N &= \operatorname{BLAKE2b\mbox{-}256}_{\texttt{CoppiceN2Off}}
+H_N &= \operatorname{BLAKE2b\mbox{-}256}_{\texttt{CoppiceNmOff}}
        (D \parallel N), \\
 \operatorname{offset}(N) &=
   \operatorname{LE64}(H_N[0..8]) \bmod (E-W+1), \\
@@ -1366,7 +1367,7 @@ identifier are \statusword{TBD}.
 \label{sec:conformance}
 
 The checked-in
-\href{https://github.com/nfl0/coppice-names/blob/main/test-vectors/replacement_protocol.json}{positive
+\href{https://github.com/nfl0/coppice-names/blob/main/test-vectors/protocol.json}{positive
 conformance artifact} freezes the deployment, verifier suite, route
 derivation, schedule, statements, real proofs, operation encoding, and
 resolved heads; its vector-set digest is recorded in the accompanying
@@ -1432,10 +1433,10 @@ authority.
 only a nullifier and a note commitment.
 \item[Bond] The exact 1~ZEC shielded note backing an active record. Owned by
 the registrant; spending it releases the name.
-\item[Bulletin] A published application message, framed by CPV1 inside a CA01
+\item[Bulletin] A published application message, framed by CPCF inside a CAPP
 envelope and carried by zero-value notes.
-\item[CA01] Coppice's application envelope, naming application identity and
-version.
+\item[CAPP] Coppice's application envelope, naming one exact content-addressed
+application identity.
 \item[Carrier] A zero-value note whose ciphertext carries bulletin bytes.
 \item[Cooldown] One epoch of non-resolving quarantine after expiry or
 release.

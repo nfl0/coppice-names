@@ -62,7 +62,7 @@ pub fn derive_name_spending_key(
         input.push(u8::try_from(name.as_bytes().len()).expect("canonical name length fits u8"));
         input.extend_from_slice(name.as_bytes());
         input.extend_from_slice(&retry.to_be_bytes());
-        let candidate = Zeroizing::new(keyed_hash32(b"CoppiceN2Owner", &master[..], &input));
+        let candidate = Zeroizing::new(keyed_hash32(b"CoppiceNmOwner", &master[..], &input));
         if let Some(spending_key) = Option::<SpendingKey>::from(SpendingKey::from_bytes(*candidate))
         {
             return Ok(spending_key);
@@ -80,7 +80,7 @@ pub(crate) fn derive_names_master(
     let mut root_input = Zeroizing::new(Vec::with_capacity(2 + wallet_seed.len()));
     root_input.extend_from_slice(&(wallet_seed.len() as u16).to_be_bytes());
     root_input.extend_from_slice(wallet_seed);
-    Ok(Zeroizing::new(hash32(b"CoppiceN2Root_", &root_input)))
+    Ok(Zeroizing::new(hash32(b"CoppiceNmRoot_", &root_input)))
 }
 
 /// Derives the first nonzero epoch-specific secret whose complete hidden
@@ -102,7 +102,7 @@ pub fn derive_commit_opening(
         input.extend_from_slice(&deployment_id);
         input.extend_from_slice(&target_epoch.to_be_bytes());
         input.extend_from_slice(&retry.to_be_bytes());
-        let uniform = Zeroizing::new(keyed_hash64(b"CoppiceN2ComS", &key[..], &input));
+        let uniform = Zeroizing::new(keyed_hash64(b"CoppiceNmComS", &key[..], &input));
         let candidate = pallas::Base::from_uniform_bytes(&uniform);
         if candidate == pallas::Base::zero() {
             continue;
@@ -199,7 +199,7 @@ fn derive_bond_note(
         input.extend_from_slice(&action_index.to_be_bytes());
         input.extend_from_slice(&action_nullifier.to_bytes());
         input.extend_from_slice(&retry.to_be_bytes());
-        let candidate = Zeroizing::new(keyed_hash32(b"CoppiceN2Note_", &key[..], &input));
+        let candidate = Zeroizing::new(keyed_hash32(b"CoppiceNmNote_", &key[..], &input));
         let Some(seed) = Option::<RandomSeed>::from(RandomSeed::from_bytes(*candidate, &rho))
         else {
             continue;
@@ -276,15 +276,15 @@ mod tests {
         let epoch_18 = derive_commit_opening(&alice_key, deployment, &alice, 18).unwrap();
         assert_eq!(
             hex::encode(alice_key.to_bytes()),
-            "b98b04b541957e93abb906348027eaa785dc7c7448745f3ea0294aa646623945"
+            "31206cb680820f5154e2542c3c894895d755b3d56225cfdb47d4ce09a4f73142"
         );
         assert_eq!(
             hex::encode(epoch_17.commitment().to_bytes()),
-            "f0c440c4f8184549dabc04c56bf7df7935193de6b38ed491681f6f5ef72e4805"
+            "bd0f7bf9c244c069c2216f451cce26101907dd3aac8d188975e7ad9f7abcb514"
         );
         assert_eq!(
             hex::encode(epoch_17.secret().to_bytes()),
-            "ce7c71bfcdc467daf50d9455a371afb8ee1f2bc9bffb3967011261522ad38b25"
+            "67e9e45bdedc56834f2e7770eeac239ed443b78517c5562ae522c78e3eae9614"
         );
         assert_eq!(epoch_17.commitment(), repeated.commitment());
         assert_eq!(epoch_17.secret(), repeated.secret());
@@ -341,15 +341,15 @@ mod tests {
         assert_eq!(note.rho().to_bytes(), action_nullifier.to_bytes());
         assert_eq!(
             hex::encode(note.rseed().as_bytes()),
-            "c94b61ef0d6c9300b26f96e968c98d7018f7b1dcaab3673036bd6b136e74e86a"
+            "e0922838459efe2ef5cc31a633379f0ed618fa28e0247dda32763d644686ce27"
         );
         assert_eq!(
             hex::encode(ExtractedNoteCommitment::from(note.commitment()).to_bytes()),
-            "61ccfed2a2982980366cd589e2f6cd61e721a43eed474f5512ac8071f4745b07"
+            "4692f7d8aea07771a874005ac0795cd93fa6003cedce066c5a23c17294697108"
         );
         assert_eq!(
             hex::encode(note.nullifier(&fvk).to_bytes()),
-            "3f4749a7292e61ef64034d0f20e315a39a32c14255d1d14da01e93be602df206"
+            "4ae75d37bd54173229651a42a7c387dadeb07955339c7a6abf4de85a4c645114"
         );
 
         let refresh = derive_refresh_bond_note(

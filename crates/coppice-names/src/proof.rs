@@ -158,11 +158,11 @@ mod tests {
         let identity = verifier.identity();
         assert_eq!(
             hex::encode(identity.reveal().to_bytes()),
-            "a4cc96f71b13842c78a34ba0a4f4a09e29925287a81914059b5ec3963228466d"
+            "c8bcd78bca0bf0bacebefc3f8b5935b90d7a2bcf5bbb6d0f5d62b8b915d92ca9"
         );
         assert_eq!(
             hex::encode(identity.refresh().to_bytes()),
-            "fd59a28c7364cd4dc062c51e48a14d938fac3e1fa107eecc1ff2d3f99f08cd00"
+            "7c905705b4997842f8e28f668df908aadbe08dfe7e9135fe9aadf256ab8c22ea"
         );
     }
 

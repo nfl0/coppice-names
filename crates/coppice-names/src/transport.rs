@@ -1,8 +1,8 @@
-//! Authenticated CPV1/CA01 transport decoding for Names operations.
+//! Authenticated CPCF/CAPP transport decoding for Names operations.
 
 use crate::{
     codec::{self, CodecError, CodecParameters, Operation},
-    deployment::{DeploymentError, DeploymentParameters, NAMES_APPLICATION_VERSION},
+    deployment::{DeploymentError, DeploymentParameters},
     names_application_id,
     protocol::{Name, NameRoute, Network, ValueError},
     reducer::{Action, Block, Transaction},
@@ -16,7 +16,7 @@ use coppice::{
         ValidatedFullTransaction,
     },
     runtime::{ApplicationMessageStatus, RoutedFrame, inspect_transaction_at_rendezvous},
-    transport::Error as Cpv1Error,
+    transport::Error as CarrierError,
 };
 
 /// Failure to construct the immutable routing and codec configuration.
@@ -45,8 +45,8 @@ pub enum TransportRejection {
     /// Names carrier notes must carry no ZEC; the bonded note is a separate,
     /// designated Ironwood action authenticated by the operation proof.
     NonZeroCarrierValue,
-    MalformedCpv1(Cpv1Error),
-    MalformedCa01,
+    MalformedCarrier(CarrierError),
+    MalformedEnvelope,
     WrongApplication,
     InvalidOperation(CodecError),
     WrongRoute,
@@ -55,7 +55,7 @@ pub enum TransportRejection {
 /// Result of inspecting one canonical transaction at one Names rendezvous.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NamesTransportStatus {
-    /// No complete CPV1 bulletin addressed to this exact rendezvous.
+    /// No complete CPCF bulletin addressed to this exact rendezvous.
     NoOperation,
     /// A candidate was present but is not one canonical operation for this
     /// Names route. Replay keeps its authenticated Ironwood effects but treats
@@ -469,14 +469,18 @@ fn classify_inspection(
             return NamesTransportStatus::NoOperation;
         }
         ApplicationMessageStatus::MalformedTransport(error) => {
-            return NamesTransportStatus::Rejected(TransportRejection::MalformedCpv1(*error));
+            return NamesTransportStatus::Rejected(TransportRejection::MalformedCarrier(*error));
         }
         ApplicationMessageStatus::MalformedEnvelope(_) => {
-            return NamesTransportStatus::Rejected(TransportRejection::MalformedCa01);
+            return NamesTransportStatus::Rejected(TransportRejection::MalformedEnvelope);
         }
         ApplicationMessageStatus::Message(envelope) => envelope,
     };
-    if envelope.key() != ApplicationKey::new(names_application_id(), NAMES_APPLICATION_VERSION) {
+    let deployment_id = match deployment.deployment_id() {
+        Ok(deployment_id) => deployment_id,
+        Err(_) => return NamesTransportStatus::Rejected(TransportRejection::WrongApplication),
+    };
+    if envelope.key() != ApplicationKey::new(names_application_id(deployment_id)) {
         return NamesTransportStatus::Rejected(TransportRejection::WrongApplication);
     }
     let parameters = CodecParameters {
@@ -511,7 +515,7 @@ mod tests {
         protocol::{CanonicalUa, CommitRef, Commitment, FieldElement},
     };
     use coppice::{
-        application::ApplicationEnvelopeV1,
+        application::ApplicationEnvelope,
         identity::{CoreRuntimeId, CoreRuntimeParameters, ZcashNetwork},
         replay::{
             CoreCanonicalBlockInput, CoreCanonicalTransactionInput, CorePositionReplay, CoreReplay,
@@ -541,12 +545,9 @@ mod tests {
 
     fn runtime() -> ValidatedCoreRuntimeParameters {
         CoreRuntimeParameters {
-            runtime_protocol_id: b"coppice.runtime".to_vec(),
-            runtime_protocol_version: 1,
-            zcash_network_domain: b"coppice-runtime-regtest-v1".to_vec(),
+            zcash_network_domain: b"coppice-runtime-regtest".to_vec(),
             zcash_network: ZcashNetwork::Regtest,
             runtime_activation_height: 100,
-            carrier_protocol_id: b"CPV1".to_vec(),
             rendezvous_ivk: hex::decode(
                 "65deb2b3ee7ac69020543f40f21122cb6dc1f4201a329fcdf9d5e3bb2dfbbabe29d542352fe36c3c7b24c2989dc9d0000b9e04f444e05dc4538bde395c0e6008",
             )
@@ -592,8 +593,8 @@ mod tests {
         };
         let payload = codec::encode(operation, parameters).unwrap();
         ApplicationMessageStatus::Message(
-            ApplicationEnvelopeV1::new(
-                ApplicationKey::new(names_application_id(), NAMES_APPLICATION_VERSION),
+            ApplicationEnvelope::new(
+                ApplicationKey::new(names_application_id(deployment().deployment_id().unwrap())),
                 payload,
             )
             .unwrap(),
@@ -638,8 +639,8 @@ mod tests {
     fn rejects_other_application_and_wrong_route() {
         let operation = commit();
         let other = ApplicationMessageStatus::Message(
-            ApplicationEnvelopeV1::new(
-                ApplicationKey::new(coppice::application::ApplicationId::from_bytes([9; 32]), 2),
+            ApplicationEnvelope::new(
+                ApplicationKey::new(coppice::application::ApplicationId::from_bytes([9; 32])),
                 codec::encode(
                     &operation,
                     CodecParameters {

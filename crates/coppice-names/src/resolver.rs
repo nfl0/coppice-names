@@ -8,18 +8,17 @@ use crate::{
         ProtocolIdentity, Reducer, ReducerTip, ReferencedCommit, Resolution, ResolutionError,
         RollbackError, RollbackRange, SnapshotError,
     },
-    ruleset::{RULESET_REVISION, ruleset_fingerprint},
+    ruleset::ruleset_fingerprint,
     schedule::Parameters,
 };
 use serde::{Deserialize, Serialize};
 
-const EXACT_RESOLVER_SNAPSHOT_FORMAT_VERSION: u32 = 2;
+const EXACT_RESOLVER_SNAPSHOT_FORMAT_VERSION: u32 = 3;
 
 #[derive(Serialize, Deserialize)]
 struct StoredExactResolver {
     format_version: u32,
     deployment_id: [u8; 32],
-    ruleset_revision: u32,
     ruleset_fingerprint: [u8; 32],
     rollback_range: Option<RollbackRange>,
     name: String,
@@ -150,7 +149,6 @@ impl<V: ProofVerifier> ExactResolver<V> {
         let stored = StoredExactResolver {
             format_version: EXACT_RESOLVER_SNAPSHOT_FORMAT_VERSION,
             deployment_id: self.reducer.protocol_identity().deployment_id,
-            ruleset_revision: RULESET_REVISION,
             ruleset_fingerprint: ruleset_fingerprint(),
             rollback_range: self.reducer.rollback_range(),
             name: self.name.as_str().to_owned(),
@@ -178,7 +176,6 @@ impl<V: ProofVerifier> ExactResolver<V> {
             return Err(SnapshotError::NameMismatch);
         }
         if stored.deployment_id != parameters.deployment_id
-            || stored.ruleset_revision != RULESET_REVISION
             || stored.ruleset_fingerprint != ruleset_fingerprint()
         {
             return Err(SnapshotError::ParametersMismatch);

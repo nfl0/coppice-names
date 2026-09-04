@@ -87,9 +87,9 @@ fn rust_and_independent_python_produce_exactly_the_same_trace() {
     assert_eq!(
         step(lifecycle, "invalid-proof-first-valid-wins-competition")["full_result"]["operations"],
         serde_json::json!([
-            {"tx_index": 0, "kind": "reveal", "accepted": false, "clause_id": "N2.REVEAL.PROOF"},
-            {"tx_index": 1, "kind": "reveal", "accepted": true, "clause_id": "N2.REVEAL.ACCEPT"},
-            {"tx_index": 2, "kind": "reveal", "accepted": false, "clause_id": "N2.REVEAL.MISSING"}
+            {"tx_index": 0, "kind": "reveal", "accepted": false, "clause_id": "NAMES.REVEAL.PROOF"},
+            {"tx_index": 1, "kind": "reveal", "accepted": true, "clause_id": "NAMES.REVEAL.ACCEPT"},
+            {"tx_index": 2, "kind": "reveal", "accepted": false, "clause_id": "NAMES.REVEAL.MISSING"}
         ])
     );
     assert_eq!(
@@ -100,7 +100,7 @@ fn rust_and_independent_python_produce_exactly_the_same_trace() {
     assert_eq!(
         step(lifecycle, "malformed-bulletin-ordinary-bond-spend")["full_result"]["transitions"][0]
             ["clause_id"],
-        "N2.SPEND.CURRENT"
+        "NAMES.SPEND.CURRENT"
     );
     assert_eq!(
         step(lifecycle, "last-cooldown-block")["full_state"]["resolutions"]["alice"]["lifecycle"],
@@ -109,7 +109,7 @@ fn rust_and_independent_python_produce_exactly_the_same_trace() {
     let replacement = step(lifecycle, "first-missing-replacement");
     assert_eq!(
         replacement["full_result"]["transitions"][0]["clause_id"],
-        "N2.LIFECYCLE.COMPACT"
+        "NAMES.LIFECYCLE.COMPACT"
     );
     assert_eq!(
         replacement["full_result"]["ok"],
@@ -126,8 +126,8 @@ fn rust_and_independent_python_produce_exactly_the_same_trace() {
     assert_eq!(
         step(lifecycle, "stale-refresh-then-valid-refresh")["full_result"]["operations"],
         serde_json::json!([
-            {"tx_index": 0, "kind": "refresh", "accepted": false, "clause_id": "N2.REFRESH.CURRENT"},
-            {"tx_index": 1, "kind": "refresh", "accepted": true, "clause_id": "N2.REFRESH.ACCEPT"}
+            {"tx_index": 0, "kind": "refresh", "accepted": false, "clause_id": "NAMES.REFRESH.CURRENT"},
+            {"tx_index": 1, "kind": "refresh", "accepted": true, "clause_id": "NAMES.REFRESH.ACCEPT"}
         ])
     );
     let boundary = step(lifecycle, "expiry-missing-boundary");
@@ -138,7 +138,7 @@ fn rust_and_independent_python_produce_exactly_the_same_trace() {
     assert!(boundary["full_state"]["resolutions"]["alice"]["head"].is_null());
     assert_eq!(
         boundary["full_result"]["advance"][0]["transitions"][0]["clause_id"],
-        "N2.LIFECYCLE.COMPACT"
+        "NAMES.LIFECYCLE.COMPACT"
     );
 
     let referenced = case(&rust_trace, "referenced_commit_atomicity_and_reapply");
@@ -169,9 +169,9 @@ fn rust_and_independent_python_produce_exactly_the_same_trace() {
     assert_eq!(
         step(timing, "ttl-maturity-and-window-end-boundaries")["full_result"]["operations"],
         serde_json::json!([
-            {"tx_index": 0, "kind": "reveal", "accepted": false, "clause_id": "N2.REVEAL.COMMIT"},
-            {"tx_index": 1, "kind": "reveal", "accepted": true, "clause_id": "N2.REVEAL.ACCEPT"},
-            {"tx_index": 2, "kind": "reveal", "accepted": false, "clause_id": "N2.REVEAL.SCHEDULE"}
+            {"tx_index": 0, "kind": "reveal", "accepted": false, "clause_id": "NAMES.REVEAL.COMMIT"},
+            {"tx_index": 1, "kind": "reveal", "accepted": true, "clause_id": "NAMES.REVEAL.ACCEPT"},
+            {"tx_index": 2, "kind": "reveal", "accepted": false, "clause_id": "NAMES.REVEAL.SCHEDULE"}
         ])
     );
 }

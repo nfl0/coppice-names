@@ -9,13 +9,14 @@ The protocol operations are `COMMIT`, `REVEAL`, and `REFRESH`; changing a
 record and renewing its lease are deliberately the same operation. Explicit
 release is an ordinary spend of the managed bond. The bare canonical label is
 protocol data; `.zec` is presentation only. This repository does not redefine
-CPV1, CA01, canonical Zcash replay, or Core rendezvous semantics.
+Coppice Core's content-addressed carrier, application envelope, canonical
+Zcash replay, or rendezvous semantics.
 
 ```text
 crates/coppice-names                 Names reducer, resolver, proofs, and wire
 crates/coppice-names-wallet          Recoverable operation and V6 PCZT construction
-ruleset/names-v2.json                Canonical semantic ruleset identity
-test-vectors/                        Replacement protocol conformance artifact
+ruleset/names.json                   Canonical semantic ruleset identity
+test-vectors/                        Protocol conformance artifact
 ```
 
 The application uses Coppice's generic transport and canonical source

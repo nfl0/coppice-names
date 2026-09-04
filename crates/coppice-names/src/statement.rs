@@ -120,11 +120,11 @@ pub fn registration_commitment(
 }
 
 pub fn deployment_field(deployment_id: [u8; 32]) -> pallas::Base {
-    bytes_field(b"CoppiceN2DplF", &deployment_id)
+    bytes_field(b"CoppiceNmDplF", &deployment_id)
 }
 
 pub fn ua_field(ua: &CanonicalUa) -> pallas::Base {
-    bytes_field(b"CoppiceN2UA", ua.as_bytes())
+    bytes_field(b"CoppiceNmUA", ua.as_bytes())
 }
 
 pub fn commit_ref_field(reference: CommitRef) -> pallas::Base {
@@ -132,7 +132,7 @@ pub fn commit_ref_field(reference: CommitRef) -> pallas::Base {
     bytes.extend_from_slice(&reference.height.to_be_bytes());
     bytes.extend_from_slice(&reference.tx_index.to_be_bytes());
     bytes.extend_from_slice(&reference.txid);
-    bytes_field(b"CoppiceN2CRef", &bytes)
+    bytes_field(b"CoppiceNmCRef", &bytes)
 }
 
 pub fn state_ref_field(reference: StateRef) -> pallas::Base {
@@ -141,7 +141,7 @@ pub fn state_ref_field(reference: StateRef) -> pallas::Base {
     bytes.extend_from_slice(&reference.tx_index.to_be_bytes());
     bytes.extend_from_slice(&reference.txid);
     bytes.extend_from_slice(&reference.action_index.to_be_bytes());
-    bytes_field(b"CoppiceN2SRef", &bytes)
+    bytes_field(b"CoppiceNmSRef", &bytes)
 }
 
 fn bytes_field(personalization: &[u8], bytes: &[u8]) -> pallas::Base {
@@ -186,11 +186,11 @@ mod tests {
         let ua = CanonicalUa::parse(Network::Regtest, UA).unwrap();
         assert_eq!(
             hex::encode(deployment_field(deployment).to_repr()),
-            "dd42708898443b3bee93d3073252afcc482fcb4d0c032b49b7ffb9cc0db14a21"
+            "dd936d13585171e44014d5f358d6be95cc4478fb0493a2ac3ea85e3d6bacef08"
         );
         assert_eq!(
             hex::encode(ua_field(&ua).to_repr()),
-            "eff2994be2432adde0b900152d3b97bec5ba925fe4e67f71f6140c02e541ec16"
+            "a59f43985b6013dfd1f6ba67b3c640ec259c311a6930286a6ba5f59f04f03f24"
         );
         assert_eq!(
             hex::encode(
@@ -201,7 +201,7 @@ mod tests {
                 })
                 .to_repr()
             ),
-            "ce56ad1276e8f0568428217cb74569f93832d634cc2e99ed2f720e5c55360f2b"
+            "759cb9e16baff1ba1cdd135be432c3e10ed58e567c061cf1fc0f1cf994a7be06"
         );
         assert_eq!(
             hex::encode(
@@ -213,7 +213,7 @@ mod tests {
                 })
                 .to_repr()
             ),
-            "c7de3e0a75100b8b666fed998184677b70a36d3928a3c82d171b933f1cc0ac36"
+            "a4acf357d4cb0ecdbe0c6cd8c36fee1fc9a43b505bf8c738a267d21a3bdc1d1f"
         );
     }
 
@@ -225,7 +225,7 @@ mod tests {
                 .try_into()
                 .unwrap();
         let name_id = NameId::from_bytes(
-            hex::decode("b646f07d05366fb8127c706843da84c62e42eec3ba2e66af0188c20d0093710a")
+            hex::decode("9ebb8d8f6798e1f075a515f9913eab2d3d49b93adbb0ed693e2327a0c4ea5f38")
                 .unwrap()
                 .try_into()
                 .unwrap(),
@@ -257,7 +257,7 @@ mod tests {
         };
         assert_eq!(
             hex::encode(reveal.digest()),
-            "ea686599f0f5c37d19c091ca22ba7416cd81fccca6c3a677897a7305ac35252d"
+            "fdfe602dd927777670ad84cb126f0d2672c54271081d343432e9b539ce83b315"
         );
 
         let refresh = RefreshStatement {
@@ -281,7 +281,7 @@ mod tests {
         };
         assert_eq!(
             hex::encode(refresh.digest()),
-            "274484a7f15cb2dc1790f859ef0ffe893eaaa7690ca31584b33a13430b902329"
+            "91c9094738057c74d766dc94ca1cf91d4ce813047b5872431cb3fa81c993ef0a"
         );
     }
 }

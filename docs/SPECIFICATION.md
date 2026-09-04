@@ -7,9 +7,32 @@ This document specifies the current Coppice Names protocol implemented by
 identity `coppice.names` and CA01 application version `2`. There is no legacy
 compatibility mode in this specification.
 
+This specification is normative. The companion whitepaper
+([`WHITEPAPER.tex`](WHITEPAPER.tex), [`WHITEPAPER.pdf`](WHITEPAPER.pdf)) is
+explanatory and does not govern implementations.
+
 The words **MUST**, **MUST NOT**, **SHOULD**, and **MAY** describe protocol
 requirements. Explanatory wallet behavior is explicitly labelled as wallet
 policy and is not part of protocol validity.
+
+## Contents
+
+1. [Goals and boundaries](#1-goals-and-boundaries)
+2. [Canonical values](#2-canonical-values)
+3. [Deployment identity](#3-deployment-identity)
+4. [Height schedule](#4-height-schedule)
+5. [Publication and discovery](#5-publication-and-discovery)
+6. [Operation codec](#6-operation-codec)
+7. [Canonical replay model](#7-canonical-replay-model)
+8. [Operations](#8-operations)
+9. [Release, expiry, cooldown, and reclaim](#9-release-expiry-cooldown-and-reclaim)
+10. [Public proof statements](#10-public-proof-statements)
+11. [Exact-name resolution](#11-exact-name-resolution)
+12. [Reorganizations and cached state](#12-reorganizations-and-cached-state)
+13. [Wallet recovery policy (non-normative)](#13-wallet-recovery-policy-non-normative)
+14. [Privacy properties and leakage](#14-privacy-properties-and-leakage)
+15. [Rejection taxonomy](#15-rejection-taxonomy)
+16. [Conformance](#16-conformance)
 
 ## 1. Goals and boundaries
 
@@ -256,6 +279,22 @@ REFRESH = name
         || refresh_proof[deployment.refresh_proof_bytes]
 ```
 
+### 6.1 Encoded sizes
+
+For name length `N` (1..=63), UA length `U` (1..=1024), and deployment proof
+lengths `P_r` and `P_f`:
+
+```text
+COMMIT  = 38 bytes
+REVEAL  = 6 + (1 + N) + 40 + (2 + U) + 4 + 32 + P_r
+REFRESH = 6 + (1 + N) + 44 + (2 + U) + 4 + 32 + P_f
+```
+
+The codec additionally bounds deployment proof lengths at 14,883 bytes
+(REVEAL) and 14,879 bytes (REFRESH); a deployment announcing longer proofs is
+invalid. Encoded bulletins MUST fit the CPV1 authenticated payload bound of
+the carrier protocol.
+
 ## 7. Canonical replay model
 
 The reducer begins immediately before the activation block with the
@@ -367,6 +406,13 @@ A head is:
   `terminal_height + cooldown_blocks`;
 - `Claimable` at and after that claimable height; or
 - `Missing` if no accepted head has ever existed.
+
+| State | Definition | Entered by | Left by | Resolution returns |
+| --- | --- | --- | --- | --- |
+| `Missing` | No accepted head has ever existed | — | Accepted REVEAL | No record |
+| `Active` | Accepted head exists and height is before its terminal height | Accepted REVEAL or REFRESH | Terminal event (bond spend or lease expiry), or replacement by an accepted REFRESH | The UA |
+| `Cooldown` | Terminal height, inclusive, until `terminal_height + cooldown_blocks` | Terminal event | Elapsed cooldown | Head metadata only; MUST NOT be payable |
+| `Claimable` | Height at or after `terminal_height + cooldown_blocks` | Elapsed cooldown | Accepted REVEAL replacing the head | Head metadata only; MUST NOT be payable |
 
 Natural expiry uses `expiry_height` as the terminal height. During cooldown no
 party, including the former owner, can REFRESH or install a replacement
@@ -489,7 +535,93 @@ The protocol does not require a transparent output or transparent bond. A UA
 may itself contain a transparent receiver because receiver composition is a
 record-owner choice, not a Names ownership signal.
 
-## 15. Conformance
+## 15. Rejection taxonomy
+
+This section organizes the mandatory rejections by pipeline stage. The
+semantic conditions are normative; the family and variant names follow the
+reference implementation and are informative handles for test suites. An
+implementation MUST reject each condition at its stage and MUST NOT treat a
+rejected candidate as a Names operation, while its authenticated Ironwood
+action effects remain visible to spentness processing (Section 5).
+
+### 15.1 Value validation
+
+| Condition | Reference variant |
+| --- | --- |
+| Name is not canonical (length, alphabet, leading/trailing hyphen, embedded dot) | `ValueError::InvalidName` |
+| A typed field element is not a canonical 32-byte Pallas encoding | `ValueError::InvalidField` |
+| `NameId` or `Commitment` is zero | `ValueError::ZeroField` |
+| UA fails ZIP-316 decoding for the deployment's network | `ValueError::InvalidUa` |
+| UA re-encoding does not reproduce the input bytes | `ValueError::NonCanonicalUa` |
+| UA is canonical for a different network | `ValueError::WrongNetwork` |
+| UA exceeds 1,024 bytes | `ValueError::UaTooLong` |
+| Hash-to-field retry counter exhausts | `ValueError::HashToFieldExhausted` |
+
+### 15.2 Codec
+
+| Condition | Reference variant |
+| --- | --- |
+| Magic or revision mismatch | `CodecError::WrongVersion` |
+| Unknown operation tag | `CodecError::InvalidTag` |
+| Encoding ends before a complete value | `CodecError::Truncated` |
+| Trailing bytes after a complete operation | `CodecError::TrailingBytes` |
+| Embedded name or UA is not canonical | `CodecError::InvalidName`, `CodecError::InvalidUa` |
+| Embedded field element is not canonical | `CodecError::InvalidField` |
+| Proof length differs from the deployment's fixed length | `CodecError::InvalidProofLength` |
+| Encoded size exceeds the codec bound | `CodecError::TooLarge` |
+
+### 15.3 Transport and routing
+
+| Condition | Reference variant |
+| --- | --- |
+| Full-transaction bytes were not authenticated against canonical compact effects | `TransportRejection::UnauthenticatedFullTransaction` |
+| A carrier note carries nonzero value | `TransportRejection::NonZeroCarrierValue` |
+| CPV1 framing is malformed | `TransportRejection::MalformedCpv1` |
+| CA01 envelope is malformed | `TransportRejection::MalformedCa01` |
+| Envelope addresses a different application identity or version | `TransportRejection::WrongApplication` |
+| Payload fails operation decoding | `TransportRejection::InvalidOperation` |
+| Bulletin is published on a route other than the one fixed for its operation type | `TransportRejection::WrongRoute` |
+
+### 15.4 Schedule
+
+| Condition | Reference variant |
+| --- | --- |
+| Deployment schedule parameters violate the validity inequalities | `ScheduleError::InvalidParameters` |
+| A requested height range is not half-open, ordered, or representable | `ScheduleError::InvalidRange` |
+| A queried height precedes activation | `ScheduleError::BeforeActivation` |
+| Schedule arithmetic overflows | `ScheduleError::Overflow` |
+
+### 15.5 Reducer application
+
+| Condition | Reference variant |
+| --- | --- |
+| Block height is not the expected next height | `ApplyError::WrongHeight` |
+| Block previous hash is not the reducer's current tip hash | `ApplyError::WrongPreviousHash` |
+| Transaction indexes are not strictly increasing and canonical | `ApplyError::NonCanonicalTransactionIndex` |
+| Action indexes are not `0..n-1` in canonical order | `ApplyError::NonCanonicalActionIndex` |
+| Referenced `CommitRef` is missing, immature, expired, or otherwise inadmissible | `ApplyError::InvalidReferencedCommit` |
+| A conflicting commitment already occupies the referenced `CommitRef` | `ApplyError::ConflictingReferencedCommit` |
+| Operation parameters are internally inconsistent | `ApplyError::InvalidParameters` |
+
+### 15.6 Rollback, finalization, and snapshots
+
+| Condition | Reference variant |
+| --- | --- |
+| Rollback requested with no applied block at the requested height | `RollbackError::NoAppliedBlock` |
+| Rollback beyond retained journal history | `RollbackError::BeyondRetention` |
+| Rollback target does not match the current tip hash | `RollbackError::WrongTipHash` |
+| Finalization requested beyond the applied tip | `FinalizationError::BeyondTip` |
+| Snapshot encoding is malformed | `SnapshotError::Encoding` |
+| Snapshot format version is unsupported | `SnapshotError::UnsupportedFormat` |
+| Snapshot parameters do not match the active deployment | `SnapshotError::ParametersMismatch` |
+| Snapshot belongs to a different requested name | `SnapshotError::NameMismatch` |
+| Snapshot head or commit state is internally inconsistent | `SnapshotError::InvalidState` |
+| Snapshot history does not support the requested operation | `SnapshotError::InvalidHistory` |
+
+Passing proof verification alone is never sufficient for Names acceptance;
+every earlier stage's rejections apply independently.
+
+## 16. Conformance
 
 `test-vectors/replacement_protocol.json` is the normative positive
 conformance artifact for the current implementation. It freezes deployment,
@@ -497,8 +629,8 @@ verifier suite, route derivation, schedule, statements, real proofs, operation
 encoding, and resolved heads. Its manifest records the vector-set digest and
 the Rust and independent Python consumers.
 
-Implementations MUST also reject malformed encodings, wrong routes, wrong
-networks, stale predecessors, immature or expired COMMITs, wrong action
-indexes, proof/statement substitution, wrong bond values, noncanonical chain
-order, and wrong-branch snapshots. Passing proof verification alone is never
-sufficient for Names acceptance.
+Implementations MUST also reject every condition in Section 15: malformed
+encodings, wrong routes, wrong networks, stale predecessors, immature or
+expired COMMITs, wrong action indexes, proof/statement substitution, wrong bond
+values, noncanonical chain order, and wrong-branch snapshots. Passing proof
+verification alone is never sufficient for Names acceptance.

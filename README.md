@@ -27,10 +27,11 @@ REVEAL's bounded `CommitRef`; it does not continuously download unrelated
 generic-rendezvous traffic.
 
 The draft whitepaper is available as
-[PDF](docs/WHITEPAPER.pdf), [LaTeX](docs/WHITEPAPER.tex), and
-[Markdown](docs/WHITEPAPER.md). It explains the design, security model,
-privacy properties, and preliminary performance evidence. The current
-normative protocol is documented in
+[PDF](docs/WHITEPAPER.pdf) and [LaTeX](docs/WHITEPAPER.tex). It explains the
+design, security model, privacy properties, and preliminary performance
+evidence. A worked end-to-end lifecycle example is in
+[`docs/WALKTHROUGH.md`](docs/WALKTHROUGH.md). The current normative protocol
+is documented in
 [`docs/SPECIFICATION.md`](docs/SPECIFICATION.md). The checked-in conformance
 artifact and its independent consumers are described in
 [`test-vectors/MANIFEST.md`](test-vectors/MANIFEST.md).

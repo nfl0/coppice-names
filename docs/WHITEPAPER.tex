@@ -7,37 +7,39 @@
 % The document intentionally uses LaTeX's default Computer Modern typeface.
 \usepackage{amsmath}
 \usepackage{array}
+\usepackage{booktabs}
+\usepackage{microtype}
+\usepackage{multicol}
 \usepackage{tikz}
 \usepackage[hidelinks]{hyperref}
 \usepackage{url}
-\usetikzlibrary{arrows.meta,positioning}
+\usetikzlibrary{arrows.meta,positioning,calc}
 \hypersetup{
   pdftitle={Coppice Names: Private, Trustless Names on Zcash},
-  pdfsubject={Draft whitepaper, version 0.1}
+  pdfsubject={Draft whitepaper, version 0.2}
 }
 
 \newcommand{\operation}[1]{\texttt{#1}}
 \newcommand{\statusword}[1]{\textbf{#1}}
 \newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\authority}{\ensuremath{\mathcal{A}}}
 \setlength{\emergencystretch}{1em}
 
 \title{Coppice Names:\\Private, Trustless Names on Zcash}
 \author{}
-\date{Draft whitepaper, version 0.1\\September 2026}
+\date{Draft whitepaper, version 0.2\\September 2026}
 
 \begin{document}
 
 \maketitle
 
 \begin{abstract}
-Coppice Names is a privacy-preserving naming protocol built entirely on the
-current Zcash transaction and shielded-note model. It maps a short
-\code{.zec} name to a canonical Zcash Unified Address without adding a
-sidechain, consensus change, trusted name server, global registry operator, or
-protocol-specific token. Each registration is backed by an exact 1 ZEC
-shielded note that remains under its owner's control. The owner's authority
-stays hidden, and releasing a name is an ordinary spend that returns the bond,
-less the normal Zcash transaction fee.
+Coppice Names maps a short \code{.zec} name to a canonical Zcash Unified
+Address without adding a sidechain, consensus change, trusted name server,
+global registry operator, or protocol-specific token. Each registration is
+backed by an exact 1~ZEC shielded note that remains under its owner's control,
+and releasing a name is an ordinary spend that returns the bond, less the
+normal Zcash transaction fee.
 
 The protocol combines a name-hiding \operation{COMMIT}, a scheduled
 name-routed \operation{REVEAL}, and a proof-carrying \operation{REFRESH}
@@ -49,28 +51,28 @@ the referenced historical \operation{COMMIT}, and replaying the name's
 accepted lineage. A rolling cache of canonical compact Zcash evidence makes
 this process fast without turning a local index into an authority.
 
-On a retained 250,000-block Orchard-family mainnet workload containing 688,370
-actions, the production wallet-position replay path processed the Coppice and
-Names components in 1.853 seconds. The duplicate-tree reference path took
-239.52 seconds on the same workload, a measured 99.23\% reduction. This is an
-isolated in-memory replay result, not an end-to-end resolution latency promise;
-network acquisition, database persistence, live Coppice transactions, and
-production proof workloads remain to be qualified.
+Coppice Names is implemented and exercised by conformance vectors, but it is
+not deployed. This document presents the design, its security and privacy
+analysis, and preliminary measured performance. It is an explanatory
+whitepaper, not the normative protocol definition; implementations must follow
+the protocol specification and its conformance artifacts.
 \end{abstract}
 
 \section*{Status of this document}
 
 Coppice Names is implemented but not deployed. This document presents the
-intended protocol as one coherent design. It is an explanatory whitepaper, not
-the normative protocol definition; implementations must follow the protocol
-specification and its conformance artifacts.
+intended protocol as one coherent design and explains the reasoning behind its
+mechanisms. It is an explanatory whitepaper, not the normative protocol
+definition; implementations must follow the
+\href{https://github.com/nfl0/coppice-names/blob/main/docs/SPECIFICATION.md}{protocol
+specification} and its conformance artifacts.
 
 \begin{center}
 \small
 \begin{tabular}{>{\raggedright\arraybackslash}p{0.55\textwidth}p{0.30\textwidth}}
-\hline
+\toprule
 Area & Status \\
-\hline
+\midrule
 Protocol construction and deterministic reducer & Implemented \\
 \operation{REVEAL} and \operation{REFRESH} circuits & Implemented; exercised by conformance vectors \\
 Exact-name resolver and wallet integration & Implemented \\
@@ -78,21 +80,58 @@ Six-month replay performance study & Preliminary; measured and modeled as labell
 Independent cryptographic review & WIP \\
 End-to-end deployment qualification & WIP \\
 Production deployment parameters and activation & TBD \\
-\hline
+\bottomrule
 \end{tabular}
 \end{center}
 
-Statements marked \statusword{WIP}, \statusword{TBD},
-\statusword{measured}, or \statusword{modeled} retain those qualifiers until
-the corresponding work is complete.
+Statements marked \statusword{WIP}, \statusword{TBD}, \statusword{measured},
+or \statusword{modeled} retain those qualifiers until the corresponding work
+is complete.
 
-\section{Motivation}
+\tableofcontents
 
-Cryptocurrency addresses are precise but difficult for people to recognize,
-remember, and verify. A naming layer can improve payment usability, but a
-conventional naming service often introduces an operator, an externally
-trusted index, public ownership records, or a separate consensus system. Those
-choices are especially costly for a privacy-oriented currency.
+\section{Introduction}
+\label{sec:introduction}
+
+\subsection{The problem}
+
+Cryptocurrency payment addresses are precise but difficult for people to
+recognize, remember, and verify. A naming layer can make payments usable, but
+a conventional naming service usually buys usability by introducing something
+a privacy-oriented currency cannot accept: an operator who controls the
+registry, an externally trusted index that answers lookups, public ownership
+records that turn registrations into identity disclosures, or a separate
+consensus system that fragments security.
+
+\subsection{Why naming is hard on a privacy currency}
+
+A naming layer for a privacy currency faces a tension that a plain public
+ledger does not. Resolution by strangers requires that some public data bind a
+name to a payment destination. Privacy requires that ownership --- the keys
+and notes that actually control the record and its bond --- stay hidden. And
+trustlessness requires that no operator be able to censor, correlate, or
+falsify a lookup.
+
+Each naive design sacrifices one side of this triangle:
+
+\begin{itemize}
+\item A \emph{public on-chain registry} resolves cheaply but publishes who
+owns which name, when they update it, and when they move value.
+\item A \emph{trusted resolver service} can hide records but becomes a
+surveillance and censorship point, and its answers are not protocol evidence.
+\item A \emph{consensus-level registry} (a name state root committed by the
+chain) would make currentness derivable from consensus, but demands a network
+upgrade and couples name policy to consensus policy.
+\item A \emph{mutable local index} is fast but is only a claim: nothing about
+a plausible database entry makes it a correct answer.
+\end{itemize}
+
+Coppice Names is designed for the narrow region in which none of these
+compromises is made. The chain keeps authority; proofs keep ownership hidden;
+deterministic replay keeps answers verifiable; and the schedule keeps
+resolution cheap enough that no third-party answer is ever needed.
+
+\subsection{Requirements}
 
 Coppice Names begins from five requirements:
 
@@ -130,15 +169,114 @@ Coppice Names does not attempt to provide:
 Wallets may build local search interfaces over derived state, but such indexes
 are conveniences rather than resolution authority.
 
+\subsection{Contributions}
+
+As implemented, the construction contributes:
+
+\begin{enumerate}
+\item an application-layer naming protocol on \emph{unchanged} Zcash
+consensus, deployable by wallets without a network upgrade, sidechain, or
+token;
+\item a hidden-authority bond lineage: two fixed Halo2 proofs establish
+ownership and exact 1~ZEC bond-note transitions while the spending authority
+and note plaintexts remain shielded, and the bond stays refundable;
+\item deterministic name routing and scheduled windows that bound the work of
+resolving an arbitrary name without continuous observation of unrelated
+traffic;
+\item an exact-name resolver specified to produce the same lifecycle, record,
+head, and producer as a complete replay at the same canonical tip; and
+\item a reproducible assurance package: positive conformance vectors verified
+by independent Rust and Python consumers, negative-test requirements, and a
+measured six-month replay performance study.
+\end{enumerate}
+
+\section{Background}
+\label{sec:background}
+
+This section gives the minimum background needed to read the rest of the
+document. The protocol specification is normative.
+
+\subsection{The Zcash shielded model}
+
+Zcash transactions may contain \emph{Orchard actions}~\cite{zip229}. Each
+action consumes one shielded note (revealing only a \emph{nullifier}) and
+creates another (revealing only a \emph{note commitment}). Spending authority
+over a note is held by a key that is never published; the chain can verify
+that a nullifier and a commitment are honestly derived, but cannot link the
+two sides or identify the owner. The note commitment tree accumulates
+commitments in canonical action order, and consensus finalizes which
+nullifiers have been spent. NU6.3 moves Orchard activity to the \emph{Ironwood}
+transaction format~\cite{zip258,zip318,zip326}; Coppice is Ironwood-only.
+
+A \emph{Unified Address} (UA)~\cite{zip316} packages one or more receivers
+(Orchard, Sapling, transparent) behind a single string, letting the
+\emph{payer's} wallet choose a receiver by its own policy. Zcash fees and
+block limits are governed by standard policy~\cite{zip317}; publication is
+never free.
+
+\subsection{The Coppice runtime}
+
+Coppice is a deterministic application runtime over canonical Zcash Ironwood
+history~\cite{coppice}. It is application-blind: Zcash remains the sole chain
+and fork-choice authority, and Coppice consumes one validated canonical scan
+to host native deterministic state machines. Applications publish
+\emph{bulletins} inside ordinary Orchard transactions: a bulletin's bytes are
+carried by zero-value \emph{carrier notes} addressed to a rendezvous
+receiver, framed by the CPV1 carrier protocol and wrapped in a CA01
+application envelope naming the application identity and version. Observers
+detect candidates under the deployment's rendezvous incoming viewing key,
+fetch full transactions only for candidates, and Core authenticates those
+bytes against compact canonical effects before routing them to an application.
+
+Two properties matter for Names. First, bulletins are ordinary shielded
+traffic to third parties: no consensus change, no Coppice-aware node, and no
+protocol token. Second, Core supplies authenticated per-action facts ---
+nullifiers, note commitments, value commitments, and commitment-tree
+positions --- that applications may consume as replay evidence.
+
+Figure~\ref{fig:layers} shows the stack. Each layer is authoritative for
+exactly what it can know; nothing above invents consensus facts, and nothing
+below interprets application payloads.
+
+\begin{figure}[ht]
+\centering
+\begin{tikzpicture}[
+  layer/.style={draw, rounded corners=2pt, minimum width=100mm, minimum
+                height=10.5mm, align=center, font=\small, inner sep=2mm},
+  gap/.style={font=\scriptsize\itshape, midway, right=2.5mm},
+  arr/.style={-{Latex[length=2mm]}, thick}
+]
+\node[layer] (zcash) {\textbf{Zcash consensus} \emph{(unchanged)}\\
+  \scriptsize transaction validity, block order, action effects, spentness, fork choice};
+\node[layer, above=8mm of zcash] (core) {\textbf{Coppice Core runtime} \emph{(application-blind)}\\
+  \scriptsize canonical validation and routing, compact/full evidence, commitment-tree facts};
+\node[layer, above=8mm of core] (names) {\textbf{Coppice Names application}\\
+  \scriptsize name rules, proofs, deterministic reducer, exact resolver, lifecycle};
+\node[layer, above=8mm of names] (wallet) {\textbf{Wallet host and policy}\\
+  \scriptsize coin selection, note locks, review, backup, presentation};
+\draw[arr] (zcash) -- node[gap]{canonical history} (core);
+\draw[arr] (core) -- node[gap]{authenticated application replay} (names);
+\draw[arr] (names) -- node[gap]{derived application state} (wallet);
+\end{tikzpicture}
+\caption{The Coppice Names layer stack. Zcash consensus is the sole
+transaction and fork-choice authority; Coppice authenticates application
+publication; Names adds name-specific validity; the wallet applies policy.
+Derived caches exist at every upper layer, and none of them is authority.}
+\label{fig:layers}
+\end{figure}
+
 \section{System and trust model}
+\label{sec:trust}
+
+\subsection{Roles}
 
 The system has four principal roles:
 
 \begin{itemize}
-\item A \emph{registrant} controls a Zcash wallet, a hidden per-name authority,
-and an exact 1 ZEC Ironwood note used as the bond.
-\item A \emph{resolver} derives public name routes and independently evaluates
-Names operations found in canonical Zcash history.
+\item A \emph{registrant} controls a Zcash wallet, a hidden per-name
+authority, and an exact 1~ZEC Ironwood note used as the bond.
+\item A \emph{resolver} derives public name routes and independently
+evaluates Names operations found in canonical Zcash history.
 \item A \emph{wallet host} authenticates compact and full transaction data,
 maintains canonical scan state, handles reorganizations, and protects managed
 bond notes from accidental ordinary spending.
@@ -146,34 +284,82 @@ bond notes from accidental ordinary spending.
 the underlying shielded-note state transition.
 \end{itemize}
 
-Authority is deliberately divided:
+\subsection{Divided authority}
+
+Authority is deliberately divided, and each layer answers only the questions
+it is positioned to know:
 
 \begin{center}
 \small
 \begin{tabular}{>{\raggedright\arraybackslash}p{0.22\textwidth}>{\raggedright\arraybackslash}p{0.67\textwidth}}
-\hline
+\toprule
 Layer & Authoritative for \\
-\hline
+\midrule
 Zcash consensus & Transaction validity, block order, action effects, spentness, and fork choice \\
 Names proofs & Hidden \operation{COMMIT} openings, hidden authority, exact bond value, and predecessor/successor note relations \\
 Names reducer & Operation timing, accepted lineage, uniqueness, lifecycle, and deterministic conflict resolution \\
 Wallet policy & Coin selection, local note locks, transaction review, backup, and user presentation \\
-\hline
+\bottomrule
+\end{tabular}
+\end{center}
+
+Correspondingly, there are four \emph{classes of evidence}, and every
+conforming resolver must apply all of them:
+
+\begin{center}
+\small
+\begin{tabular}{>{\raggedright\arraybackslash}p{0.24\textwidth}>{\raggedright\arraybackslash}p{0.65\textwidth}}
+\toprule
+Evidence class & Establishes \\
+\midrule
+Consensus-authenticated & Transaction identity, canonical order, action effects, spentness \\
+Proof-established & Hidden openings, note ownership, exact bond relations \\
+Replay-derived & Lifecycle, accepted lineage, window admissibility, currentness \\
+Wallet policy & Note locks, presentation, recovery behavior --- never protocol truth \\
+\bottomrule
 \end{tabular}
 \end{center}
 
 A Zcash-valid transaction is not automatically an accepted Names operation.
-Likewise, a valid Names proof does not establish that its operation is current,
-timely, correctly routed, or canonically first. Every conforming resolver must
-apply all four relevant forms of evidence.
+Likewise, a valid Names proof does not establish that its operation is
+current, timely, correctly routed, or canonically first.
 
-\subsection{Assumptions}
+\subsection{Threat model}
+\label{sec:threat}
 
 The construction assumes the security of the Zcash consensus rules it uses,
 the soundness and zero-knowledge properties of the proof system selected by a
 deployment, and the collision and preimage resistance of its domain-separated
-hash functions. It also assumes that the wallet obtains enough canonical chain
-data to perform its normal Zcash security checks.
+hash functions. A consensus-level adversary, or an adversary who breaks the
+proof system, is outside the application layer's scope.
+
+Within that boundary, the analysis is organized around six adversaries:
+
+\begin{center}
+\small
+\begin{tabular}{>{\raggedright\arraybackslash}p{0.30\textwidth}>{\raggedright\arraybackslash}p{0.59\textwidth}}
+\toprule
+Adversary & Capability and objective \\
+\midrule
+A1: record attacker & Publishes valid Zcash transactions; wants to install or alter a record for a name it does not control. Cannot spend the owner's bond note. \\
+A2: stale-state attacker & Replays previously valid protocol data --- old proofs, old references, old branches --- to redirect resolution or extend a lease. \\
+A3: chain-data provider & Serves wallet chain data; may delay, omit, correlate, censor, or serve plausible lies. Must not be able to manufacture a Names result. \\
+A4: window flooder & Fills one name's operation window with junk to raise resolution cost or grief its owner. \\
+A5: linking observer & Watches public traffic and route activity; tries to link names, owners, resolutions, and payments. \\
+A6: reorganizing minority & Produces short replacement branches consistent with consensus rules. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The corresponding security goals are: \textbf{G1} unforgeable authority (only
+the current hidden owner can change or release a record); \textbf{G2}
+freshness (only canonically current state can be extended or resolved);
+\textbf{G3} self-verifiable resolution (correctness does not depend on
+provider honesty); \textbf{G4} bounded work (per-name resolution cost is
+bounded under adversarial load); and \textbf{G5} limited disclosure
+(ownership stays hidden; lookup interest is minimized). Section~\ref{sec:security}
+maps each adversary to the mechanisms that defeat it and the residual risk
+that remains.
 
 A chain-data provider may delay, omit, correlate, or censor requests. It must
 not be allowed to manufacture a Names result merely by returning a mutable
@@ -181,53 +367,60 @@ index entry. Availability and eclipse resistance inherit the wallet's chain
 source model; Coppice Names does not independently solve those network-level
 problems.
 
-\section{Construction overview}
+\section{Protocol overview}
+\label{sec:overview}
+
+\subsection{Names and records}
 
 A canonical name is a lowercase ASCII label of 1 to 63 bytes containing
-letters, digits, and interior hyphens. The \code{.zec} suffix is presentation
-syntax and is not part of the protocol label. Each accepted record is a
-canonical ZIP-316 Unified Address for the deployment's Zcash
-network~\cite{zip316}. Any canonical receiver composition is allowed,
-including a UA containing a transparent receiver; the paying wallet applies
-its own receiver-selection policy.
+letters, digits, and interior hyphens; it does not begin or end with a hyphen
+and contains no dot. The \code{.zec} suffix is presentation syntax and is not
+part of the protocol label. Each accepted record is a canonical ZIP-316
+Unified Address for the deployment's Zcash network~\cite{zip316}. Any
+canonical receiver composition is allowed, including a UA containing a
+transparent receiver; the paying wallet applies its own receiver-selection
+policy.
 
-Each deployment fixes its activation height, schedule, bond value, data bounds,
-application and runtime identities, and verifier identities. These values are
-hashed into a deployment identifier, preventing messages or proofs from one
-deployment from being replayed into another.
+\subsection{Deployment identity}
 
-The current wire identity is the \code{coppice.names} application under a CA01
-application envelope with application version \code{2}; its bulletins use
-Coppice CPV1 framing. These identifiers describe the deployed wire domain and
-do not create a separate consensus system.
+Each deployment fixes its activation height, schedule, bond value, data
+bounds, application and runtime identities, and verifier identities. These
+values are hashed into a \emph{deployment identifier}, preventing messages or
+proofs from one deployment from being replayed into another. The current wire
+identity is the \code{coppice.names} application under a CA01 application
+envelope with application version \code{2}; its bulletins use Coppice CPV1
+framing~\cite{coppice}. These identifiers describe the deployed wire domain
+and do not create a separate consensus system.
+
+\subsection{Operations}
 
 The public protocol operations are:
 
 \begin{center}
 \small
 \begin{tabular}{>{\raggedright\arraybackslash}p{0.13\textwidth}>{\raggedright\arraybackslash}p{0.28\textwidth}>{\raggedright\arraybackslash}p{0.19\textwidth}>{\raggedright\arraybackslash}p{0.26\textwidth}}
-\hline
+\toprule
 Operation & Purpose & Name disclosed? & Bond effect \\
-\hline
+\midrule
 \operation{COMMIT} & Commit to a name, target epoch, owner, and secret & No & None \\
-\operation{REVEAL} & Open a mature \operation{COMMIT} and create a registered head & Yes & Creates the managed 1 ZEC state note \\
-\operation{REFRESH} & Update the UA and renew the lease & Yes & Spends and recreates the 1 ZEC state note \\
+\operation{REVEAL} & Open a mature \operation{COMMIT} and create a registered head & Yes & Creates the managed 1~ZEC state note \\
+\operation{REFRESH} & Update the UA and renew the lease & Yes & Spends and recreates the 1~ZEC state note \\
 Ordinary spend & Release the name & No new bulletin; linkable through the current head & Returns control of the bonded value to the wallet \\
-\hline
+\bottomrule
 \end{tabular}
 \end{center}
 
 Figure~\ref{fig:lifecycle} summarizes the lifecycle. \operation{COMMIT} does
-not reserve a name. If competing registrations target the same claimable name,
-canonical block and transaction order determine which valid
+not reserve a name. If competing registrations target the same claimable
+name, canonical block and transaction order determine which valid
 \operation{REVEAL} is accepted first.
 
 \begin{figure}[ht]
 \centering
 \begin{tikzpicture}[
-  node distance=10mm and 10mm,
-  state/.style={draw, rounded corners=1.5pt, minimum width=20mm,
-                minimum height=7mm, align=center},
+  node distance=9mm and 9mm,
+  state/.style={draw, rounded corners=1.5pt, minimum width=19mm,
+                minimum height=7.5mm, align=center, font=\small},
   flow/.style={-{Latex[length=2mm]}, thick},
   note/.style={font=\scriptsize, align=center}
 ]
@@ -236,25 +429,44 @@ canonical block and transaction order determine which valid
 \node[state, right=of active] (cooldown) {Cooldown};
 \node[state, right=of cooldown] (claimable) {Claimable};
 
-\draw[flow] (commit) -- node[note, above=4mm] {mature \operation{REVEAL}} (active);
-\draw[flow] (active) -- node[note, above=4mm] {expiry/spend} (cooldown);
-\draw[flow] (cooldown) -- node[note, above=4mm] {one epoch} (claimable);
+\draw[flow] (commit) -- node[note, above=4mm] {\operation{REVEAL}: maturity,\\ window, proof} (active);
+\draw[flow] (active) -- node[note, above=4mm] {lease expiry or\\ ordinary bond spend} (cooldown);
+\draw[flow] (cooldown) -- node[note, above=4mm] {one epoch;\\ resolves to nothing} (claimable);
 \draw[flow] (claimable.south) to[out=-90,in=-90,looseness=1.25]
-  node[note, below] {new \operation{REVEAL}} (active.south);
-\draw[flow] (active.north east) to[out=60,in=120,looseness=5]
-  node[note, above=2mm] {\operation{REFRESH}} (active.north west);
+  node[note, below] {new \operation{REVEAL}:\\ first canonically valid} (active.south);
+\draw[flow] (active.north east) to[out=60,in=120,looseness=4]
+  node[note, above=2mm] {\operation{REFRESH}: new UA and/or new lease (proof-carrying)} (active.north west);
 \end{tikzpicture}
 \caption{Coppice Names lifecycle. Acceptance of a \operation{REVEAL} also
 requires the name window and a valid proof. A \operation{COMMIT} is not a
-reservation.}
+reservation. The former owner receives no special reclaim priority.}
 \label{fig:lifecycle}
 \end{figure}
 
-\section{Publication and discovery}
+\subsection{Design principles}
 
-Names bulletins use Coppice application framing in zero-valued publication
-carriers. The bond is a separate designated Ironwood action and is never held
-or burned by a carrier.
+Five principles recur throughout the construction, and most later sections
+are instances of them:
+
+\begin{enumerate}
+\item \textbf{Zcash stays the sole authority.} Consensus already decides
+validity, ordering, and spentness; Names never re-decides them.
+\item \textbf{Proofs prove private relations only.} What arises from the
+chain --- order, currentness, schedule --- is checked publicly, not inside a
+circuit.
+\item \textbf{All public rules are deterministic.} Two honest resolvers with
+the same canonical data must agree on every lifecycle decision.
+\item \textbf{Cheap checks precede expensive proofs.} Framing, routing,
+scheduling, references, shapes, and lineage are rejected before any proof
+verifier runs.
+\item \textbf{Derived caches are never authority.} Local indexes and
+snapshots accelerate replay; they cannot overrule authenticated history.
+\end{enumerate}
+
+\section{Registration: commit, reveal, and the bond}
+\label{sec:registration}
+
+\subsection{Commit--reveal}
 
 \operation{COMMIT}s use the deployment's generic Coppice rendezvous route.
 They reveal a commitment but not the target name. \operation{REVEAL} and
@@ -272,14 +484,119 @@ reveal; and
 generic-rendezvous traffic.
 \end{itemize}
 
-A \operation{REVEAL} carries an exact canonical reference to its historical
+The commitment opens to the deployment identifier, the name identifier, a
+target epoch, a hidden owner commitment, and a nonzero secret. A
+\operation{REVEAL} carries an exact canonical reference to its historical
 \operation{COMMIT}. The resolver fetches that one referenced compact
 transaction, authenticates the corresponding full transaction and Ironwood
 effects, and admits the \operation{COMMIT} atomically with the
 \operation{REVEAL} block. A location supplied by an untrusted source is never
-sufficient by itself.
+sufficient by itself. Figure~\ref{fig:commitreveal} shows the timing.
 
-\section{Deterministic schedule and lifecycle}
+\begin{figure}[ht]
+\centering
+\begin{tikzpicture}[x=1mm, y=1mm]
+  \draw[-{Latex[length=2mm]}, thick] (0,0) -- (116,0);
+  \node[font=\scriptsize, anchor=west] at (95,2) {block height $\rightarrow$};
+  % mature-but-unexpired region, with the window highlighted inside it
+  \fill[gray!12] (12,0) rectangle (88,4);
+  \fill[blue!14] (46,0) rectangle (60,4);
+  \fill[blue!60] (49,2) circle (0.55);
+  \fill[blue!60] (55,2) circle (0.55);
+  \node[font=\scriptsize, above=1.5mm] at (53,4.2)
+    {name window $W(N,e)$ (24 blocks)};
+  \draw[-{Latex[length=1.4mm]}, gray] (53,4.0) -- (53,4.6);
+  \node[font=\scriptsize, right=1mm, text=blue!40!black] at (56.5,2)
+    {competing \operation{REVEAL}s};
+  \node[font=\scriptsize, below=1mm] at (53,-2.2)
+    {first canonically valid wins};
+  \node[font=\scriptsize, below=5.5mm] at (53,-2.2)
+    {mature and unexpired: usable by a \operation{REVEAL}};
+  \node[font=\scriptsize, below=1mm] at (1,0) {$c$};
+  \node[font=\scriptsize, below=1mm] at (12,0) {$c{+}M$};
+  \node[font=\scriptsize, below=1mm] at (88,0) {$c{+}T$};
+  \node[font=\scriptsize, below=9.5mm, align=center] at (53,-2.2)
+    {referenced \operation{COMMIT} must satisfy $M \le r-c < T$};
+\end{tikzpicture}
+\caption{Commit--reveal timing (candidate production values: maturity
+$M=24$ blocks, TTL $T=192$ blocks, window $W=24$ blocks). A
+\operation{COMMIT} included at $c$ becomes usable at maturity and is pruned
+at its TTL. Two valid \operation{REVEAL}s in the window are resolved by
+canonical order, not by commitment order.}
+\label{fig:commitreveal}
+\end{figure}
+
+\subsection{The bond}
+
+Names bulletins use Coppice application framing in zero-valued publication
+carriers. The bond is a separate \emph{designated} Ironwood action and is
+never held or burned by a carrier. Registration creates a 1~ZEC shielded note
+controlled by the registrant's hidden authority; that note is the record's
+continuing existence. Figure~\ref{fig:bond} traces a note through its
+lineage.
+
+\begin{figure}[ht]
+\centering
+\begin{tikzpicture}[
+  op/.style={draw, rounded corners=1.5pt, minimum width=20mm, minimum
+             height=7mm, align=center, font=\small},
+  note/.style={draw, rounded corners=1.5pt, minimum width=64mm, minimum
+               height=7.5mm, align=center, font=\small},
+  flow/.style={-{Latex[length=2mm]}, thick},
+  lbl/.style={font=\scriptsize, align=left}
+]
+\node[op] (commit) {\operation{COMMIT}};
+\node[note, right=10mm of commit] (c0) {carrier note, 0 ZEC\\
+  \scriptsize commitment only: name, epoch, owner, secret hidden};
+\node[op, below=8mm of commit] (reveal) {\operation{REVEAL}};
+\node[note, right=10mm of reveal] (b1) {$B_1$: 1 ZEC note, authority \authority{} hidden\\
+  \scriptsize created by the designated action; head Active};
+\node[op, below=8mm of reveal] (refresh) {\operation{REFRESH}};
+\node[note, right=10mm of refresh] (b2) {$B_2$: 1 ZEC note, same authority \authority{}\\
+  \scriptsize new UA and/or new lease from inclusion height};
+\node[op, below=8mm of refresh] (release) {release};
+\node[note, right=10mm of release] (spend) {ordinary spend of the current note\\
+  \scriptsize value returns to the wallet; name enters Cooldown};
+\draw[flow] (commit) -- (c0);
+\draw[flow] (reveal) -- (b1);
+\draw[flow] (refresh) -- (b2);
+\draw[flow] (release) -- (spend);
+\draw[flow] (b1.east) to[out=0,in=0,looseness=1.6]
+  node[lbl, right=1mm] {spends $B_1$\\ (proof-carrying)} (b2.east);
+\draw[flow] (b2.south west) to[out=-135,in=135]
+  node[lbl, left=1mm] {spends $B_2$\\ (ordinary)} (spend.north west);
+\end{tikzpicture}
+\caption{The bond-note lineage. Each accepted operation spends the current
+bond note and creates its successor with exactly the same hidden authority
+and exactly 1 ZEC. The head is whichever note the reducer currently accepts;
+release is an ordinary spend of that note, so it requires the owner's
+spending authority and is publicly detectable through the published future
+nullifier.}
+\label{fig:bond}
+\end{figure}
+
+\subsection{Why each mechanism exists}
+
+\begin{itemize}
+\item \emph{Commit--reveal} prevents mempool front-running of a chosen name:
+an observer of a \operation{COMMIT} learns neither the name nor the owner,
+and a copied \operation{REVEAL} cannot substitute a different hidden owner or
+bond note without satisfying the bound proof.
+\item \emph{Canonical ordering instead of auctions or rents} keeps
+registration an ordinary publication: there is no operator to collect value,
+and no second market for allocation rights. Competing claims are decided by
+exactly the rule Zcash already provides --- which valid transaction appears
+first in the canonical chain.
+\item \emph{A refundable bond} makes names costly to hold at scale without
+burning value or introducing rent. The bond is the record: spending it is
+releasing it, so custody of the record and custody of the value are the same
+capability.
+\end{itemize}
+
+\section{Schedule, renewal, and release}
+\label{sec:schedule}
+
+\subsection{Name windows}
 
 For activation height $A$, epoch length $E$, name window length $W$,
 deployment identifier $D$, and name identifier $N$, the protocol derives one
@@ -296,24 +613,54 @@ H_N &= \operatorname{BLAKE2b\mbox{-}256}_{\texttt{CoppiceN2Off}}
 \end{align*}
 
 Intervals are half-open. \operation{REVEAL} and \operation{REFRESH} are
-accepted only inside the name's window. A referenced \operation{COMMIT} must
+accepted only inside the name's window; a referenced \operation{COMMIT} must
 have reached its maturity and must not have reached its TTL. Cheap schedule
 and reference checks occur before proof verification.
+Figure~\ref{fig:window} shows one epoch.
+
+\begin{figure}[ht]
+\centering
+\begin{tikzpicture}[x=1mm, y=1mm]
+  \draw[-{Latex[length=2mm]}, thick] (0,0) -- (118,0);
+  \node[font=\scriptsize, anchor=west] at (102,2) {block height $\rightarrow$};
+  \fill[blue!14] (55,0) rectangle (68,3);
+  \draw[<->, blue!50!black] (55,8) -- node[above, font=\scriptsize]
+    {window $(N,e)$: $W=24$ blocks} (68,8);
+  \node[font=\scriptsize, below=4mm, align=center] at (55,0)
+    {\operation{REVEAL} / \operation{REFRESH} accepted only here};
+  \draw[-{Latex[length=1.4mm]}, gray] (55,-3.4) -- (55,-0.4);
+  \node[font=\scriptsize, below=1mm, anchor=north west, align=left] at (0,-1)
+    {epoch $e$ start};
+  \node[font=\scriptsize, below=1mm, anchor=north east, align=right] at (100,-1)
+    {epoch $e{+}1$ start};
+  \draw[gray, dotted] (0,0) -- (0,-4.5);
+  \draw[gray, dotted] (100,0) -- (100,-4.5);
+  \node[font=\scriptsize, below=13mm, align=center] at (59,0)
+    {$E = 1{,}152$ blocks ($\approx$ one day, candidate timing);\\
+     each name gets one bounded opportunity per epoch};
+\end{tikzpicture}
+\caption{The name window. The offset is derived deterministically from the
+deployment and name identifiers, so every resolver computes the same window
+without any secret or service. A missed window costs at most one epoch of
+delay.}
+\label{fig:window}
+\end{figure}
 
 The current candidate profiles are:
 
 \begin{center}
+\small
 \begin{tabular}{lrr}
-\hline
+\toprule
 Parameter & Production candidate & Regtest \\
-\hline
+\midrule
 Epoch & 1,152 blocks & 32 blocks \\
 Name window & 24 blocks & 4 blocks \\
 \operation{COMMIT} maturity & 24 blocks & 4 blocks \\
 \operation{COMMIT} TTL & 192 blocks & 24 blocks \\
 Lease & 250,000 blocks & 128 blocks \\
 Cooldown & 1,152 blocks & 32 blocks \\
-\hline
+\bottomrule
 \end{tabular}
 \end{center}
 
@@ -321,62 +668,121 @@ The production profile provides approximately daily operation opportunities
 and a roughly six-month lease under the candidate timing assumption. Regtest
 is intentionally accelerated and is cryptographically separated by its
 deployment identifier. Production values remain \statusword{TBD} until
-deployment.
+deployment. Valid schedules satisfy
+$0 < W \le M < T < E < L$ and cooldown $= E$.
+
+\subsection{REFRESH: update and renewal in one operation}
+
+\operation{REFRESH} is deliberately a single operation. Changing the UA and
+renewing without changing it are the same protocol event: the prover
+demonstrates that the designated predecessor and successor notes both have
+value exactly 1~ZEC and are controlled by the same hidden authority, and the
+reducer separately requires the predecessor to be the exact current accepted
+head, spent by this transaction, inside the name's window, in a strictly later
+epoch than the predecessor's. Every accepted \operation{REFRESH} starts a
+full new lease from its inclusion height. Transfer to a different hidden
+authority is not supported.
+
+This design keeps the record's authority exactly as recoverable as the
+wallet's seed: one authority per name, derived from the seed, never rotated
+on-chain. It also removes a whole class of transfer-market and stolen-name
+problems by making transfer impossible at the protocol level.
+
+\subsection{Release, expiry, and cooldown}
+
+There is no \operation{RELEASE} bulletin. The owner releases a name by making
+an ordinary valid Ironwood spend of the current hidden 1~ZEC bond; the
+reducer recognizes the canonical nullifier and the wallet normally returns
+the bond, minus the normal transaction fee, to the user's own control.
 
 When a bond is spent or a lease expires, the name enters a uniform one-epoch
-cooldown during which it resolves to no payment address and no replacement can
-be installed. This deliberately visible non-resolving interval reduces the
-risk that a recently terminated name immediately begins paying a new owner.
-The rule does not distinguish voluntary release from natural expiry, and the
-former owner receives no special reclaim priority.
+cooldown during which it resolves to no payment address and no replacement
+can be installed --- including by the former owner. This deliberately visible
+non-resolving interval reduces the risk that a recently terminated name
+immediately begins paying a new owner. The rule does not distinguish
+voluntary release from natural expiry, and the former owner receives no
+special reclaim priority. Cooldown is an anti-impersonation quarantine, not
+an ownership grace period: once claimable, the first canonically ordered
+valid \operation{REVEAL} may replace the old head.
 
-\section{Hidden ownership and zero-knowledge proofs}
+Resolution returns the UA only for the \code{Active} lifecycle. Cooldown and
+claimable results may include head metadata for auditing but must not be
+presented as a payable current record.
+
+\section{Hidden ownership: the zero-knowledge proofs}
+\label{sec:proofs}
 
 The registrant's per-name Orchard authority is never published. The protocol
 uses two fixed Halo2 proof statements, instantiated with an IPA polynomial
-commitment over the Pasta curves~\cite{halo2-ipa}.
+commitment over the Pasta curves~\cite{halo2-ipa} with $k=11$; each proof is
+4,704 bytes. A deployment binds the generated verifying-key fingerprint,
+parameter exponent, operation tag, and fixed proof length into its verifier
+identity, so callers cannot select an alternate verifier.
 
-\subsection{REVEAL proof}
+\subsection{What each proof establishes}
 
-The prover opens the referenced \operation{COMMIT} and demonstrates that it
-binds the deployment, name, target epoch, hidden owner commitment, and a
-nonzero secret. The proof also establishes that the designated successor
-action creates a note controlled by that hidden authority with value exactly
-1 ZEC. Its public statement binds the canonical \operation{COMMIT} reference,
-UA, inclusion epoch, action index, action nullifier and commitment, successor
+\paragraph{REVEAL.} The prover opens the referenced \operation{COMMIT} and
+demonstrates that it binds the deployment, name, target epoch, hidden owner
+commitment, and a nonzero secret; and that the designated successor action
+creates a note controlled by that hidden authority with value exactly 1~ZEC.
+The public statement binds the canonical \operation{COMMIT} reference, UA,
+inclusion epoch, action index, action nullifier and commitment, successor
 future nullifier, and bond value.
 
-\subsection{REFRESH proof}
+\paragraph{REFRESH.} The prover demonstrates that the designated predecessor
+and successor notes both have value exactly 1~ZEC and are controlled by the
+same hidden authority. The statement binds the accepted predecessor reference
+and commitment, its future nullifier, the new canonical UA, the new epoch,
+and the successor action effects. Each Halo2 proof exposes one Pallas field:
+a Poseidon-folded digest of typed public facts reconstructed by replay, with
+length-framed, domain-separated byte inputs and distinct fold domains for the
+two operations. The exact statement layouts are frozen by the protocol
+specification and the conformance vectors.
 
-The prover demonstrates that the designated predecessor and successor notes
-both have value exactly 1 ZEC and are controlled by the same hidden authority.
-The proof binds the accepted predecessor reference and commitment, its future
-nullifier, the new canonical UA, the new epoch, and the successor action
-effects. The reducer separately requires the predecessor to be the exact
-current accepted head and the transaction to spend it.
-
-Changing the UA and renewing without changing it are intentionally one
-operation. Every accepted \operation{REFRESH} starts a full new lease from its
-inclusion height. Transfer to a different hidden authority is not supported.
-
-The current circuits use Halo2 IPA over the Pasta curves with $k=11$. Each
-proof is 4,704 bytes. A deployment binds the generated verifying-key
-fingerprint, parameter exponent, operation tag, and fixed proof length into its
-verifier identity. Callers cannot select an alternate verifier.
+\subsection{What the proofs deliberately do not decide}
 
 The proofs establish private note relations; they do not replace canonical
 history. Ordering, schedules, currentness, competing spends, and
 reorganization handling remain deterministic public checks because those
-facts arise from the chain rather than from the registrant's private witness.
+facts arise from the chain rather than from the registrant's private witness:
+
+\begin{center}
+\small
+\begin{tabular}{>{\raggedright\arraybackslash}p{0.52\textwidth}>{\raggedright\arraybackslash}p{0.14\textwidth}>{\raggedright\arraybackslash}p{0.24\textwidth}}
+\toprule
+Question & Decided by & Evidence \\
+\midrule
+Does this \operation{REVEAL} open a real \operation{COMMIT} binding deployment, name, epoch, owner, secret? & Proof & Private witness \\
+Is the bond note exactly 1~ZEC and controlled by the hidden authority? & Proof & Private witness \\
+Is the predecessor the exact current accepted head? & Reducer & Canonical order \\
+Is inclusion inside the name's window? & Reducer & Schedule over canonical heights \\
+Is the accepted head still unspent? & Reducer & Authenticated nullifiers \\
+\bottomrule
+\end{tabular}
+\end{center}
 
 \section{Canonical state and exact resolution}
+\label{sec:resolution}
 
-Every resolver executes the same reducer over authenticated Zcash data. For
-each transaction, it first records authenticated action nullifiers, then tries
-to apply the decoded Names operation, and finally terminates any current head
-spent by that transaction even if its bulletin was missing or invalid. This
-prevents a proof-valid physical note from silently replacing accepted Names
-state.
+\subsection{The reducer}
+
+Every resolver executes the same deterministic reducer over authenticated
+Zcash data, beginning immediately before the activation block. For each
+transaction it (1)~records authenticated action nullifiers, (2)~tries to
+apply the decoded Names operation, and (3)~terminates any current head spent
+by that transaction even if its bulletin was missing, malformed, ambiguous,
+or invalid. Step~3 is the point: a proof-valid physical note can never
+silently replace accepted Names state, so the record lives in accepted
+lineage, not in whichever bond-like note happens to exist.
+
+Transactions are processed in canonical block order with lease expiry
+applied between steps; the first canonically ordered valid operation that
+changes a name can make later conflicting operations invalid. A
+\operation{REVEAL} is accepted only when no head exists or the existing head
+is \code{Claimable}; a \operation{REFRESH} only against the exact current
+\code{Active} head.
+
+\subsection{Resolving an arbitrary name}
 
 To resolve an arbitrary exact name, a client:
 
@@ -396,8 +802,40 @@ active.
 
 An exact resolver and a complete replay must produce the same lifecycle,
 record, head, and producer at the same canonical tip.
+Figure~\ref{fig:resolution} shows the pipeline.
+
+\begin{figure}[ht]
+\centering
+\begin{tikzpicture}[
+  stage/.style={draw, rounded corners=1.5pt, minimum width=76mm, minimum
+               height=7.5mm, align=center, font=\small},
+  side/.style={font=\scriptsize\itshape, align=left, midway, right=1.5mm,
+               text width=27mm},
+  flow/.style={-{Latex[length=2mm]}, thick}
+]
+\node[stage] (s1) {canonicalize the label; derive \textsf{NameId}, name route, windows};
+\node[stage, below=5.5mm of s1] (s2) {authenticate compact evidence covering the windows};
+\node[stage, below=5.5mm of s2] (s3) {decrypt name-route candidates; decode operations};
+\node[stage, below=5.5mm of s3] (s4) {fetch and authenticate the referenced historical \operation{COMMIT}};
+\node[stage, below=5.5mm of s4] (s5) {verify proof; apply schedule, routing, statement, lineage checks};
+\node[stage, below=5.5mm of s5] (s6) {replay authenticated nullifiers through the canonical tail};
+\node[stage, below=5.5mm of s6] (s7) {return lifecycle; UA only if \code{Active}};
+\draw[flow] (s1) -- (s2);
+\draw[flow] (s2) -- (s3);
+\draw[flow] (s3) -- node[side] {no candidate $\Rightarrow$ \code{Missing}} (s4);
+\draw[flow] (s4) -- (s5);
+\draw[flow] (s5) -- node[side] {any failure $\Rightarrow$ candidate rejected} (s6);
+\draw[flow] (s6) -- (s7);
+\end{tikzpicture}
+\caption{Exact resolution of one name. Every step uses authenticated
+evidence only; steps 1--3 use the deterministic schedule to touch as little
+of the chain as possible, and the final two steps restore the two facts that
+a schedule cannot shortcut: accepted lineage and current spentness.}
+\label{fig:resolution}
+\end{figure}
 
 \subsection{Fast resolution without a trusted index}
+\label{sec:fastresolution}
 
 The protocol cannot derive currentness from a signed database that maps names
 to addresses: current Zcash consensus commits transaction history, not a
@@ -407,9 +845,9 @@ authority simply because it records a plausible chain tip.
 Instead, the wallet retains a rolling, branch-keyed window of authenticated
 compact Ironwood evidence as part of ordinary Zcash synchronization.
 Resolution still replays the deterministic rules locally, but it avoids
-downloading the same six-month history on demand. The evidence store is derived
-and reconstructible, follows normal wallet reorganization handling, and can be
-evicted beyond the protocol horizon.
+downloading the same six-month history on demand. The evidence store is
+derived and reconstructible, follows normal wallet reorganization handling,
+and can be evicted beyond the protocol horizon.
 
 The wallet's existing Ironwood commitment tree also supplies authenticated
 global action positions and tree-size transitions to Coppice. Names does not
@@ -417,16 +855,68 @@ maintain a duplicate commitment tree. The host checks pre- and post-scan tree
 sizes and publishes candidate Names state only after the wallet's database
 transaction commits.
 
+Figure~\ref{fig:evidence} contrasts the two acquisition strategies. The
+generic rendezvous route is a shared firehose: observing it continuously
+would couple a resolver to every application's traffic. The name route is
+per-name: work is proportional to the requested name's windows alone, plus
+one referenced \operation{COMMIT} fetch per candidate.
+
+\begin{figure}[ht]
+\centering
+\begin{tikzpicture}[
+  box/.style={draw, rounded corners=1.5pt, align=center, font=\scriptsize,
+              text width=40mm, inner sep=1.5mm},
+  flow/.style={-{Latex[length=1.8mm]}, thick},
+  head/.style={font=\small\bfseries, align=center, text width=48mm},
+  sub/.style={font=\small, align=center, text width=48mm},
+  foot/.style={font=\scriptsize\itshape, align=center}
+]
+% left panel: generic route
+\node[head] (lh) at (0,0) {generic rendezvous route};
+\node[sub, below=1mm of lh] (lh2) {(all applications, every block)};
+\node[box, below=3.5mm of lh2] (l1) {stream every block's compact actions};
+\node[box, below=3.5mm of l1] (l2) {fetch full transactions for every carrier candidate};
+\node[box, below=3.5mm of l2] (l3) {decode, route to applications};
+\node[foot, below=3.5mm of l3] (l4) {unbounded background cost\\ coupled to all names};
+\draw[flow] (lh2) -- (l1); \draw[flow] (l1) -- (l2);
+\draw[flow] (l2) -- (l3); \draw[flow] (l3) -- (l4);
+% right panel: name route
+\node[head] (rh) at (7.6,0) {name route for ``alice''};
+\node[sub, below=1mm of rh] (rh2) {(one name, its windows)};
+\node[box, below=3.5mm of rh2] (r1) {derive the route from deployment and name};
+\node[box, below=3.5mm of r1] (r2) {inspect only the name's 24-block windows};
+\node[box, below=3.5mm of r2] (r3) {fetch the one referenced \operation{COMMIT} per candidate};
+\node[foot, below=3.5mm of r3] (r4) {bounded, on-demand, per-name};
+\draw[flow] (rh2) -- (r1); \draw[flow] (r1) -- (r2);
+\draw[flow] (r2) -- (r3); \draw[flow] (r3) -- (r4);
+% divider
+\draw[gray, dashed] (3.75,1) -- (3.75,-6.6);
+\end{tikzpicture}
+\caption{Publication routing asymmetry. \operation{COMMIT}s hide on the
+generic route; \operation{REVEAL}s and \operation{REFRESH}es publish on the
+derived name route. Exact resolution therefore never acquires unrelated
+generic-route full transactions --- the design that the adversarial-load
+analysis in Section~\ref{sec:performance} quantifies.}
+\label{fig:evidence}
+\end{figure}
+
 This construction preserves arbitrary-name resolution and local verification
-while moving the expensive work to the synchronization path the wallet already
-performs.
+while moving the expensive work to the synchronization path the wallet
+already performs. The principal performance result in
+Section~\ref{sec:performance} is architectural for exactly this reason.
 
 \section{Wallet custody and recovery}
+\label{sec:wallet}
+
+\subsection{The bond is the user's}
 
 The bond remains an ordinary user-controlled shielded note. A supporting
-wallet marks the exact 1 ZEC state note as managed so ordinary coin selection
-does not spend it accidentally. That lock is wallet safety policy, not protocol
-custody: the owner can explicitly release the name by spending the note.
+wallet marks the exact 1~ZEC state note as managed so ordinary coin selection
+does not spend it accidentally. That lock is wallet safety policy, not
+protocol custody: the owner can explicitly release the name by spending the
+note.
+
+\subsection{Deterministic recovery}
 
 The companion wallet policy derives, from the wallet seed:
 
@@ -438,17 +928,65 @@ The companion wallet policy derives, from the wallet seed:
 \end{itemize}
 
 The seed therefore recovers the secret authority. A nonsecret list of owned
-names tells a restored wallet which exact names to test and recover. No fragile
-sidecar secret is required, and importing one name does not require trusting a
-bulk registry snapshot.
+names tells a restored wallet which exact names to test and recover. No
+fragile sidecar secret is required, and importing one name does not require
+trusting a bulk registry snapshot. Figure~\ref{fig:keys} shows the
+derivation tree. Recovery is explicit wallet behavior: looking up an
+arbitrary name does not silently attempt ownership recovery, and a wallet may
+expose recovery even when other owned names are already present.
 
-Recovery is explicit wallet behavior. Looking up an arbitrary name does not
-silently attempt ownership recovery, and a wallet may expose recovery even
-when other owned names are already present.
+\begin{figure}[ht]
+\centering
+\begin{tikzpicture}[
+  box/.style={draw, rounded corners=1.5pt, minimum height=8mm, align=center,
+              font=\small, inner sep=2mm},
+  leaf/.style={draw, rounded corners=1.5pt, minimum height=8.5mm, align=center,
+               font=\scriptsize, inner sep=1.5mm},
+  flow/.style={-{Latex[length=1.8mm]}, thick},
+  lbl/.style={font=\scriptsize\itshape, midway, right=1.5mm}
+]
+\node[box] (seed) {wallet seed (64 bytes)};
+\node[box, below=6mm of seed] (master) {Names master};
+\node[box, below=7mm of master] (authority) {hidden per-name authority\\
+  \scriptsize separated by deployment and name};
+\node[leaf, below left=8mm and 4mm of authority.south] (epoch)
+  {epoch \operation{COMMIT} secrets\\
+   \scriptsize open \operation{COMMIT}s epoch by epoch};
+\node[leaf, below right=8mm and 4mm of authority.south] (notes)
+  {successor note seeds\\
+   \scriptsize bound to canonical operation data};
+\draw[flow] (seed) -- (master);
+\draw[flow] (master) -- node[lbl] {one per owned name} (authority);
+\draw[flow] (authority.south) -- (epoch.north);
+\draw[flow] (authority.south) -- (notes.north);
+\node[font=\scriptsize\itshape, below=7mm] at ($(epoch.south)!0.5!(notes.south)$)
+  {recovery $=$ seed $+$ a nonsecret list of owned names};
+\end{tikzpicture}
+\caption{Wallet-side derivation (policy, not protocol validity). Every secret
+is derived from the seed, so the seed plus a plaintext list of owned names
+reconstructs the full lineage: the hidden authorities, the epoch
+\operation{COMMIT} openings, and the deterministic bond-note material.}
+\label{fig:keys}
+\end{figure}
+
+\subsection{Transaction construction}
+
+Operations are constructed as version~6 (Ironwood) transactions through a
+PCZT pipeline, pinned to the NU6.3 branch, with the designated action pair
+carrying the bond spend and creation and carrier outputs pinned to the
+derived name route at zero value. The builder asserts that the designated
+input is exactly the current 1~ZEC bond and that the successor note's rho
+binds to the designated action's nullifier. These are wallet construction
+rules; the reducer independently re-derives the same facts from authenticated
+chain data.
 
 \section{Security analysis}
+\label{sec:security}
 
-\subsection{Registration front-running}
+This section maps each adversary from Section~\ref{sec:threat} to the
+mechanisms that defeat it and the residual risk that remains.
+
+\subsection{A1: record attacker (G1)}
 
 \operation{COMMIT} hides the name and target opening before
 \operation{REVEAL}. A copied \operation{REVEAL} cannot substitute another
@@ -457,38 +995,35 @@ hidden owner or successor note without satisfying the bound proof. A
 decides between independently valid competing registrations after the name
 becomes claimable.
 
-\subsection{Unauthorized update or release}
-
 A \operation{REFRESH} must spend the exact current accepted predecessor and
-prove the same hidden authority controls its successor. An attacker cannot
+prove the same hidden authority controls its successor; an attacker cannot
 update the record using an older valid state. Release is the ordinary Zcash
 spend of the current bond note and therefore requires its spending authority.
+Residual risk: an attacker who obtains the owner's seed or device wins, as
+with any wallet.
 
-\subsection{Stale and shadow lineages}
+\subsection{A2: stale-state attacker (G2)}
 
 Canonical \code{StateRef} and \code{CommitRef} values bind height,
 transaction index, transaction identifier, and action index as applicable.
-The reducer accepts only the exact current predecessor. Proof-valid notes on
-rejected or stale branches cannot become Names authority merely by existing on
-chain.
+The reducer accepts only the exact current predecessor, and a stale
+\operation{REFRESH} cannot replace a newer head. Proof-valid notes on
+rejected or stale branches cannot become Names authority merely by existing
+on chain. Referenced \operation{COMMIT}s admitted on demand are inserted
+atomically with the block containing their \operation{REVEAL}, so on-demand
+evidence can neither linger after a failed block nor vanish on rollback.
 
-\subsection{Reorganizations}
-
-Reducer snapshots and indexes are derived state. They are bound to deployment,
-network, height, and canonical block hash and are rolled back with the wallet's
-chain state. A block with the wrong height or previous hash is rejected. Deep
-reorganizations beyond retained journals require reconstruction from
-authenticated history rather than trusting the cached head.
-
-\subsection{Malicious chain-data providers}
+\subsection{A3: chain-data provider (G3)}
 
 A provider can degrade availability, correlate selective requests, or present
-the risks already present in the wallet's chain-source model. Coppice verifies
-transaction identities, action effects, route selection, references, chain
-continuity, and proofs before accepting an operation. A provider-supplied
-name-to-UA answer is never protocol evidence.
+the risks already present in the wallet's chain-source model. Coppice
+verifies transaction identities, action effects, route selection, references,
+chain continuity, and proofs before accepting an operation. A
+provider-supplied name-to-UA answer is never protocol evidence: resolution is
+computed by replaying authenticated data, so a lying answer is a denial of
+service, not a wrong address.
 
-\subsection{Resource exhaustion}
+\subsection{A4: window flooder (G4)}
 
 Candidate messages must pass inexpensive framing, route, schedule, reference,
 transaction-shape, and lineage checks before proof verification. Exact
@@ -501,15 +1036,33 @@ window. The window bounds the affected blocks, while every candidate must be
 published in a Zcash transaction, compete for block space, and ordinarily pay
 the applicable Zcash fee under relay and mining policy~\cite{zip317}. Coppice
 Names does not add transaction grinding: grinding complicates construction
-without removing the targeted publication bound.
+without removing the targeted publication bound. Section~\ref{sec:performance}
+quantifies the bounded cost.
+
+\subsection{A5: linking observer (G5)}
+
+The hidden Orchard authority and the ordinary shielded note plaintext remain
+hidden, and the \operation{COMMIT} reveals neither name nor owner. What is
+intentionally public --- the name, UA, schedule epoch, canonical references,
+and name-derived route after \operation{REVEAL} --- is analyzed in
+Section~\ref{sec:privacy}.
+
+\subsection{A6: reorganizing minority (G2)}
+
+Reducer snapshots and indexes are derived state. They are bound to
+deployment, network, height, and canonical block hash and are rolled back
+with the wallet's chain state. A block with the wrong height or previous hash
+is rejected. Deep reorganizations beyond retained journals require
+reconstruction from authenticated history rather than trusting the cached
+head.
 
 \subsection{Name impersonation after termination}
 
 Cooldown prevents immediate reassignment after either expiry or explicit
-release. During the interval the name resolves to no address, giving users and
-applications a deterministic warning gap before a later registrant can install
-a different record. It does not prove social identity and cannot prevent name
-squatting or user confusion after the cooldown ends.
+release. During the interval the name resolves to no address, giving users
+and applications a deterministic warning gap before a later registrant can
+install a different record. It does not prove social identity and cannot
+prevent name squatting or user confusion after the cooldown ends.
 
 \subsection{Remaining assurance work}
 
@@ -519,34 +1072,66 @@ coverage are \statusword{WIP}. No claim of a completed independent audit is
 made.
 
 \section{Privacy analysis}
+\label{sec:privacy}
 
-The design protects the registrant's hidden Orchard authority and hides the
-target name during \operation{COMMIT}. Nevertheless, a naming protocol must
-publish enough information for strangers to resolve a name.
-\operation{REVEAL} and \operation{REFRESH} therefore publish the canonical
-name, its UA, its schedule epoch, canonical references, and its name-derived
-route. Operations for the same name are publicly linkable.
+\subsection{What is disclosed}
 
-The designated state action is also linked to the public Names operation. Its
-proof establishes the exact 1 ZEC bond relation, and its future spend
-determines whether the name remains current. The authority and ordinary
-shielded note plaintext remain hidden, but the application-level lineage is
-intentionally observable.
+A naming protocol must publish enough information for strangers to resolve a
+name. Table~\ref{tab:disclosure} states exactly what is public, when, and to
+whom.
+
+\begin{table}[ht]
+\centering
+\small
+\begin{tabular}{>{\raggedright\arraybackslash}p{0.30\textwidth}>{\raggedright\arraybackslash}p{0.24\textwidth}>{\raggedright\arraybackslash}p{0.34\textwidth}}
+\toprule
+Information & Visible to & From \\
+\midrule
+Per-name hidden authority & No one & Never; held by the owner's seed \\
+\operation{COMMIT} opening (name, epoch, owner, secret) & Owner only & Until \operation{REVEAL} \\
+Bond note plaintext and other wallet activity & Owner & Always, as in ordinary Zcash \\
+Bond existence and exact 1~ZEC value & Public & From \operation{REVEAL} \\
+Name and UA & Public & From \operation{REVEAL} \\
+Operation lineage (\operation{REFRESH} chain, windows, references) & Public & As published \\
+Release event & Public (as an ordinary spend) & Detectable through the published head future nullifier \\
+Resolution interest (which name a client looks up) & Remote provider, if any & Only for remote window queries; local evidence avoids it \\
+\bottomrule
+\end{tabular}
+\caption{Disclosure matrix. Everything above the middle of the table is
+hidden by construction; everything below is necessarily public, because
+strangers must be able to resolve names and detect currentness without an
+operator.}
+\label{tab:disclosure}
+\end{table}
+
+\subsection{Linkability and its limits}
+
+Operations for the same name are publicly linkable through the name and the
+predecessor chain. The designated state action is linked to the public Names
+operation: its proof establishes the exact 1~ZEC bond relation, and its
+future spend determines whether the name remains current. The authority and
+ordinary shielded note plaintext remain hidden, but the application-level
+lineage is intentionally observable. A UA may contain a transparent receiver
+because receiver composition is a record-owner choice, not a Names ownership
+signal; the protocol never requires a transparent output or transparent bond.
+
+\subsection{Lookup privacy}
 
 Remote exact-window requests can reveal which name a client is resolving. A
 rolling local evidence store reduces this leakage because normal wallet sync
 acquires the canonical evidence before the lookup and does not need a
-name-specific remote query. Private information can still leak through wallet
-network behavior, transaction timing, UA receiver composition, or compromise
-of the wallet itself.
+name-specific remote query. Private information can still leak through
+wallet network behavior, transaction timing, UA receiver composition, or
+compromise of the wallet itself.
 
 Coppice Names offers privacy relative to public ownership registries and
 trusted resolution services; it does not make public names or their payment
 records secret.
 
 \section{Economics and anti-spam}
+\label{sec:economics}
 
-Every active name immobilizes exactly 1 ZEC in a shielded note controlled by
+Every active name immobilizes exactly 1~ZEC in a shielded note controlled by
 the registrant. The value is refundable and is not a protocol fee. It imposes
 a capital cost on maintaining many simultaneous names while preserving the
 user's ownership of the funds.
@@ -554,30 +1139,98 @@ user's ownership of the funds.
 \operation{COMMIT}, \operation{REVEAL}, \operation{REFRESH}, and release are
 normal Zcash transactions to which the wallet applies Zcash fee policy. Those
 fees, relay policy, and Zcash block limits are the publication anti-spam
-mechanism; Coppice Names does not burn ZEC, levy rent, or create a separate fee
-market. The fixed bond and transaction fees play different roles and must not
-be conflated.
+mechanism; Coppice Names does not burn ZEC, levy rent, or create a separate
+fee market. The two costs play different roles and must not be conflated:
 
-The wallet may display 1 ZEC as bonded rather than spendable while the name is
-active. An explicit release returns the note's value to ordinary wallet
-control minus the transaction fee.
+\begin{center}
+\small
+\begin{tabular}{>{\raggedright\arraybackslash}p{0.22\textwidth}>{\raggedright\arraybackslash}p{0.31\textwidth}>{\raggedright\arraybackslash}p{0.31\textwidth}}
+\toprule
+ & Bond (1 ZEC) & Transaction fees \\
+\midrule
+What it is & Refundable capital locked in the record's note & Cost of publishing an ordinary transaction \\
+Where it goes & Back to the owner on release & Miners, under Zcash policy \\
+What it prices & Holding a name active & Publishing an operation at all \\
+Who sets it & Fixed by deployment identity & Zcash fee and relay policy \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The wallet may display 1~ZEC as bonded rather than spendable while the name
+is active. An explicit release returns the note's value to ordinary wallet
+control minus the transaction fee. A fixed bond does limit accessibility as
+ZEC's purchasing power changes; that limitation is revisited in
+Section~\ref{sec:limitations}.
+
+\section{Related work}
+\label{sec:related}
+
+Naming systems occupy a design space spanned by three questions: does the
+system require its own consensus domain, who can see ownership, and what does
+holding a name cost. Table~\ref{tab:related} positions Coppice Names against
+well-known systems at a conceptual level; each system's own documentation
+governs the details~\cite{namecoin,ens,handshake}.
+
+\begin{table}[ht]
+\centering
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{>{\raggedright\arraybackslash}p{0.16\textwidth}>{\raggedright\arraybackslash}p{0.17\textwidth}>{\raggedright\arraybackslash}p{0.12\textwidth}>{\raggedright\arraybackslash}p{0.16\textwidth}>{\raggedright\arraybackslash}p{0.15\textwidth}l}
+\toprule
+System & Consensus domain & Ownership & Cost to hold & Resolution trust & Transfer \\
+\midrule
+Out-of-band UA sharing & Zcash (unchanged) & Private & None & Manual exchange & n/a \\
+Namecoin & Own merge-mined chain & Public & Consumed fee plus renewal & Its own chain data & Yes \\
+ENS & Ethereum contracts & Public (NFT) & Periodic rent, not refundable & Contract calls or gateways & Yes \\
+Handshake & Own L1, auctions & Public & Auction commitments & Its own chain data & Yes \\
+Coppice Names & None (Zcash application) & Hidden & Refundable 1~ZEC bond & Local replay; no operator & No \\
+\bottomrule
+\end{tabular}
+\caption{Conceptual comparison. ``Out-of-band UA sharing'' is the status quo:
+fully private but with no trustless way for a stranger to resolve or verify a
+name. The three naming systems above all make ownership public and require
+their own consensus domain; Coppice Names is the only row that is both an
+application on an existing chain and hidden-authority.}
+\label{tab:related}
+\end{table}
+
+Three contrasts are worth drawing out.
+
+\emph{Against public registries.} Namecoin, ENS, and Handshake publish
+ownership and lineage by construction: registrations, updates, and transfers
+are public identity events. In a privacy currency, that is a cost, not a
+feature. Coppice Names inverts the design: the record (name, UA, schedule) is
+public, but the authority --- the key material whose disclosure would let
+anyone else move or alter the record --- is never published.
+
+\emph{Against trusted resolution.} Hosted resolvers and gateways can answer
+faster than local replay, but their answers are claims. Coppice Names keeps
+the verification local; speed is bought with derived local evidence
+(Section~\ref{sec:fastresolution}) rather than with trust.
+
+\emph{Against consensus-level designs.} A registry committed by consensus
+would make currentness cheap to prove, but it would require a network upgrade
+and would hard-code name policy into consensus. Coppice Names shows that the
+application layer can provide deterministic replay and bounded resolution on
+today's consensus, keeping name policy independent of Zcash's upgrade cycle.
 
 \section{Performance evaluation}
+\label{sec:performance}
 
-The current evaluation uses a retained 250,000-block mainnet workload covering
-heights 3,220,327 through 3,470,326. Pre-NU6.3 Orchard compact actions and
-post-NU6.3 Ironwood compact actions are treated as one Orchard-family workload
-for action density and byte-volume measurement. They are not presented as a
-comparison between the two pools.
+The current evaluation uses a retained 250,000-block mainnet workload
+covering heights 3,220,327 through 3,470,326. Pre-NU6.3 Orchard compact
+actions and post-NU6.3 Ironwood compact actions are treated as one
+Orchard-family workload for action density and byte-volume measurement. They
+are not presented as a comparison between the two pools.
 
 \subsection{Historical workload}
 
 \begin{center}
 \small
 \begin{tabular}{>{\raggedright\arraybackslash}p{0.57\textwidth}r}
-\hline
+\toprule
 Quantity & Observed value \\
-\hline
+\midrule
 Blocks & 250,000 \\
 Orchard-family actions & 688,370 \\
 Action-bearing transactions & 276,271 \\
@@ -585,28 +1238,28 @@ Compact protobuf payload & 143.14 MB \\
 Mean actions per block & 2.753 \\
 Payload per block, p50 / p95 / p99 & 448 / 1,876 / 3,427 bytes \\
 Sequential acquisition time in retained capture & 67.96 s \\
-\hline
+\bottomrule
 \end{tabular}
 \end{center}
 
 Matched endpoint samples later produced a median observed payload throughput
-of 0.892 MB/s and median request overhead of 265 ms. Applying that calibration
-to a six-month full-tail reacquisition gives 160.4 seconds at baseline traffic.
-This is a \statusword{modeled} acquisition value, not a service-level
-guarantee.
+of 0.892 MB/s and median request overhead of 265 ms. Applying that
+calibration to a six-month full-tail reacquisition gives 160.4 seconds at
+baseline traffic. This is a \statusword{modeled} acquisition value, not a
+service-level guarantee.
 
 \subsection{Wallet-owned position replay}
 
 \begin{center}
 \small
 \begin{tabular}{>{\raggedright\arraybackslash}p{0.57\textwidth}rr}
-\hline
+\toprule
 Replay path & Time & Evidence class \\
-\hline
+\midrule
 Reference Coppice components with duplicate tree work & 239.519 s & Measured \\
 Production \code{CorePositionRuntime} plus Names & 1.853 s & Measured \\
 Independent tree-free confirmation consumer & 1.706 s & Measured \\
-\hline
+\bottomrule
 \end{tabular}
 \end{center}
 
@@ -619,7 +1272,8 @@ reapplying the last block.
 This benchmark isolates in-memory replay. It excludes wallet SQLite cost,
 network transfer, routed full transactions, Names proof verification on live
 Coppice traffic, and a live multi-block replacement-branch reorganization.
-Those exclusions prevent treating 1.853 seconds as an end-to-end user latency.
+Those exclusions prevent treating 1.853 seconds as an end-to-end user
+latency.
 
 \subsection{Arbitrary-name lookup choices}
 
@@ -628,42 +1282,42 @@ At baseline traffic, the current model gives:
 \begin{center}
 \small
 \begin{tabular}{>{\raggedright\arraybackslash}p{0.43\textwidth}>{\raggedleft\arraybackslash}p{0.18\textwidth}>{\raggedright\arraybackslash}p{0.21\textwidth}}
-\hline
+\toprule
 Evidence strategy & Six-month cost & Classification \\
-\hline
+\midrule
 Reacquire full compact tail remotely & 160.4 s & Modeled \\
 Fetch nullifier effects plus 218 separate name windows & 61.2 s & Modeled \\
 Traverse retained local compact evidence & 0.224 s raw decode & Measured component \\
 Production Core-position plus Names replay & 1.853 s & Measured component \\
-\hline
+\bottomrule
 \end{tabular}
 \end{center}
 
 The sparse remote strategy downloads fewer bytes but pays round-trip overhead
 for many disjoint windows and creates more observable query behavior. The
-preferred path retains approximately 143 MB of rolling compact evidence in the
-measured baseline and resolves locally. A sparse nullifier journal plus
-\operation{COMMIT} tail remains a lower-storage fallback, not the default fast
-path.
+preferred path retains approximately 143 MB of rolling compact evidence in
+the measured baseline and resolves locally. A sparse nullifier journal plus
+\operation{COMMIT} tail remains a lower-storage fallback, not the default
+fast path.
 
 \subsection{Synthetic adoption loads}
 
 Synthetic, non-consensus Names-shaped transactions were inserted into a copy
 of the historical workload at declared rates. A default synthetic transaction
-contains 13 Orchard-family actions, matching the qualified transport shape but
-not claiming to be a valid mainnet Coppice transaction.
+contains 13 Orchard-family actions, matching the qualified transport shape
+but not claiming to be a valid mainnet Coppice transaction.
 
 \begin{center}
 \small
 \begin{tabular}{rrrr}
-\hline
+\toprule
 Names tx/day & Six-month payload & Raw decode & Modeled acquisition \\
-\hline
+\midrule
 0 & 143.14 MB & 0.224 s & 160.4 s \\
 10 & 147.71 MB & 0.237 s & 165.5 s \\
 100 & 188.91 MB & 0.311 s & 211.7 s \\
 1,000 & 600.82 MB & 0.974 s & 673.3 s \\
-\hline
+\bottomrule
 \end{tabular}
 \end{center}
 
@@ -673,11 +1327,13 @@ describe scaling behavior and are not adoption forecasts.
 
 \subsection{Adversarial load}
 
-Under an intentionally extreme 2 MB block-fill model, continuous generic-route
-acquisition could cause roughly 40.5 million unrelated full-transaction
-fetches, 499 GB of data, and 39.9 hours of local route processing over six
-months. The exact referenced-\operation{COMMIT} design reduces unrelated
-generic full-transaction fetches during exact resolution to zero.
+Under an intentionally extreme 2 MB block-fill model, continuous
+generic-route acquisition could cause roughly 40.5 million unrelated
+full-transaction fetches, 499 GB of data, and 39.9 hours of local route
+processing over six months. The exact referenced-\operation{COMMIT} design
+reduces unrelated generic full-transaction fetches during exact resolution to
+zero --- this is the quantified version of the asymmetry in
+Figure~\ref{fig:evidence}.
 
 A targeted attacker can instead fill one name's 24-block window. The current
 model bounds that window at approximately 1,080 reveal-shaped candidates and
@@ -701,57 +1357,61 @@ transactions;
 
 The retained corpus, deterministic synthetic generator, raw results, model,
 and charts form the current reproducibility package. The generator and model
-live in the \href{https://github.com/nfl0/zcash-devtool}{zcash-devtool} repository. A
-stable public archive of the retained corpus and a citation identifier are
-\statusword{TBD}.
+live in the \href{https://github.com/nfl0/zcash-devtool}{zcash-devtool}
+repository. A stable public archive of the retained corpus and a citation
+identifier are \statusword{TBD}.
 
 \section{Conformance and deployment}
+\label{sec:conformance}
 
-The checked-in positive conformance artifact freezes the deployment, verifier
-suite, route derivation, schedule, statements, real proofs, operation encoding,
-and resolved heads. Rust and independent Python consumers verify the same
-artifact. Negative tests reject malformed encodings, wrong routes and
-networks, stale predecessors, invalid timing, wrong action indexes, proof
-substitution, wrong bond values, noncanonical order, and wrong-branch
-snapshots.
+The checked-in
+\href{https://github.com/nfl0/coppice-names/blob/main/test-vectors/replacement_protocol.json}{positive
+conformance artifact} freezes the deployment, verifier suite, route
+derivation, schedule, statements, real proofs, operation encoding, and
+resolved heads; its vector-set digest is recorded in the accompanying
+manifest. Rust and independent Python consumers verify the same artifact.
+Negative tests reject malformed encodings, wrong routes and networks, stale
+predecessors, invalid timing, wrong action indexes, proof substitution, wrong
+bond values, noncanonical order, and wrong-branch snapshots.
 
 Conformance does not substitute for deployment qualification. Before a
 production activation, the project must finalize the production parameter set
 and verifier identities, publish reproducible artifacts, complete independent
-review, and exercise the complete lifecycle and reorganization behavior over a
-representative live environment. The production activation height is
+review, and exercise the complete lifecycle and reorganization behavior over
+a representative live environment. The production activation height is
 \statusword{TBD}.
 
 \section{Limitations and open work}
+\label{sec:limitations}
 
 Coppice Names deliberately accepts several limitations:
 
 \begin{itemize}
 \item Names and UAs are public after \operation{REVEAL}.
-\item Exact remote queries can leak lookup interest unless evidence is acquired
-by ordinary wallet sync.
+\item Exact remote queries can leak lookup interest unless evidence is
+acquired by ordinary wallet sync.
 \item A resolver must retain or reacquire canonical evidence; Zcash consensus
 does not provide a Names state commitment.
-\item A fixed 1 ZEC bond limits accessibility when ZEC's purchasing power
+\item A fixed 1~ZEC bond limits accessibility when ZEC's purchasing power
 changes.
-\item Daily operation windows intentionally make record updates and renewals
-non-instantaneous.
-\item Cooldown sacrifices immediate reuse to reduce abrupt impersonation risk.
+\item Updates and renewals wait for the name's daily window by design.
+\item Cooldown sacrifices immediate reuse to reduce abrupt impersonation
+risk.
 \item The protocol proves control, not legal or social identity.
 \item Name transfer is unsupported.
 \end{itemize}
 
 Open engineering and assurance work is listed as WIP rather than silently
 assumed complete. Future investigation may improve circuits, proof costs,
-storage layout, or acquisition privacy, but any change must preserve arbitrary
-resolution, canonical replay, hidden authority, and the absence of a trusted
-resolver.
+storage layout, or acquisition privacy, but any change must preserve
+arbitrary resolution, canonical replay, hidden authority, and the absence of
+a trusted resolver.
 
 \section{Conclusion}
 
 Coppice Names turns the Zcash chain into a privacy-aware naming substrate
-without asking Zcash consensus to understand names. A refundable shielded bond
-represents continuing control; zero-knowledge proofs validate private
+without asking Zcash consensus to understand names. A refundable shielded
+bond represents continuing control; zero-knowledge proofs validate private
 ownership transitions; deterministic replay validates public protocol state;
 and name-derived routes make arbitrary resolution practical.
 
@@ -759,7 +1419,60 @@ The principal performance result is architectural rather than merely an
 implementation optimization: wallets should retain canonical evidence during
 their ordinary scan and let Names reuse wallet-owned commitment-tree facts.
 That keeps resolution local, fast, and independently verifiable without
-promoting a third-party service or mutable local index into protocol authority.
+promoting a third-party service or mutable local index into protocol
+authority.
+
+\section*{Glossary}
+\addcontentsline{toc}{section}{Glossary}
+
+\begin{multicols}{2}
+\begin{description}
+\item[Action] One Orchard/Ironwood shielded input--output pair, revealing
+only a nullifier and a note commitment.
+\item[Bond] The exact 1~ZEC shielded note backing an active record. Owned by
+the registrant; spending it releases the name.
+\item[Bulletin] A published application message, framed by CPV1 inside a CA01
+envelope and carried by zero-value notes.
+\item[CA01] Coppice's application envelope, naming application identity and
+version.
+\item[Carrier] A zero-value note whose ciphertext carries bulletin bytes.
+\item[Claimable] Lifecycle state after cooldown, during which a new
+\operation{REVEAL} may replace the old head.
+\item[Cooldown] One epoch of non-resolving quarantine after expiry or
+release.
+\item[\textsf{CommitRef}] Canonical reference to one transaction:
+height, transaction index, transaction ID.
+\item[Deployment identifier] Hash over the fixed deployment preimage
+(parameters, identities, verifiers); separates deployments cryptographically.
+\item[Designated action] The Ironwood action that spends and creates bond
+notes, bound by the operation proof.
+\item[Epoch] $E$ consecutive canonical blocks starting at activation; each
+name has one operation window per epoch.
+\item[Exact resolver] A resolver that replays one name's history and must
+agree with full replay at the same tip.
+\item[Head] The currently accepted record state for a name: producer
+reference, UA, lease, and lineage.
+\item[Ironwood] The post-NU6.3 Zcash shielded-pool transaction model that
+Coppice consumes.
+\item[Lease] The interval an accepted head remains active; renewed in full by
+every accepted \operation{REFRESH}.
+\item[\textsf{NameId}] Nonzero Pallas field element derived from the
+canonical label.
+\item[Name route] Public rendezvous route derived from deployment and name
+identifiers; carries \operation{REVEAL} and \operation{REFRESH}.
+\item[Name window] The half-open block interval within an epoch in which the
+name's operations are accepted.
+\item[Nullifier] The public spend marker of a shielded note; observing it
+proves the note is spent without revealing what was spent.
+\item[Reducer] The deterministic state machine that applies authenticated
+Names operations in canonical order.
+\item[Snapshot] Derived reducer state with rollback journals; never a
+consensus commitment.
+\item[\textsf{StateRef}] Canonical reference to one action: height,
+transaction index, transaction ID, action index.
+\item[UA] ZIP-316 Unified Address; the record's payment destination.
+\end{description}
+\end{multicols}
 
 \begin{thebibliography}{9}
 
@@ -802,6 +1515,27 @@ Zcash Improvement Proposal 326.
 The halo2 contributors.
 \newblock \emph{Polynomial commitment using an inner product argument}.
 \newblock \url{https://zcash.github.io/halo2/background/pc-ipa.html}.
+
+\bibitem{coppice}
+The Coppice contributors.
+\newblock \emph{Coppice: a deterministic application runtime over canonical
+Zcash history}.
+\newblock \url{https://github.com/nfl0/coppice}.
+
+\bibitem{namecoin}
+The Namecoin project.
+\newblock \emph{Namecoin documentation}.
+\newblock \url{https://www.namecoin.org/}.
+
+\bibitem{ens}
+The ENS community.
+\newblock \emph{Ethereum Name Service documentation}.
+\newblock \url{https://docs.ens.domains/}.
+
+\bibitem{handshake}
+The Handshake community.
+\newblock \emph{Handshake protocol documentation}.
+\newblock \url{https://handshake.org/}.
 
 \end{thebibliography}
 

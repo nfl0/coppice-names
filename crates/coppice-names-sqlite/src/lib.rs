@@ -817,6 +817,23 @@ impl<'tx> WalletNamesTransaction<'tx> {
         Ok(self.tip()?)
     }
 
+    /// Rewinds while journals suffice; if the requested wallet rewind is
+    /// deeper than retained public Names history, atomically discards the
+    /// replayable Names view instead of blocking wallet recovery.
+    pub fn rollback_to_height_or_reset(
+        &self,
+        height: u32,
+    ) -> Result<Option<ReducerTip>, StoreError> {
+        match self.rollback_to_height(height) {
+            Ok(tip) => Ok(tip),
+            Err(StoreError::MissingRollbackJournal) => {
+                self.reset_for_replay()?;
+                Ok(None)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     fn rollback_tip(&self) -> Result<Option<ReducerTip>, StoreError> {
         let tip = self.tip()?.ok_or(StoreError::MissingRollbackJournal)?;
         let previous = self
@@ -1512,6 +1529,35 @@ mod tests {
             )
             .unwrap();
         assert_eq!(snapshot, None);
+    }
+
+    #[cfg(feature = "wallet-extension")]
+    #[test]
+    fn deep_wallet_rewind_resets_replayable_names_state() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let connection = Connection::open(file.path()).unwrap();
+        initialize_wallet_connection(&connection, identity(Coverage::Owned)).unwrap();
+        let mut wallet = zcash_client_sqlite::WalletDb::from_connection(connection, (), (), ());
+        let delta = delta();
+        wallet
+            .transactionally_with_extension::<_, _, rusqlite::Error>(|_wallet_tx, extension| {
+                let names = WalletNamesTransaction::new(extension, identity(Coverage::Owned))
+                    .map_err(|_| rusqlite::Error::InvalidQuery)?;
+                names
+                    .apply_delta(&delta)
+                    .map_err(|_| rusqlite::Error::InvalidQuery)?;
+                extension.execute("DELETE FROM ext_coppice_names_rollback_blocks", [])?;
+                names
+                    .rollback_to_height_or_reset(0)
+                    .map_err(|_| rusqlite::Error::InvalidQuery)?;
+                Ok(())
+            })
+            .unwrap();
+        drop(wallet);
+
+        let reopened = Connection::open(file.path()).unwrap();
+        assert_eq!(read_tip(&reopened).unwrap(), None);
+        assert_eq!(read_head(&reopened, delta.heads[0].name_id).unwrap(), None);
     }
 
     #[test]

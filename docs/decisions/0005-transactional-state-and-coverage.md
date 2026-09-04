@@ -39,6 +39,9 @@ write wallet tables or issue transaction-control statements. The same outer
 commit therefore publishes the wallet scan, Core checkpoint, indexed Names
 records, and rollback journal. The stored Core checkpoint is cleared on a
 rewind and replaced only after the host has replayed to the wallet's new tip.
+If a wallet must rewind deeper than the retained Names journal, the same outer
+transaction clears only replayable public Names state; it never blocks the
+wallet rewind or silently deletes account-private workflow and custody data.
 
 The host owns an outer transaction for a bounded sync batch and a savepoint per
 block. A deterministic block failure may roll back that savepoint and commit

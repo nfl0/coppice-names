@@ -42,6 +42,10 @@ rewind and replaced only after the host has replayed to the wallet's new tip.
 If a wallet must rewind deeper than the retained Names journal, the same outer
 transaction clears only replayable public Names state; it never blocks the
 wallet rewind or silently deletes account-private workflow and custody data.
+Wallet-owned COMMIT locations are recorded in a separate private recovery
+table in that transaction. They survive public TTL pruning, are removed when
+their canonical block is rewound, and let a restart repair a sidecar update
+interrupted immediately after the database commit.
 
 The host owns an outer transaction for a bounded sync batch and a savepoint per
 block. A deterministic block failure may roll back that savepoint and commit

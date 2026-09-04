@@ -186,6 +186,36 @@ impl SqliteNamesStore {
             .map_err(StoreError::from)
     }
 
+    /// Returns the canonical location previously observed for a wallet-owned
+    /// COMMIT. This private recovery record outlives public COMMIT TTL pruning.
+    pub fn wallet_commit_observation(
+        &self,
+        commitment: [u8; 32],
+    ) -> Result<Option<CommitRef>, StoreError> {
+        self.connection
+            .query_row(
+                "SELECT height, tx_index, txid
+                 FROM ext_coppice_names_wallet_commits WHERE commitment = ?1",
+                [commitment.as_slice()],
+                |row| {
+                    Ok((
+                        row.get::<_, u32>(0)?,
+                        row.get::<_, u32>(1)?,
+                        row.get::<_, Vec<u8>>(2)?,
+                    ))
+                },
+            )
+            .optional()?
+            .map(|(height, tx_index, txid)| {
+                Ok::<_, StoreError>(CommitRef {
+                    height,
+                    tx_index,
+                    txid: decode_32(txid)?,
+                })
+            })
+            .transpose()
+    }
+
     /// Whether this store's authenticated coverage can establish `Missing` at
     /// the caller's exact tip. Negative results are never timeless cache data.
     pub fn missing_authority(
@@ -299,6 +329,12 @@ pub fn initialize_wallet_connection(
                  txid BLOB NOT NULL,
                  commitment BLOB NOT NULL,
                  PRIMARY KEY(height, tx_index, txid)
+             );
+             CREATE TABLE IF NOT EXISTS ext_coppice_names_wallet_commits (
+                 commitment BLOB PRIMARY KEY,
+                 height INTEGER NOT NULL,
+                 tx_index INTEGER NOT NULL,
+                 txid BLOB NOT NULL
              );
              CREATE TABLE IF NOT EXISTS ext_coppice_names_rollback_blocks (
                  height INTEGER PRIMARY KEY,
@@ -800,6 +836,54 @@ impl<'tx> WalletNamesTransaction<'tx> {
         Ok(())
     }
 
+    pub fn record_wallet_commit(
+        &self,
+        commitment: [u8; 32],
+        reference: CommitRef,
+    ) -> Result<(), StoreError> {
+        let existing = self
+            .transaction
+            .query_row(
+                "SELECT height, tx_index, txid
+                 FROM ext_coppice_names_wallet_commits WHERE commitment = ?1",
+                [commitment.as_slice()],
+                |row| {
+                    Ok((
+                        row.get::<_, u32>(0)?,
+                        row.get::<_, u32>(1)?,
+                        row.get::<_, Vec<u8>>(2)?,
+                    ))
+                },
+            )
+            .optional()?
+            .map(|(height, tx_index, txid)| {
+                Ok::<_, StoreError>(CommitRef {
+                    height,
+                    tx_index,
+                    txid: decode_32(txid)?,
+                })
+            })
+            .transpose()?;
+        match existing {
+            Some(value) if value != reference => Err(StoreError::AuthoritativeRecordMismatch),
+            Some(_) => Ok(()),
+            None => {
+                self.transaction.execute(
+                    "INSERT INTO ext_coppice_names_wallet_commits(
+                         commitment, height, tx_index, txid
+                     ) VALUES (?1, ?2, ?3, ?4)",
+                    params![
+                        commitment.as_slice(),
+                        reference.height,
+                        reference.tx_index,
+                        reference.txid.as_slice()
+                    ],
+                )?;
+                Ok(())
+            }
+        }
+    }
+
     /// Rolls the extension back to the height selected by the wallet's own
     /// checkpoint-aware rewind. Every reverted tip must still be journaled.
     pub fn rollback_to_height(&self, height: u32) -> Result<Option<ReducerTip>, StoreError> {
@@ -824,14 +908,19 @@ impl<'tx> WalletNamesTransaction<'tx> {
         &self,
         height: u32,
     ) -> Result<Option<ReducerTip>, StoreError> {
-        match self.rollback_to_height(height) {
+        let result = match self.rollback_to_height(height) {
             Ok(tip) => Ok(tip),
             Err(StoreError::MissingRollbackJournal) => {
                 self.reset_for_replay()?;
                 Ok(None)
             }
             Err(error) => Err(error),
-        }
+        }?;
+        self.transaction.execute(
+            "DELETE FROM ext_coppice_names_wallet_commits WHERE height > ?1",
+            [height],
+        )?;
+        Ok(result)
     }
 
     fn rollback_tip(&self) -> Result<Option<ReducerTip>, StoreError> {
@@ -1506,6 +1595,16 @@ mod tests {
                 names
                     .put_core_snapshot(b"staged-core")
                     .map_err(|_| rusqlite::Error::InvalidQuery)?;
+                names
+                    .record_wallet_commit(
+                        [6; 32],
+                        CommitRef {
+                            height: 10,
+                            tx_index: 1,
+                            txid: [8; 32],
+                        },
+                    )
+                    .map_err(|_| rusqlite::Error::InvalidQuery)?;
                 Err(rusqlite::Error::InvalidQuery)
             });
         assert!(result.is_err());
@@ -1529,6 +1628,14 @@ mod tests {
             )
             .unwrap();
         assert_eq!(snapshot, None);
+        drop(reopened);
+        assert!(
+            SqliteNamesStore::open(file.path(), identity(Coverage::Owned))
+                .unwrap()
+                .wallet_commit_observation([6; 32])
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[cfg(feature = "wallet-extension")]
@@ -1546,6 +1653,16 @@ mod tests {
                 names
                     .apply_delta(&delta)
                     .map_err(|_| rusqlite::Error::InvalidQuery)?;
+                names
+                    .record_wallet_commit(
+                        [6; 32],
+                        CommitRef {
+                            height: 10,
+                            tx_index: 1,
+                            txid: [8; 32],
+                        },
+                    )
+                    .map_err(|_| rusqlite::Error::InvalidQuery)?;
                 extension.execute("DELETE FROM ext_coppice_names_rollback_blocks", [])?;
                 names
                     .rollback_to_height_or_reset(0)
@@ -1558,6 +1675,14 @@ mod tests {
         let reopened = Connection::open(file.path()).unwrap();
         assert_eq!(read_tip(&reopened).unwrap(), None);
         assert_eq!(read_head(&reopened, delta.heads[0].name_id).unwrap(), None);
+        drop(reopened);
+        assert!(
+            SqliteNamesStore::open(file.path(), identity(Coverage::Owned))
+                .unwrap()
+                .wallet_commit_observation([6; 32])
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

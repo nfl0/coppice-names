@@ -40,7 +40,7 @@ canonical ordering.
 | ID | Requirement | Primary authority | Public proof input | Private circuit constraint | Implementation evidence |
 | --- | --- | --- | --- | --- | --- |
 | R-01 | Name and UA are canonical for the deployment network. | Reducer rule | `NameId`, canonical UA | Statement digest equality | `protocol.rs`, `statement.rs` |
-| R-02 | Name has no head or its head is Claimable. | Reducer rule | No | No | `reducer.rs`; Lean `revealEligible` |
+| R-02 | Name has no retained head after block-start compaction. | Reducer rule | No | No | `reducer.rs`; manifest `N2.REVEAL.MISSING`; Lean `revealEligible` |
 | R-03 | Inclusion height is in the deterministic name window. | Reducer rule | Inclusion epoch | Statement digest equality only | `schedule.rs`, `reducer.rs` |
 | R-04 | Exact `CommitRef` exists on the canonical branch. | Authenticated host fact | `CommitRef` and COMMIT value | Statement digest equality | `resolver.rs`, `reducer.rs` |
 | R-05 | Referenced COMMIT precedes REVEAL and is mature. | Reducer rule | `CommitRef`, inclusion epoch | No | `reducer.rs` |

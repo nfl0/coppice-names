@@ -120,20 +120,23 @@ One deployment fixes:
 
 - the validated Coppice Core runtime identity;
 - Names application identity and application version;
+- semantic ruleset revision and fingerprint;
 - activation height;
 - every schedule duration;
 - the exact 1 ZEC bond amount;
 - maximum name and UA lengths; and
 - the REVEAL and REFRESH verifier identities.
 
-The deployment preimage is exactly 173 bytes:
+The deployment preimage is exactly 206 bytes:
 
 | Field | Encoding |
 | --- | --- |
 | magic | `CND2` |
+| deployment-preimage encoding revision | `u8`, value `1` |
 | Core runtime ID | 32 bytes |
 | Names application ID | 32 bytes, derived from `coppice.names` |
 | application version | `u16` big-endian, value `2` |
+| semantic ruleset fingerprint | 32 bytes |
 | activation height | `u32` big-endian |
 | epoch blocks | `u32` big-endian |
 | window blocks | `u32` big-endian |
@@ -156,6 +159,21 @@ BLAKE2b-256(personal="CoppiceN2Dep", canonical_deployment_preimage)
 Verifier IDs bind the verifier-suite manifest, operation tag, Halo2 parameter
 exponent, fixed proof length, and generated verifying-key fingerprint. A
 deployment MUST NOT accept a caller-selected verifier.
+
+The normative machine-readable ruleset is `ruleset/names-v2.json`. Its stable
+clause identifiers are never reused. Restricted RFC 8785 canonical JSON is
+hashed as:
+
+```text
+BLAKE2b-256(personal="CoppiceN2Rule", canonical_ruleset_manifest)
+```
+
+The checked-in ruleset revision is human-readable coordination metadata and is
+also covered by that fingerprint. Every normative semantic change MUST advance
+the revision and fingerprint. Editorial prose, repository revisions, build
+dates, and test evidence are not ruleset inputs. An implementation MUST
+recompute its bundled manifest fingerprint and reject configuration or state
+for an unknown value.
 
 ### 3.1 Timing profiles
 
@@ -303,10 +321,12 @@ in increasing height order, require exact previous-hash continuity, require
 strictly increasing transaction indexes, and require action indexes `0..n-1`
 inside each transaction.
 
-Transactions are processed in canonical block order. Before each transaction,
-and once after the block, heads whose lease has reached expiry are marked
-terminal. This ordering defines conflicts: the first canonically ordered valid
-operation that changes a name can make later conflicting operations invalid.
+At block start, before any transaction is evaluated, heads whose lease has
+reached expiry are marked terminal and terminal heads whose cooldown has ended
+are deleted in ascending `NameId` order. Transactions are then processed in
+canonical block order. This ordering defines conflicts: the first canonically
+ordered valid operation that changes a name can make later conflicting
+operations invalid.
 
 For each transaction the reducer:
 
@@ -347,7 +367,7 @@ owner, target epoch, and secret are not disclosed by COMMIT.
 
 A REVEAL is accepted only if all of the following hold:
 
-- there is no existing head, or the existing head is `Claimable`;
+- there is no existing head after the block-start lifecycle transition;
 - inclusion is in the name's operation window;
 - the exact referenced `CommitRef` exists and is mature but not expired;
 - the declared action index exists in the same canonical transaction;
@@ -404,20 +424,23 @@ A head is:
 - `Active` before a terminal height;
 - `Cooldown` from its terminal height, inclusive, until
   `terminal_height + cooldown_blocks`;
-- `Claimable` at and after that claimable height; or
-- `Missing` if no accepted head has ever existed.
+- `Missing` if no retained accepted head exists. This includes both names never
+  registered and names whose terminal head was deleted after cooldown.
 
 | State | Definition | Entered by | Left by | Resolution returns |
 | --- | --- | --- | --- | --- |
-| `Missing` | No accepted head has ever existed | — | Accepted REVEAL | No record |
+| `Missing` | No retained accepted head exists | Initial state or block-start compaction | Accepted REVEAL | No record |
 | `Active` | Accepted head exists and height is before its terminal height | Accepted REVEAL or REFRESH | Terminal event (bond spend or lease expiry), or replacement by an accepted REFRESH | The UA |
 | `Cooldown` | Terminal height, inclusive, until `terminal_height + cooldown_blocks` | Terminal event | Elapsed cooldown | Head metadata only; MUST NOT be payable |
-| `Claimable` | Height at or after `terminal_height + cooldown_blocks` | Elapsed cooldown | Accepted REVEAL replacing the head | Head metadata only; MUST NOT be payable |
 
 Natural expiry uses `expiry_height` as the terminal height. During cooldown no
 party, including the former owner, can REFRESH or install a replacement
-REVEAL. Once claimable, the first canonically ordered valid REVEAL may replace
-the old head. The former owner has no special protocol priority.
+REVEAL. At `terminal_height + cooldown_blocks`, widened lifecycle arithmetic
+deletes the head at block start. The first canonically ordered valid REVEAL may
+then install a new head; an eligible COMMIT may have been published during
+cooldown. The former owner has no special protocol priority. A later spend of
+the deleted predecessor bond is irrelevant to Names state and cannot terminate
+a new head.
 
 Cooldown is a uniform anti-impersonation quarantine, not an ownership grace
 period. Its purpose is to force a visible non-resolving interval before a
@@ -425,9 +448,9 @@ recently terminated name can begin resolving to a different address. The same
 rule applies whether termination resulted from natural expiry or an explicit
 bond spend.
 
-Resolution returns the UA only for `Active`. Cooldown and claimable results may
-include head metadata for auditing but MUST NOT return it as a payable current
-record.
+Resolution returns the UA only for `Active`. Cooldown may include current head
+metadata for diagnostics but MUST NOT return it as a payable record. Missing
+returns neither a head nor a UA.
 
 ## 10. Public proof statements
 
@@ -471,6 +494,14 @@ verifying-key fingerprints are deployment-bound.
 
 Therefore exact replay and complete replay MUST produce the same lifecycle,
 UA, head, and producer for the requested name at the same canonical tip.
+Exact resolution MUST return an explicit incomplete-history error when the
+requested height is beyond its authenticated canonical tip. It MUST NOT infer
+`Missing` merely from elapsed time because a same-block or later replacement
+may exist in evidence it has not processed.
+The current-state resolver MUST also reject a requested height below its tip as
+historical resolution unavailable. Historical answers require a separate
+authenticated replay ending at that height; current head state is never
+silently projected backward.
 
 The deterministic name schedule bounds expensive name-route trial decryption
 and full-transaction acquisition to the name's short windows. A compact-block
@@ -488,7 +519,9 @@ neither is an independent or trusted source of truth.
 
 ## 12. Reorganizations and cached state
 
-Snapshots contain derived reducer state and rollback journals. They are not a
+Snapshots contain derived reducer state and rollback journals. They bind the
+canonical tip, deployment ID, ruleset revision, ruleset fingerprint, and
+inclusive rollback-journal range. They are not a
 Zcash consensus commitment. A host restoring a snapshot MUST independently
 bind it to the deployment, requested name, network, canonical height, and
 canonical block hash, and MUST integrity-protect it or replay from an

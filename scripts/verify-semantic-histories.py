@@ -19,6 +19,26 @@ from typing import Any
 PALLAS_BASE_MODULUS = int(
     "40000000000000000000000000000000224698fc094cf91b992d30ed00000001", 16
 )
+RULESET_PATH = Path(__file__).resolve().parents[1] / "ruleset" / "names-v2.json"
+
+
+def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    value: dict[str, Any] = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError(f"duplicate manifest key: {key}")
+        value[key] = item
+    return value
+
+
+RULESET_MANIFEST = json.loads(RULESET_PATH.read_text(), object_pairs_hook=_unique_object)
+RULESET_CANONICAL = json.dumps(
+    RULESET_MANIFEST, sort_keys=True, ensure_ascii=True, separators=(",", ":")
+).encode()
+RULESET_REVISION = RULESET_MANIFEST["ruleset_revision"]
+RULESET_FINGERPRINT = hashlib.blake2b(
+    RULESET_CANONICAL, digest_size=32, person=b"CoppiceN2Rule"
+).hexdigest()
 
 
 class SemanticError(Exception):
@@ -157,7 +177,7 @@ class Reducer:
         if terminal is None:
             return "Active"
         if height >= terminal + self.parameters["cooldown_blocks"]:
-            return "Claimable"
+            return "Missing"
         return "Cooldown"
 
     def resolve(self, name: str, height: int) -> dict[str, Any]:
@@ -166,6 +186,8 @@ class Reducer:
         if head is None:
             return {"lifecycle": "Missing", "ua": None, "head": None}
         lifecycle = self.lifecycle(head, height)
+        if lifecycle == "Missing":
+            return {"lifecycle": "Missing", "ua": None, "head": None}
         public_head = {key: copy.deepcopy(value) for key, value in head.items() if key != "future_nf"}
         return {
             "lifecycle": lifecycle,
@@ -176,7 +198,12 @@ class Reducer:
     def apply(self, block: dict[str, Any], referenced: list[dict[str, Any]]) -> dict[str, Any]:
         error = self._validate_block(block, referenced)
         if error is not None:
-            return {"error": error, "operations": self._not_evaluated(block)}
+            clause_id = self._apply_error_clause(error)
+            return {
+                "clause_id": clause_id,
+                "error": error,
+                "operations": self._not_evaluated(block, clause_id),
+            }
 
         before = {
             "next_height": self.next_height,
@@ -186,6 +213,8 @@ class Reducer:
             "heads": copy.deepcopy(self.heads),
         }
         height = block["height"]
+        self._mark_expired(height)
+        transitions = self._compact_claimable(height)
         self._prune_commits(height)
         for evidence in referenced:
             self.commits[ref_key(evidence["reference"])] = parse_field(evidence["commitment"])
@@ -193,17 +222,16 @@ class Reducer:
         accepted: list[str] = []
         decisions: list[dict[str, Any]] = []
         for transaction in block.get("transactions", []):
-            self._mark_expired(height)
-            decision = self._apply_transaction(height, transaction)
+            decision, transaction_transitions = self._apply_transaction(height, transaction)
             decisions.append(decision)
+            transitions.extend(transaction_transitions)
             if decision["accepted"]:
                 accepted.append(decision["kind"].title())
-        self._mark_expired(height)
         self.next_height = height + 1 if height < 0xFFFFFFFF else None
         self.tip = {"height": height, "hash_hex": block["hash_hex"]}
         self.previous_hash = block["hash_hex"]
         self.history.append(before)
-        return {"ok": accepted, "operations": decisions}
+        return {"ok": accepted, "operations": decisions, "transitions": transitions}
 
     def _validate_block(
         self, block: dict[str, Any], referenced: list[dict[str, Any]]
@@ -273,12 +301,23 @@ class Reducer:
         return None
 
     @staticmethod
-    def _not_evaluated(block: dict[str, Any]) -> list[dict[str, Any]]:
+    def _apply_error_clause(error: str) -> str:
+        if error in ("WrongHeight", "WrongPreviousHash"):
+            return "N2.BLOCK.CONTINUITY"
+        if error in ("NonCanonicalTransactionIndex", "NonCanonicalActionIndex"):
+            return "N2.BLOCK.ORDER"
+        if error in ("InvalidReferencedCommit", "ConflictingReferencedCommit"):
+            return "N2.REVEAL.COMMIT"
+        return "N2.BLOCK.ACTIVATION"
+
+    @staticmethod
+    def _not_evaluated(block: dict[str, Any], clause_id: str) -> list[dict[str, Any]]:
         return [
             {
                 "tx_index": tx["tx_index"],
                 "kind": tx["operation"]["type"] if tx.get("operation") is not None else "inert",
                 "accepted": None,
+                "clause_id": clause_id,
             }
             for tx in block.get("transactions", [])
         ]
@@ -294,7 +333,28 @@ class Reducer:
             if head["terminal_height"] is None and height >= head["expiry_height"]:
                 head["terminal_height"] = head["expiry_height"]
 
-    def _apply_transaction(self, height: int, transaction: dict[str, Any]) -> dict[str, Any]:
+    def _compact_claimable(self, height: int) -> list[dict[str, Any]]:
+        compacted = []
+        for identity in sorted(self.heads):
+            head = self.heads[identity]
+            terminal = head["terminal_height"]
+            if terminal is not None and height >= terminal + self.parameters["cooldown_blocks"]:
+                compacted.append(
+                    {
+                        "clause_id": "N2.LIFECYCLE.COMPACT",
+                        "height": height,
+                        "name_id_hex": identity,
+                        "previous_head": copy.deepcopy(head["producer"]),
+                        "transition": "Compacted",
+                    }
+                )
+        for event in compacted:
+            del self.heads[event["name_id_hex"]]
+        return compacted
+
+    def _apply_transaction(
+        self, height: int, transaction: dict[str, Any]
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         operation = transaction.get("operation")
         kind = operation["type"] if operation else "inert"
         spent = [
@@ -303,31 +363,51 @@ class Reducer:
             if any(parse_field(action["nullifier"]) == head["future_nf"] for action in transaction.get("actions", []))
         ]
         accepted = False
+        clause_id = "N2.BLOCK.ORDER"
         if kind == "commit":
             reference = (height, transaction["tx_index"], transaction["txid_hex"])
             self.commits[reference] = parse_field(operation["commitment"])
             accepted = True
+            clause_id = "N2.COMMIT.ACCEPT"
         elif kind == "reveal":
-            accepted = self._apply_reveal(height, transaction, operation)
+            accepted, clause_id = self._apply_reveal(height, transaction, operation)
         elif kind == "refresh":
-            accepted = self._apply_refresh(height, transaction, operation)
+            accepted, clause_id = self._apply_refresh(height, transaction, operation)
         elif kind != "inert":
             raise SemanticError(f"unknown operation {kind}")
 
+        transitions = []
         for identity, producer in spent:
             head = self.heads.get(identity)
             if head is not None and head["producer"] == producer and head["terminal_height"] is None:
                 head["terminal_height"] = height
-        return {"tx_index": transaction["tx_index"], "kind": kind, "accepted": accepted}
+                transitions.append(
+                    {
+                        "clause_id": "N2.SPEND.CURRENT",
+                        "height": height,
+                        "name_id_hex": identity,
+                        "previous_head": producer,
+                        "transition": "Terminated",
+                    }
+                )
+        return (
+            {
+                "tx_index": transaction["tx_index"],
+                "kind": kind,
+                "accepted": accepted,
+                "clause_id": clause_id,
+            },
+            transitions,
+        )
 
     def _apply_reveal(
         self, height: int, transaction: dict[str, Any], operation: dict[str, Any]
-    ) -> bool:
+    ) -> tuple[bool, str]:
         canonical = parse_name(operation["name"])
         identity = name_id(canonical).hex()
         current = self.heads.get(identity)
-        if current is not None and self.lifecycle(current, height) != "Claimable":
-            return False
+        if current is not None:
+            return False, "N2.REVEAL.MISSING"
         commit = operation["commit"]
         age = height - commit["height"]
         if (
@@ -336,16 +416,16 @@ class Reducer:
             or age < self.parameters["commit_maturity_blocks"]
             or age >= self.parameters["commit_ttl_blocks"]
         ):
-            return False
+            return False, "N2.REVEAL.SCHEDULE" if not self.operation_window(canonical, height) else "N2.REVEAL.COMMIT"
         commitment = self.commits.get(ref_key(commit))
         if commitment is None:
-            return False
+            return False, "N2.REVEAL.COMMIT"
         action_index = operation["action_index"]
         actions = transaction.get("actions", [])
         if action_index >= len(actions) or actions[action_index]["action_index"] != action_index:
-            return False
+            return False, "N2.REVEAL.ACTION"
         if not operation["proof_valid"]:
-            return False
+            return False, "N2.REVEAL.PROOF"
         action = actions[action_index]
         epoch = (height - self.parameters["activation_height"]) // self.parameters["epoch_blocks"]
         self.heads[identity] = {
@@ -359,36 +439,35 @@ class Reducer:
             "expiry_height": height + self.parameters["lease_blocks"],
             "terminal_height": None,
         }
-        return True
+        return True, "N2.REVEAL.ACCEPT"
 
     def _apply_refresh(
         self, height: int, transaction: dict[str, Any], operation: dict[str, Any]
-    ) -> bool:
+    ) -> tuple[bool, str]:
         canonical = parse_name(operation["name"])
         identity = name_id(canonical).hex()
         predecessor = self.heads.get(identity)
         if predecessor is None:
-            return False
+            return False, "N2.REFRESH.CURRENT"
         epoch = (height - self.parameters["activation_height"]) // self.parameters["epoch_blocks"]
-        if (
-            self.lifecycle(predecessor, height) != "Active"
-            or predecessor["producer"] != operation["predecessor"]
-            or predecessor["producer_epoch"] >= epoch
-            or not self.operation_window(canonical, height)
-        ):
-            return False
+        if self.lifecycle(predecessor, height) != "Active" or predecessor["producer"] != operation["predecessor"]:
+            return False, "N2.REFRESH.CURRENT"
+        if predecessor["producer_epoch"] >= epoch:
+            return False, "N2.REFRESH.EPOCH"
+        if not self.operation_window(canonical, height):
+            return False, "N2.REFRESH.SCHEDULE"
         action_index = operation["action_index"]
         actions = transaction.get("actions", [])
         if action_index >= len(actions):
-            return False
+            return False, "N2.REFRESH.ACTION"
         action = actions[action_index]
         if (
             action["action_index"] != action_index
             or parse_field(action["nullifier"]) != predecessor["future_nf"]
         ):
-            return False
+            return False, "N2.REFRESH.ACTION"
         if not operation["proof_valid"]:
-            return False
+            return False, "N2.REFRESH.PROOF"
         self.heads[identity] = {
             "name": canonical,
             "ua": operation["ua"],
@@ -400,7 +479,7 @@ class Reducer:
             "expiry_height": height + self.parameters["lease_blocks"],
             "terminal_height": None,
         }
-        return True
+        return True, "N2.REFRESH.ACCEPT"
 
     def rollback(self, expected_hash: str) -> str | None:
         if not self.history:
@@ -440,14 +519,31 @@ def materialize_block(step: dict[str, Any], previous_hash: str) -> dict[str, Any
 
 
 def snapshot(reducer: Reducer, tracked_names: list[str], known_refs: list[dict[str, Any]]) -> dict[str, Any]:
-    height = reducer.tip["height"] if reducer.tip is not None else reducer.parameters["activation_height"] - 1
+    height = reducer.tip["height"] if reducer.tip is not None else reducer.parameters["activation_height"]
     pending = []
     for reference in known_refs:
         value = reducer.commits.get(ref_key(reference))
         pending.append({"reference": reference, "commitment_hex": field_hex(value) if value is not None else None})
     return {
+        "protocol_identity": {
+            "deployment_id_hex": reducer.parameters["deployment_id_hex"],
+            "ruleset_fingerprint_hex": RULESET_FINGERPRINT,
+            "ruleset_revision": RULESET_REVISION,
+        },
         "tip": copy.deepcopy(reducer.tip),
-        "resolutions": {name: reducer.resolve(name, height) for name in tracked_names},
+        "resolutions": {
+            name: (
+                reducer.resolve(name, height)
+                if reducer.tip is not None
+                else {
+                    "clause_id": "N2.EXACT.PARITY",
+                    "error": "IncompleteHistory",
+                    "requested_height": height,
+                    "tip_height": None,
+                }
+            )
+            for name in tracked_names
+        },
         "pending_commits": pending,
     }
 
@@ -513,8 +609,19 @@ def run_case(case: dict[str, Any]) -> dict[str, Any]:
             exact_errors = {name: resolver.reducer.rollback(expected) for name, resolver in exact.items()}
             record(
                 step["label"],
-                {"ok": full_error is None, "error": full_error},
-                {name: {"ok": error is None, "error": error} for name, error in exact_errors.items()},
+                {
+                    "ok": full_error is None,
+                    "error": full_error,
+                    "clause_id": "N2.ROLLBACK.EXACT",
+                },
+                {
+                    name: {
+                        "ok": error is None,
+                        "error": error,
+                        "clause_id": "N2.ROLLBACK.EXACT",
+                    }
+                    for name, error in exact_errors.items()
+                },
             )
         else:
             raise SemanticError(f"unknown step kind {kind}")

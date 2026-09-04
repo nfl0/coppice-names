@@ -4,8 +4,9 @@ use coppice_names::{
     codec::Operation,
     protocol::{CanonicalUa, CommitRef, Commitment, FieldElement, Name, Network, StateRef},
     reducer::{
-        Accepted, Action, ApplyError, Block, Head, ProofVerifier, Reducer, ReferencedCommit,
-        Resolution, RollbackError, Transaction,
+        Accepted, Action, ApplyError, Block, BlockOutcome, Compaction, Head, OperationDecision,
+        ProofVerifier, Reducer, ReferencedCommit, Resolution, ResolutionError, RollbackError,
+        Termination, Transaction,
     },
     resolver::ExactResolver,
     schedule::Parameters,
@@ -319,6 +320,36 @@ fn accepted(values: &[Accepted]) -> Value {
     )
 }
 
+fn compaction(value: Compaction) -> Value {
+    json!({
+        "clause_id": "N2.LIFECYCLE.COMPACT",
+        "height": value.height,
+        "name_id_hex": hex::encode(value.name_id.to_bytes()),
+        "previous_head": state_ref_json(value.previous_head),
+        "transition": "Compacted",
+    })
+}
+
+fn termination(value: Termination) -> Value {
+    json!({
+        "clause_id": "N2.SPEND.CURRENT",
+        "height": value.height,
+        "name_id_hex": hex::encode(value.name_id.to_bytes()),
+        "previous_head": state_ref_json(value.previous_head),
+        "transition": "Terminated",
+    })
+}
+
+fn transitions(outcome: &BlockOutcome) -> Vec<Value> {
+    outcome
+        .compacted
+        .iter()
+        .copied()
+        .map(compaction)
+        .chain(outcome.terminated.iter().copied().map(termination))
+        .collect()
+}
+
 fn operation_kind(value: Option<&CorpusOperation>, exact_name: Option<&Name>) -> &'static str {
     match value {
         None => "inert",
@@ -340,97 +371,84 @@ fn operation_kind(value: Option<&CorpusOperation>, exact_name: Option<&Name>) ->
     }
 }
 
-fn producer_for(
-    value: &CorpusTransaction,
-    height: u32,
-    operation: &CorpusOperation,
-) -> Option<StateRef> {
-    let action_index = match operation {
-        CorpusOperation::Reveal { action_index, .. }
-        | CorpusOperation::Refresh { action_index, .. } => *action_index,
-        CorpusOperation::Commit { .. } => return None,
-    };
-    Some(StateRef {
-        height,
-        tx_index: value.tx_index,
-        txid: bytes32(&value.txid_hex).ok()?,
-        action_index,
-    })
-}
-
 fn decisions(
     input: &CorpusBlock,
     accepted_block: bool,
     exact_name: Option<&Name>,
-    resolve: impl Fn(&Name) -> Resolution,
+    operation_decisions: &[OperationDecision],
+    block_clause: &'static str,
 ) -> Value {
     Value::Array(
         input
             .transactions
             .iter()
-            .map(|transaction| {
+            .enumerate()
+            .map(|(position, transaction)| {
                 let kind = operation_kind(transaction.operation.as_ref(), exact_name);
-                let accepted = if !accepted_block {
-                    Value::Null
+                let (accepted, clause_id) = if !accepted_block {
+                    (Value::Null, block_clause)
                 } else {
-                    let decision = match (kind, transaction.operation.as_ref()) {
-                        ("commit", _) => true,
-                        ("reveal" | "refresh", Some(operation_value)) => {
-                            let operation_name = match operation_value {
-                                CorpusOperation::Reveal { name, .. }
-                                | CorpusOperation::Refresh { name, .. } => Name::parse(name).ok(),
-                                CorpusOperation::Commit { .. } => None,
-                            };
-                            operation_name.is_some_and(|name| {
-                                resolve(&name).head.is_some_and(|head| {
-                                    producer_for(transaction, input.height, operation_value)
-                                        == Some(head.producer)
-                                })
-                            })
-                        }
-                        _ => false,
-                    };
-                    Value::Bool(decision)
+                    let decision = operation_decisions
+                        .get(position)
+                        .expect("one reducer decision per transaction");
+                    (Value::Bool(decision.accepted.is_some()), decision.clause_id)
                 };
-                json!({"tx_index": transaction.tx_index, "kind": kind, "accepted": accepted})
+                json!({"tx_index": transaction.tx_index, "kind": kind, "accepted": accepted, "clause_id": clause_id})
             })
             .collect(),
     )
 }
 
 fn apply_result<V: ProofVerifier>(
-    reducer: &Reducer<V>,
+    _reducer: &Reducer<V>,
     input: &CorpusBlock,
-    result: Result<Vec<Accepted>, ApplyError>,
+    result: Result<BlockOutcome, ApplyError>,
     exact_name: Option<&Name>,
 ) -> Value {
     match result {
-        Ok(values) => json!({
-            "ok": accepted(&values),
-            "operations": decisions(input, true, exact_name, |name| reducer.resolve(name, input.height)),
+        Ok(outcome) => json!({
+            "ok": accepted(&outcome.accepted),
+            "operations": decisions(input, true, exact_name, &outcome.decisions, "N2.BLOCK.ORDER"),
+            "transitions": transitions(&outcome),
         }),
         Err(error) => json!({
+            "clause_id": apply_error_clause(error),
             "error": format!("{error:?}"),
-            "operations": decisions(input, false, exact_name, |name| reducer.resolve(name, input.height)),
+            "operations": decisions(input, false, exact_name, &[], apply_error_clause(error)),
         }),
     }
 }
 
 fn exact_apply_result<V: ProofVerifier>(
-    resolver: &ExactResolver<V>,
+    _resolver: &ExactResolver<V>,
     input: &CorpusBlock,
-    result: Result<Vec<Accepted>, ApplyError>,
+    result: Result<BlockOutcome, ApplyError>,
     name: &Name,
 ) -> Value {
     match result {
-        Ok(values) => json!({
-            "ok": accepted(&values),
-            "operations": decisions(input, true, Some(name), |_| resolver.resolve(input.height)),
+        Ok(outcome) => json!({
+            "ok": accepted(&outcome.accepted),
+            "operations": decisions(input, true, Some(name), &outcome.decisions, "N2.BLOCK.ORDER"),
+            "transitions": transitions(&outcome),
         }),
         Err(error) => json!({
+            "clause_id": apply_error_clause(error),
             "error": format!("{error:?}"),
-            "operations": decisions(input, false, Some(name), |_| resolver.resolve(input.height)),
+            "operations": decisions(input, false, Some(name), &[], apply_error_clause(error)),
         }),
+    }
+}
+
+fn apply_error_clause(error: ApplyError) -> &'static str {
+    match error {
+        ApplyError::WrongHeight | ApplyError::WrongPreviousHash => "N2.BLOCK.CONTINUITY",
+        ApplyError::NonCanonicalTransactionIndex | ApplyError::NonCanonicalActionIndex => {
+            "N2.BLOCK.ORDER"
+        }
+        ApplyError::InvalidReferencedCommit | ApplyError::ConflictingReferencedCommit => {
+            "N2.REVEAL.COMMIT"
+        }
+        ApplyError::InvalidParameters => "N2.BLOCK.ACTIVATION",
     }
 }
 
@@ -469,6 +487,30 @@ fn resolution_json(value: Resolution) -> Value {
     })
 }
 
+fn resolution_result_json(value: Result<Resolution, ResolutionError>) -> Value {
+    match value {
+        Ok(resolution) => resolution_json(resolution),
+        Err(ResolutionError::IncompleteHistory {
+            requested_height,
+            tip_height,
+        }) => json!({
+            "clause_id": "N2.EXACT.PARITY",
+            "error": "IncompleteHistory",
+            "requested_height": requested_height,
+            "tip_height": tip_height,
+        }),
+        Err(ResolutionError::HistoricalResolutionUnavailable {
+            requested_height,
+            tip_height,
+        }) => json!({
+            "clause_id": "N2.EXACT.PARITY",
+            "error": "HistoricalResolutionUnavailable",
+            "requested_height": requested_height,
+            "tip_height": tip_height,
+        }),
+    }
+}
+
 fn tip_json(tip: Option<coppice_names::reducer::ReducerTip>) -> Value {
     tip.map_or(
         Value::Null,
@@ -491,7 +533,7 @@ fn full_snapshot(
         .map(|(label, name)| {
             (
                 label.clone(),
-                resolution_json(reducer.resolve(name, height)),
+                resolution_result_json(reducer.resolve_authenticated(name, height)),
             )
         })
         .collect::<Map<_, _>>();
@@ -505,9 +547,17 @@ fn full_snapshot(
             }))
         })
         .collect::<Result<Vec<_>, String>>()?;
-    Ok(
-        json!({"tip": tip_json(reducer.tip()), "resolutions": resolutions, "pending_commits": pending}),
-    )
+    let identity = reducer.protocol_identity();
+    Ok(json!({
+        "protocol_identity": {
+            "deployment_id_hex": hex::encode(identity.deployment_id),
+            "ruleset_fingerprint_hex": hex::encode(identity.ruleset_fingerprint),
+            "ruleset_revision": identity.ruleset_revision,
+        },
+        "tip": tip_json(reducer.tip()),
+        "resolutions": resolutions,
+        "pending_commits": pending,
+    }))
 }
 
 fn exact_snapshot(
@@ -521,7 +571,10 @@ fn exact_snapshot(
         .map(|tip| tip.height)
         .unwrap_or(parameters.activation_height);
     let mut resolutions = Map::new();
-    resolutions.insert(label.to_owned(), resolution_json(resolver.resolve(height)));
+    resolutions.insert(
+        label.to_owned(),
+        resolution_result_json(resolver.resolve(height)),
+    );
     let pending = known_refs
         .iter()
         .map(|reference| {
@@ -532,15 +585,25 @@ fn exact_snapshot(
             }))
         })
         .collect::<Result<Vec<_>, String>>()?;
-    Ok(
-        json!({"tip": tip_json(resolver.tip()), "resolutions": resolutions, "pending_commits": pending}),
-    )
+    let identity = resolver.protocol_identity();
+    Ok(json!({
+        "protocol_identity": {
+            "deployment_id_hex": hex::encode(identity.deployment_id),
+            "ruleset_fingerprint_hex": hex::encode(identity.ruleset_fingerprint),
+            "ruleset_revision": identity.ruleset_revision,
+        },
+        "tip": tip_json(resolver.tip()),
+        "resolutions": resolutions,
+        "pending_commits": pending,
+    }))
 }
 
 fn rollback_result(result: Result<(), RollbackError>) -> Value {
     match result {
-        Ok(()) => json!({"ok": true, "error": null}),
-        Err(error) => json!({"ok": false, "error": format!("{error:?}")}),
+        Ok(()) => json!({"ok": true, "error": null, "clause_id": "N2.ROLLBACK.EXACT"}),
+        Err(error) => {
+            json!({"ok": false, "error": format!("{error:?}"), "clause_id": "N2.ROLLBACK.EXACT"})
+        }
     }
 }
 
@@ -596,10 +659,10 @@ fn run_case(case: Case, network: Network) -> Result<Value, String> {
                         transactions: Vec::new(),
                     };
                     let block = block(&corpus_block, previous_hash, network)?;
-                    let result = full.apply_block(&block);
+                    let result = full.apply_block_detailed(&block, &[]);
                     full_results.push(apply_result(&full, &corpus_block, result, None));
                     for (name_label, (name, resolver)) in &mut exact {
-                        let result = resolver.apply_block(&block);
+                        let result = resolver.apply_block_detailed(&block, &[]);
                         exact_results
                             .get_mut(name_label)
                             .expect("initialized")
@@ -623,12 +686,11 @@ fn run_case(case: Case, network: Network) -> Result<Value, String> {
                 let previous_hash = full.tip().map(|tip| tip.hash).unwrap_or(parent_hash);
                 let materialized = block(&input, previous_hash, network)?;
                 let evidence = referenced(&referenced_commits)?;
-                let result = full.apply_block_with_referenced_commits(&materialized, &evidence);
+                let result = full.apply_block_detailed(&materialized, &evidence);
                 let full_result = apply_result(&full, &input, result, None);
                 let mut exact_results = BTreeMap::new();
                 for (name_label, (name, resolver)) in &mut exact {
-                    let result =
-                        resolver.apply_block_with_referenced_commits(&materialized, &evidence);
+                    let result = resolver.apply_block_detailed(&materialized, &evidence);
                     exact_results.insert(
                         name_label.clone(),
                         exact_apply_result(resolver, &input, result, name),

@@ -25,6 +25,8 @@ pub mod publication;
 pub mod reducer;
 /// Exact arbitrary-name replay over authenticated canonical effects.
 pub mod resolver;
+/// Canonical machine-readable semantic-ruleset identity.
+pub mod ruleset;
 /// Deterministic height schedule and checked lifecycle arithmetic.
 pub mod schedule;
 /// Canonical one-public-field proof statements.

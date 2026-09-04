@@ -588,6 +588,7 @@ mod tests {
             commit_ttl_blocks: 192,
             lease_blocks: 250_000,
             cooldown_blocks: 1_152,
+            ruleset_fingerprint: coppice_names::ruleset::ruleset_fingerprint(),
             proof: verifier.identity(),
         };
         let deployment_id = deployment.deployment_id().unwrap();
@@ -773,6 +774,7 @@ mod tests {
             commit_ttl_blocks: 192,
             lease_blocks: 250_000,
             cooldown_blocks: 1_152,
+            ruleset_fingerprint: coppice_names::ruleset::ruleset_fingerprint(),
             proof: verifier.identity(),
         };
         let deployment_id = deployment.deployment_id().unwrap();

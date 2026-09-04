@@ -130,11 +130,22 @@ def main() -> None:
     assert reveal_id.hex() == identity["reveal_verifier_id_hex"]
     assert refresh_id.hex() == identity["refresh_verifier_id_hex"]
 
+    manifest_path = Path(__file__).resolve().parents[1] / "ruleset" / "names-v2.json"
+    manifest = json.loads(manifest_path.read_text())
+    canonical_manifest = json.dumps(
+        manifest, sort_keys=True, ensure_ascii=True, separators=(",", ":")
+    ).encode()
+    assert manifest["ruleset_revision"] == identity["ruleset_revision"]
+    ruleset_fingerprint = h(b"CoppiceN2Rule", canonical_manifest)
+    assert ruleset_fingerprint.hex() == identity["ruleset_fingerprint_hex"]
+
     preimage = (
         b"CND2"
+        + bytes([identity["deployment_preimage_revision"]])
         + bytes.fromhex(identity["core_runtime_id_hex"])
         + application_id
         + fixture["application_version"].to_bytes(2, "big")
+        + ruleset_fingerprint
         + params["activation_height"].to_bytes(4, "big")
         + params["epoch_blocks"].to_bytes(4, "big")
         + params["window_blocks"].to_bytes(4, "big")
@@ -148,7 +159,7 @@ def main() -> None:
         + reveal_id
         + refresh_id
     )
-    assert len(preimage) == 173 and preimage.hex() == identity["deployment_preimage_hex"]
+    assert len(preimage) == 206 and preimage.hex() == identity["deployment_preimage_hex"]
     deployment_id = h(b"CoppiceN2Dep", preimage)
     assert deployment_id.hex() == identity["deployment_id_hex"]
 

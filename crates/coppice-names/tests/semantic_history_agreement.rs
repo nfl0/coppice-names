@@ -20,6 +20,25 @@ fn step<'a>(case: &'a Value, label: &str) -> &'a Value {
         .unwrap()
 }
 
+fn collect_clause_ids(value: &Value, output: &mut Vec<String>) {
+    match value {
+        Value::Object(fields) => {
+            if let Some(Value::String(identifier)) = fields.get("clause_id") {
+                output.push(identifier.clone());
+            }
+            for child in fields.values() {
+                collect_clause_ids(child, output);
+            }
+        }
+        Value::Array(values) => {
+            for child in values {
+                collect_clause_ids(child, output);
+            }
+        }
+        _ => {}
+    }
+}
+
 #[test]
 fn rust_and_independent_python_produce_exactly_the_same_trace() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -51,6 +70,16 @@ fn rust_and_independent_python_produce_exactly_the_same_trace() {
     let rust_trace: Value = serde_json::from_slice(&rust_output.stdout).unwrap();
     assert_eq!(python_trace, rust_trace);
     assert_eq!(python_output.stdout, rust_output.stdout);
+    let known_clauses = coppice_names::ruleset::clause_ids();
+    let mut traced_clauses = Vec::new();
+    collect_clause_ids(&rust_trace, &mut traced_clauses);
+    assert!(!traced_clauses.is_empty());
+    assert!(
+        traced_clauses
+            .iter()
+            .all(|identifier| known_clauses.contains(identifier)),
+        "trace emitted a clause ID absent from the normative manifest"
+    );
 
     let cases = rust_trace["cases"].as_array().unwrap();
     assert_eq!(cases.len(), 4);
@@ -58,9 +87,9 @@ fn rust_and_independent_python_produce_exactly_the_same_trace() {
     assert_eq!(
         step(lifecycle, "invalid-proof-first-valid-wins-competition")["full_result"]["operations"],
         serde_json::json!([
-            {"tx_index": 0, "kind": "reveal", "accepted": false},
-            {"tx_index": 1, "kind": "reveal", "accepted": true},
-            {"tx_index": 2, "kind": "reveal", "accepted": false}
+            {"tx_index": 0, "kind": "reveal", "accepted": false, "clause_id": "N2.REVEAL.PROOF"},
+            {"tx_index": 1, "kind": "reveal", "accepted": true, "clause_id": "N2.REVEAL.ACCEPT"},
+            {"tx_index": 2, "kind": "reveal", "accepted": false, "clause_id": "N2.REVEAL.MISSING"}
         ])
     );
     assert_eq!(
@@ -69,16 +98,47 @@ fn rust_and_independent_python_produce_exactly_the_same_trace() {
         "Cooldown"
     );
     assert_eq!(
+        step(lifecycle, "malformed-bulletin-ordinary-bond-spend")["full_result"]["transitions"][0]
+            ["clause_id"],
+        "N2.SPEND.CURRENT"
+    );
+    assert_eq!(
+        step(lifecycle, "last-cooldown-block")["full_state"]["resolutions"]["alice"]["lifecycle"],
+        "Cooldown"
+    );
+    let replacement = step(lifecycle, "first-missing-replacement");
+    assert_eq!(
+        replacement["full_result"]["transitions"][0]["clause_id"],
+        "N2.LIFECYCLE.COMPACT"
+    );
+    assert_eq!(
+        replacement["full_result"]["ok"],
+        serde_json::json!(["Reveal"])
+    );
+    assert_eq!(
+        step(lifecycle, "rollback-replacement")["full_state"]["resolutions"]["alice"]["lifecycle"],
+        "Cooldown"
+    );
+    assert_eq!(
+        step(lifecycle, "fork-replacement")["full_result"]["transitions"][0]["transition"],
+        "Compacted"
+    );
+    assert_eq!(
         step(lifecycle, "stale-refresh-then-valid-refresh")["full_result"]["operations"],
         serde_json::json!([
-            {"tx_index": 0, "kind": "refresh", "accepted": false},
-            {"tx_index": 1, "kind": "refresh", "accepted": true}
+            {"tx_index": 0, "kind": "refresh", "accepted": false, "clause_id": "N2.REFRESH.CURRENT"},
+            {"tx_index": 1, "kind": "refresh", "accepted": true, "clause_id": "N2.REFRESH.ACCEPT"}
         ])
     );
-    let boundary = step(lifecycle, "expiry-claimable-boundary");
+    let boundary = step(lifecycle, "expiry-missing-boundary");
     assert_eq!(
         boundary["full_state"]["resolutions"]["alice"]["lifecycle"],
-        "Claimable"
+        "Missing"
+    );
+    assert!(boundary["full_state"]["resolutions"]["alice"]["head"].is_null());
+    assert_eq!(
+        boundary["full_result"]["advance"][0]["transitions"][0]["clause_id"],
+        "N2.LIFECYCLE.COMPACT"
     );
 
     let referenced = case(&rust_trace, "referenced_commit_atomicity_and_reapply");
@@ -109,9 +169,9 @@ fn rust_and_independent_python_produce_exactly_the_same_trace() {
     assert_eq!(
         step(timing, "ttl-maturity-and-window-end-boundaries")["full_result"]["operations"],
         serde_json::json!([
-            {"tx_index": 0, "kind": "reveal", "accepted": false},
-            {"tx_index": 1, "kind": "reveal", "accepted": true},
-            {"tx_index": 2, "kind": "reveal", "accepted": false}
+            {"tx_index": 0, "kind": "reveal", "accepted": false, "clause_id": "N2.REVEAL.COMMIT"},
+            {"tx_index": 1, "kind": "reveal", "accepted": true, "clause_id": "N2.REVEAL.ACCEPT"},
+            {"tx_index": 2, "kind": "reveal", "accepted": false, "clause_id": "N2.REVEAL.SCHEDULE"}
         ])
     );
 }

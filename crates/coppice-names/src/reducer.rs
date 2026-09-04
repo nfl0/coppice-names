@@ -8,12 +8,13 @@ use std::{
 use crate::{
     codec::Operation,
     protocol::{CanonicalUa, CommitRef, Commitment, FieldElement, Name, NameId, Network, StateRef},
+    ruleset::{RULESET_REVISION, ruleset_fingerprint},
     schedule::Parameters,
     statement::{RefreshStatement, RevealStatement},
 };
 use serde::{Deserialize, Serialize};
 
-const REDUCER_SNAPSHOT_FORMAT_VERSION: u32 = 1;
+const REDUCER_SNAPSHOT_FORMAT_VERSION: u32 = 2;
 
 /// One authenticated Ironwood action in canonical transaction order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -86,16 +87,23 @@ pub struct Head {
 }
 
 impl Head {
+    fn terminal_at(&self, height: u32) -> Option<u32> {
+        self.terminal_height
+            .or_else(|| (height >= self.expiry_height).then_some(self.expiry_height))
+    }
+
+    /// Returns whether the terminal head must be deleted at block start.
+    pub fn is_claimable(&self, height: u32, parameters: Parameters) -> bool {
+        self.terminal_at(height).is_some_and(|terminal_height| {
+            u64::from(height) >= u64::from(terminal_height) + u64::from(parameters.cooldown_blocks)
+        })
+    }
+
     pub fn lifecycle(&self, height: u32, parameters: Parameters) -> Lifecycle {
-        let terminal = self
-            .terminal_height
-            .or_else(|| (height >= self.expiry_height).then_some(self.expiry_height));
-        match terminal {
+        match self.terminal_at(height) {
             None => Lifecycle::Active,
-            Some(terminal_height) => match parameters.claimable(terminal_height) {
-                Ok(claimable_height) if height >= claimable_height => Lifecycle::Claimable,
-                _ => Lifecycle::Cooldown,
-            },
+            Some(_) if self.is_claimable(height, parameters) => Lifecycle::Missing,
+            Some(_) => Lifecycle::Cooldown,
         }
     }
 }
@@ -104,7 +112,6 @@ impl Head {
 pub enum Lifecycle {
     Active,
     Cooldown,
-    Claimable,
     Missing,
 }
 
@@ -115,10 +122,38 @@ pub struct Resolution {
     pub head: Option<Head>,
 }
 
+/// Resolution failed because authenticated canonical coverage is insufficient.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResolutionError {
+    IncompleteHistory {
+        requested_height: u32,
+        tip_height: Option<u32>,
+    },
+    HistoricalResolutionUnavailable {
+        requested_height: u32,
+        tip_height: u32,
+    },
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ReducerTip {
     pub height: u32,
     pub hash: [u8; 32],
+}
+
+/// Protocol identity surfaced in snapshots and operational diagnostics.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProtocolIdentity {
+    pub deployment_id: [u8; 32],
+    pub ruleset_revision: u32,
+    pub ruleset_fingerprint: [u8; 32],
+}
+
+/// Inclusive range of canonical blocks retained by the rollback journal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RollbackRange {
+    pub first_height: u32,
+    pub last_height: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -126,6 +161,38 @@ pub enum Accepted {
     Commit,
     Reveal,
     Refresh,
+}
+
+/// A normative block-start deletion of a terminal head at its claimable height.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Compaction {
+    pub name_id: NameId,
+    pub previous_head: StateRef,
+    pub height: u32,
+}
+
+/// A current head made terminal by an authenticated ordinary action spend.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Termination {
+    pub name_id: NameId,
+    pub previous_head: StateRef,
+    pub height: u32,
+}
+
+/// Detailed canonical result used by cross-client trace qualification.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BlockOutcome {
+    pub accepted: Vec<Accepted>,
+    pub decisions: Vec<OperationDecision>,
+    pub compacted: Vec<Compaction>,
+    pub terminated: Vec<Termination>,
+}
+
+/// Clause-addressed result for one canonically ordered transaction operation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OperationDecision {
+    pub accepted: Option<Accepted>,
+    pub clause_id: &'static str,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -164,6 +231,10 @@ pub enum SnapshotError {
 #[derive(Serialize, Deserialize)]
 struct StoredReducer {
     format_version: u32,
+    deployment_id: [u8; 32],
+    ruleset_revision: u32,
+    ruleset_fingerprint: [u8; 32],
+    rollback_range: Option<RollbackRange>,
     parameters: StoredParameters,
     next_height: Option<u32>,
     tip_height: Option<u32>,
@@ -255,7 +326,8 @@ impl<V: ProofVerifier> Reducer<V> {
     }
 
     pub fn apply_block(&mut self, block: &Block) -> Result<Vec<Accepted>, ApplyError> {
-        self.apply_block_with_referenced_commits(block, &[])
+        self.apply_block_detailed(block, &[])
+            .map(|outcome| outcome.accepted)
     }
 
     /// Applies a block with independently authenticated historical COMMITs
@@ -269,6 +341,17 @@ impl<V: ProofVerifier> Reducer<V> {
         block: &Block,
         referenced_commits: &[ReferencedCommit],
     ) -> Result<Vec<Accepted>, ApplyError> {
+        self.apply_block_detailed(block, referenced_commits)
+            .map(|outcome| outcome.accepted)
+    }
+
+    /// Applies a block and returns both accepted operations and normative
+    /// lifecycle compactions in deterministic `NameId` order.
+    pub fn apply_block_detailed(
+        &mut self,
+        block: &Block,
+        referenced_commits: &[ReferencedCommit],
+    ) -> Result<BlockOutcome, ApplyError> {
         if Some(block.height) != self.next_height {
             return Err(ApplyError::WrongHeight);
         }
@@ -318,24 +401,38 @@ impl<V: ProofVerifier> Reducer<V> {
         }
 
         let mut undo = self.new_undo(block.height, block.hash);
+        self.mark_expired(block.height, &mut undo);
+        let compacted = self.compact_claimable(block.height, &mut undo);
         self.prune_commits(block.height, &mut undo);
         for (reference, commitment) in supplied {
             self.remember_commit(&mut undo, reference);
             self.commits.insert(reference, commitment);
         }
         let mut accepted = Vec::new();
+        let mut decisions = Vec::new();
+        let mut terminated = Vec::new();
         for transaction in &block.transactions {
-            self.mark_expired(block.height, &mut undo);
-            if let Some(value) = self.apply_transaction(block.height, transaction, &mut undo) {
+            let decision = self.apply_transaction_detailed(
+                block.height,
+                transaction,
+                &mut undo,
+                &mut terminated,
+            );
+            if let Some(value) = decision.accepted {
                 accepted.push(value);
             }
+            decisions.push(decision);
         }
-        self.mark_expired(block.height, &mut undo);
         self.next_height = block.height.checked_add(1);
         self.tip_height = Some(block.height);
         self.previous_hash = block.hash;
         self.history.push_back(undo);
-        Ok(accepted)
+        Ok(BlockOutcome {
+            accepted,
+            decisions,
+            compacted,
+            terminated,
+        })
     }
 
     pub fn tip(&self) -> Option<ReducerTip> {
@@ -409,6 +506,10 @@ impl<V: ProofVerifier> Reducer<V> {
     pub fn save_snapshot(&self) -> Result<Vec<u8>, SnapshotError> {
         let stored = StoredReducer {
             format_version: REDUCER_SNAPSHOT_FORMAT_VERSION,
+            deployment_id: self.parameters.deployment_id,
+            ruleset_revision: RULESET_REVISION,
+            ruleset_fingerprint: ruleset_fingerprint(),
+            rollback_range: self.rollback_range(),
             parameters: self.parameters.into(),
             next_height: self.next_height,
             tip_height: self.tip_height,
@@ -444,7 +545,11 @@ impl<V: ProofVerifier> Reducer<V> {
         if stored.format_version != REDUCER_SNAPSHOT_FORMAT_VERSION {
             return Err(SnapshotError::UnsupportedFormat);
         }
-        if stored.parameters != StoredParameters::from(parameters) {
+        if stored.deployment_id != parameters.deployment_id
+            || stored.ruleset_revision != RULESET_REVISION
+            || stored.ruleset_fingerprint != ruleset_fingerprint()
+            || stored.parameters != StoredParameters::from(parameters)
+        {
             return Err(SnapshotError::ParametersMismatch);
         }
         validate_tip(parameters, stored.next_height, stored.tip_height)?;
@@ -474,6 +579,9 @@ impl<V: ProofVerifier> Reducer<V> {
             history.push_back(undo);
         }
         validate_history(stored.tip_height, stored.previous_hash, &history)?;
+        if stored.rollback_range != rollback_range(&history) {
+            return Err(SnapshotError::InvalidHistory);
+        }
 
         Ok(Self {
             parameters,
@@ -495,6 +603,20 @@ impl<V: ProofVerifier> Reducer<V> {
                 .all(|undo| undo.heads.keys().all(|candidate| *candidate == name_id))
     }
 
+    /// Returns the semantic and deployment identity used by this reducer.
+    pub fn protocol_identity(&self) -> ProtocolIdentity {
+        ProtocolIdentity {
+            deployment_id: self.parameters.deployment_id,
+            ruleset_revision: RULESET_REVISION,
+            ruleset_fingerprint: ruleset_fingerprint(),
+        }
+    }
+
+    /// Returns the inclusive range currently recoverable by one-block rollback.
+    pub fn rollback_range(&self) -> Option<RollbackRange> {
+        rollback_range(&self.history)
+    }
+
     pub fn resolve(&self, name: &Name, height: u32) -> Resolution {
         let Ok(name_id) = name.id() else {
             return Resolution {
@@ -511,11 +633,43 @@ impl<V: ProofVerifier> Reducer<V> {
             };
         };
         let lifecycle = head.lifecycle(height, self.parameters);
+        if lifecycle == Lifecycle::Missing {
+            return Resolution {
+                lifecycle,
+                ua: None,
+                head: None,
+            };
+        }
         Resolution {
             ua: (lifecycle == Lifecycle::Active).then(|| head.ua.clone()),
             lifecycle,
             head: Some(head.clone()),
         }
+    }
+
+    /// Resolves only at this reducer's authenticated canonical tip.
+    ///
+    /// The reducer intentionally does not reconstruct historical Names views;
+    /// callers requesting an older height must replay a separate reducer to
+    /// that height from authenticated canonical history.
+    pub fn resolve_authenticated(
+        &self,
+        name: &Name,
+        height: u32,
+    ) -> Result<Resolution, ResolutionError> {
+        if self.tip_height.is_none_or(|tip| height > tip) {
+            return Err(ResolutionError::IncompleteHistory {
+                requested_height: height,
+                tip_height: self.tip_height,
+            });
+        }
+        if self.tip_height != Some(height) {
+            return Err(ResolutionError::HistoricalResolutionUnavailable {
+                requested_height: height,
+                tip_height: self.tip_height.expect("checked above"),
+            });
+        }
+        Ok(self.resolve(name, height))
     }
 
     fn remember_commit(&self, undo: &mut Undo, commit_ref: CommitRef) {
@@ -574,12 +728,45 @@ impl<V: ProofVerifier> Reducer<V> {
         }
     }
 
+    fn compact_claimable(&mut self, height: u32, undo: &mut Undo) -> Vec<Compaction> {
+        let claimable: Vec<_> = self
+            .heads
+            .iter()
+            .filter(|(_, head)| head.is_claimable(height, self.parameters))
+            .map(|(name_id, head)| (*name_id, head.producer))
+            .collect();
+        for (name_id, _) in &claimable {
+            self.remember_head(undo, *name_id);
+            self.heads.remove(name_id);
+        }
+        claimable
+            .into_iter()
+            .map(|(name_id, previous_head)| Compaction {
+                name_id,
+                previous_head,
+                height,
+            })
+            .collect()
+    }
+
+    #[cfg(test)]
     fn apply_transaction(
         &mut self,
         height: u32,
         transaction: &Transaction,
         undo: &mut Undo,
     ) -> Option<Accepted> {
+        self.apply_transaction_detailed(height, transaction, undo, &mut Vec::new())
+            .accepted
+    }
+
+    fn apply_transaction_detailed(
+        &mut self,
+        height: u32,
+        transaction: &Transaction,
+        undo: &mut Undo,
+        terminated: &mut Vec<Termination>,
+    ) -> OperationDecision {
         let spent: Vec<(NameId, StateRef)> = self
             .heads
             .iter()
@@ -592,7 +779,7 @@ impl<V: ProofVerifier> Reducer<V> {
             .map(|(name_id, head)| (*name_id, head.producer))
             .collect();
 
-        let result = match transaction.operation.as_ref() {
+        let decision = match transaction.operation.as_ref() {
             Some(Operation::Commit { commitment }) => {
                 let commit_ref = CommitRef {
                     height,
@@ -601,15 +788,39 @@ impl<V: ProofVerifier> Reducer<V> {
                 };
                 self.remember_commit(undo, commit_ref);
                 self.commits.insert(commit_ref, *commitment);
-                Some(Accepted::Commit)
+                OperationDecision {
+                    accepted: Some(Accepted::Commit),
+                    clause_id: "N2.COMMIT.ACCEPT",
+                }
             }
-            Some(operation @ Operation::Reveal { .. }) => self
-                .apply_reveal(height, transaction, operation, undo)
-                .map(|_| Accepted::Reveal),
-            Some(operation @ Operation::Refresh { .. }) => self
-                .apply_refresh(height, transaction, operation, undo)
-                .map(|_| Accepted::Refresh),
-            None => None,
+            Some(operation @ Operation::Reveal { .. }) => {
+                match self.apply_reveal(height, transaction, operation, undo) {
+                    Ok(_) => OperationDecision {
+                        accepted: Some(Accepted::Reveal),
+                        clause_id: "N2.REVEAL.ACCEPT",
+                    },
+                    Err(clause_id) => OperationDecision {
+                        accepted: None,
+                        clause_id,
+                    },
+                }
+            }
+            Some(operation @ Operation::Refresh { .. }) => {
+                match self.apply_refresh(height, transaction, operation, undo) {
+                    Ok(_) => OperationDecision {
+                        accepted: Some(Accepted::Refresh),
+                        clause_id: "N2.REFRESH.ACCEPT",
+                    },
+                    Err(clause_id) => OperationDecision {
+                        accepted: None,
+                        clause_id,
+                    },
+                }
+            }
+            None => OperationDecision {
+                accepted: None,
+                clause_id: "N2.BLOCK.ORDER",
+            },
         };
 
         for (name_id, spent_producer) in spent {
@@ -619,10 +830,17 @@ impl<V: ProofVerifier> Reducer<V> {
                 undo.heads
                     .entry(name_id)
                     .or_insert_with(|| Some(head.clone()));
-                head.terminal_height.get_or_insert(height);
+                if head.terminal_height.is_none() {
+                    head.terminal_height = Some(height);
+                    terminated.push(Termination {
+                        name_id,
+                        previous_head: spent_producer,
+                        height,
+                    });
+                }
             }
         }
-        result
+        decision
     }
 
     fn apply_reveal(
@@ -631,7 +849,7 @@ impl<V: ProofVerifier> Reducer<V> {
         transaction: &Transaction,
         operation: &Operation,
         undo: &mut Undo,
-    ) -> Option<NameId> {
+    ) -> Result<NameId, &'static str> {
         let Operation::Reveal {
             name,
             commit,
@@ -641,29 +859,30 @@ impl<V: ProofVerifier> Reducer<V> {
             proof,
         } = operation
         else {
-            return None;
+            return Err("N2.REVEAL.MISSING");
         };
-        let name_id = name.id().ok()?;
-        if self
-            .heads
-            .get(&name_id)
-            .is_some_and(|head| head.lifecycle(height, self.parameters) != Lifecycle::Claimable)
-        {
-            return None;
+        let name_id = name.id().map_err(|_| "N2.REVEAL.MISSING")?;
+        if self.heads.contains_key(&name_id) {
+            return Err("N2.REVEAL.MISSING");
         }
-        if !self.parameters.accepts_operation(name_id, height)
-            || !self.parameters.accepts_commit(commit.height, height)
-        {
-            return None;
+        if !self.parameters.accepts_operation(name_id, height) {
+            return Err("N2.REVEAL.SCHEDULE");
         }
-        let commitment = *self.commits.get(commit)?;
+        if !self.parameters.accepts_commit(commit.height, height) {
+            return Err("N2.REVEAL.COMMIT");
+        }
+        let commitment = *self.commits.get(commit).ok_or("N2.REVEAL.COMMIT")?;
         let action = transaction
             .actions
-            .get(usize::try_from(*action_index).ok()?)?;
+            .get(usize::try_from(*action_index).map_err(|_| "N2.REVEAL.ACTION")?)
+            .ok_or("N2.REVEAL.ACTION")?;
         if action.action_index != *action_index {
-            return None;
+            return Err("N2.REVEAL.ACTION");
         }
-        let epoch = self.parameters.epoch(height).ok()?;
+        let epoch = self
+            .parameters
+            .epoch(height)
+            .map_err(|_| "N2.REVEAL.SCHEDULE")?;
         let statement = RevealStatement {
             deployment_id: self.parameters.deployment_id,
             name_id,
@@ -677,9 +896,12 @@ impl<V: ProofVerifier> Reducer<V> {
             successor_future_nf: *successor_future_nf,
         };
         if !self.verifier.verify_reveal(&statement, proof) {
-            return None;
+            return Err("N2.REVEAL.PROOF");
         }
-        let expiry_height = self.parameters.expiry(height).ok()?;
+        let expiry_height = self
+            .parameters
+            .expiry(height)
+            .map_err(|_| "N2.REVEAL.SCHEDULE")?;
         self.remember_head(undo, name_id);
         self.heads.insert(
             name_id,
@@ -699,7 +921,7 @@ impl<V: ProofVerifier> Reducer<V> {
                 terminal_height: None,
             },
         );
-        Some(name_id)
+        Ok(name_id)
     }
 
     fn apply_refresh(
@@ -708,7 +930,7 @@ impl<V: ProofVerifier> Reducer<V> {
         transaction: &Transaction,
         operation: &Operation,
         undo: &mut Undo,
-    ) -> Option<NameId> {
+    ) -> Result<NameId, &'static str> {
         let Operation::Refresh {
             name,
             predecessor,
@@ -718,23 +940,35 @@ impl<V: ProofVerifier> Reducer<V> {
             proof,
         } = operation
         else {
-            return None;
+            return Err("N2.REFRESH.CURRENT");
         };
-        let name_id = name.id().ok()?;
-        let predecessor_head = self.heads.get(&name_id)?.clone();
-        let epoch = self.parameters.epoch(height).ok()?;
+        let name_id = name.id().map_err(|_| "N2.REFRESH.CURRENT")?;
+        let predecessor_head = self
+            .heads
+            .get(&name_id)
+            .ok_or("N2.REFRESH.CURRENT")?
+            .clone();
+        let epoch = self
+            .parameters
+            .epoch(height)
+            .map_err(|_| "N2.REFRESH.SCHEDULE")?;
         if predecessor_head.lifecycle(height, self.parameters) != Lifecycle::Active
             || predecessor_head.producer != *predecessor
-            || predecessor_head.producer_epoch >= epoch
-            || !self.parameters.accepts_operation(name_id, height)
         {
-            return None;
+            return Err("N2.REFRESH.CURRENT");
+        }
+        if predecessor_head.producer_epoch >= epoch {
+            return Err("N2.REFRESH.EPOCH");
+        }
+        if !self.parameters.accepts_operation(name_id, height) {
+            return Err("N2.REFRESH.SCHEDULE");
         }
         let action = transaction
             .actions
-            .get(usize::try_from(*action_index).ok()?)?;
+            .get(usize::try_from(*action_index).map_err(|_| "N2.REFRESH.ACTION")?)
+            .ok_or("N2.REFRESH.ACTION")?;
         if action.action_index != *action_index || action.nullifier != predecessor_head.future_nf {
-            return None;
+            return Err("N2.REFRESH.ACTION");
         }
         let statement = RefreshStatement {
             deployment_id: self.parameters.deployment_id,
@@ -751,9 +985,12 @@ impl<V: ProofVerifier> Reducer<V> {
             successor_future_nf: *successor_future_nf,
         };
         if !self.verifier.verify_refresh(&statement, proof) {
-            return None;
+            return Err("N2.REFRESH.PROOF");
         }
-        let expiry_height = self.parameters.expiry(height).ok()?;
+        let expiry_height = self
+            .parameters
+            .expiry(height)
+            .map_err(|_| "N2.REFRESH.SCHEDULE")?;
         self.remember_head(undo, name_id);
         self.heads.insert(
             name_id,
@@ -773,7 +1010,7 @@ impl<V: ProofVerifier> Reducer<V> {
                 terminal_height: None,
             },
         );
-        Some(name_id)
+        Ok(name_id)
     }
 }
 
@@ -886,7 +1123,7 @@ fn restore_head(
     {
         return Err(SnapshotError::InvalidState);
     }
-    Ok(Head {
+    let head = Head {
         name,
         ua,
         producer: stored.producer,
@@ -895,7 +1132,13 @@ fn restore_head(
         producer_epoch: stored.producer_epoch,
         expiry_height: stored.expiry_height,
         terminal_height: stored.terminal_height,
-    })
+    };
+    if head.terminal_height.is_none() && tip >= head.expiry_height
+        || head.is_claimable(tip, parameters)
+    {
+        return Err(SnapshotError::InvalidState);
+    }
+    Ok(head)
 }
 
 fn restore_undo(
@@ -980,6 +1223,13 @@ fn validate_history(
     Ok(())
 }
 
+fn rollback_range(history: &VecDeque<Undo>) -> Option<RollbackRange> {
+    Some(RollbackRange {
+        first_height: history.front()?.height,
+        last_height: history.back()?.height,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1034,6 +1284,8 @@ mod tests {
         transaction: &Transaction,
     ) -> Option<Accepted> {
         let mut undo = reducer.new_undo(height, [0; 32]);
+        reducer.mark_expired(height, &mut undo);
+        reducer.compact_claimable(height, &mut undo);
         reducer.apply_transaction(height, transaction, &mut undo)
     }
 
@@ -1161,7 +1413,7 @@ mod tests {
         assert!(reducer.resolve(&name, spend_height).ua.is_none());
         assert_eq!(
             reducer.resolve(&name, spend_height + 20).lifecycle,
-            Lifecycle::Claimable
+            Lifecycle::Missing
         );
     }
 
@@ -1278,6 +1530,122 @@ mod tests {
         assert_eq!(head.producer.txid, reclaim.txid);
         assert_eq!(head.terminal_height, None);
         assert_eq!(head.lifecycle(reveal_height, parameters), Lifecycle::Active);
+    }
+
+    #[test]
+    fn claimable_head_compacts_before_same_block_reveal_and_rollback_restores_it() {
+        let name = Name::parse("alice").unwrap();
+        let name_id = name.id().unwrap();
+        let parameters = parameters();
+        let replacement_height = (20..40)
+            .find(|height| parameters.accepts_operation(name_id, *height))
+            .unwrap();
+        let terminal_height = replacement_height - parameters.cooldown_blocks;
+        let commit_ref = CommitRef {
+            height: replacement_height - parameters.commit_maturity_blocks,
+            tx_index: 0,
+            txid: [7; 32],
+        };
+        let old = Head {
+            name: name.clone(),
+            ua: ua(),
+            producer: StateRef {
+                height: 0,
+                tx_index: 0,
+                txid: [1; 32],
+                action_index: 0,
+            },
+            commitment: field(2),
+            future_nf: field(3),
+            producer_epoch: 0,
+            expiry_height: parameters.expiry(0).unwrap(),
+            terminal_height: Some(terminal_height),
+        };
+        assert_eq!(
+            old.lifecycle(replacement_height - 1, parameters),
+            Lifecycle::Cooldown
+        );
+        assert_eq!(
+            old.lifecycle(replacement_height, parameters),
+            Lifecycle::Missing
+        );
+
+        let mut reducer = Reducer::new(parameters, [0; 32], AcceptProofs).unwrap();
+        reducer.next_height = Some(replacement_height);
+        reducer.tip_height = replacement_height.checked_sub(1);
+        reducer.previous_hash = [4; 32];
+        reducer.heads.insert(name_id, old.clone());
+        reducer.commits.insert(
+            commit_ref,
+            Commitment::from_bytes(pallas::Base::from(8).to_repr()).unwrap(),
+        );
+        let replacement = Transaction {
+            tx_index: 0,
+            txid: [9; 32],
+            actions: vec![Action {
+                action_index: 0,
+                nullifier: old.future_nf,
+                commitment: field(10),
+            }],
+            operation: Some(Operation::Reveal {
+                name: name.clone(),
+                commit: commit_ref,
+                ua: ua(),
+                action_index: 0,
+                successor_future_nf: field(11),
+                proof: vec![1],
+            }),
+        };
+        let block = Block {
+            height: replacement_height,
+            hash: [5; 32],
+            prev_hash: [4; 32],
+            transactions: vec![replacement],
+        };
+
+        let outcome = reducer.apply_block_detailed(&block, &[]).unwrap();
+        assert_eq!(outcome.accepted, vec![Accepted::Reveal]);
+        assert_eq!(
+            outcome.compacted,
+            vec![Compaction {
+                name_id,
+                previous_head: old.producer,
+                height: replacement_height,
+            }]
+        );
+        let replacement_head = reducer.resolve(&name, replacement_height).head.unwrap();
+        assert_ne!(replacement_head.producer, old.producer);
+        assert_eq!(replacement_head.terminal_height, None);
+
+        reducer.rollback_tip(block.hash).unwrap();
+        assert_eq!(reducer.heads.get(&name_id), Some(&old));
+        assert_eq!(
+            reducer.resolve(&name, replacement_height - 1).lifecycle,
+            Lifecycle::Cooldown
+        );
+
+        let empty_fork = Block {
+            height: replacement_height,
+            hash: [6; 32],
+            prev_hash: [4; 32],
+            transactions: vec![],
+        };
+        let outcome = reducer.apply_block_detailed(&empty_fork, &[]).unwrap();
+        assert_eq!(outcome.compacted.len(), 1);
+        assert_eq!(
+            reducer.resolve(&name, replacement_height).lifecycle,
+            Lifecycle::Missing
+        );
+
+        let snapshot = reducer.save_snapshot().unwrap();
+        let restored =
+            Reducer::load_snapshot(parameters, Network::Regtest, AcceptProofs, &snapshot).unwrap();
+        assert_eq!(restored.protocol_identity(), reducer.protocol_identity());
+        assert_eq!(restored.rollback_range(), reducer.rollback_range());
+        assert_eq!(
+            restored.resolve(&name, replacement_height).lifecycle,
+            Lifecycle::Missing
+        );
     }
 
     #[test]

@@ -3,6 +3,7 @@
 use crate::{
     names_application_id,
     protocol::{BOND_ZATOSHIS, MAX_NAME_BYTES, MAX_UA_BYTES},
+    ruleset::ruleset_fingerprint,
     schedule::Parameters,
 };
 use coppice::identity::CoreRuntimeId;
@@ -13,6 +14,8 @@ pub const NAMES_APPLICATION_VERSION: u16 = 2;
 pub const VERIFIER_MANIFEST_REVISION: u8 = 1;
 /// Verifier-suite manifest encoding revision.
 pub const VERIFIER_SUITE_REVISION: u8 = 1;
+/// Encoding revision for the canonical Names v2 deployment preimage.
+pub const DEPLOYMENT_PREIMAGE_REVISION: u8 = 1;
 
 const DEPLOYMENT_PERSONALIZATION: &[u8] = b"CoppiceN2Dep";
 const REVEAL_VERIFIER_PERSONALIZATION: &[u8] = b"CoppiceN2ReVr";
@@ -136,6 +139,7 @@ pub struct DeploymentParameters {
     pub commit_ttl_blocks: u32,
     pub lease_blocks: u32,
     pub cooldown_blocks: u32,
+    pub ruleset_fingerprint: [u8; 32],
     pub proof: ProofIdentity,
 }
 
@@ -144,6 +148,7 @@ pub struct DeploymentParameters {
 pub enum DeploymentError {
     InvalidSchedule,
     InvalidProofSize,
+    RulesetMismatch,
 }
 
 impl DeploymentParameters {
@@ -185,6 +190,7 @@ impl DeploymentParameters {
             commit_ttl_blocks: timing.commit_ttl_blocks,
             lease_blocks: timing.lease_blocks,
             cooldown_blocks: timing.cooldown_blocks,
+            ruleset_fingerprint: ruleset_fingerprint(),
             proof,
         }
     }
@@ -196,20 +202,25 @@ impl DeploymentParameters {
         {
             return Err(DeploymentError::InvalidProofSize);
         }
+        if self.ruleset_fingerprint != ruleset_fingerprint() {
+            return Err(DeploymentError::RulesetMismatch);
+        }
         self.schedule([1; 32])
             .validate()
             .map_err(|_| DeploymentError::InvalidSchedule)?;
         Ok(self)
     }
 
-    /// Returns the exact 173-byte, big-endian deployment preimage.
-    pub fn canonical_preimage(self) -> Result<[u8; 173], DeploymentError> {
+    /// Returns the exact 206-byte, big-endian deployment preimage.
+    pub fn canonical_preimage(self) -> Result<[u8; 206], DeploymentError> {
         let validated = self.validate()?;
-        let mut output = Vec::with_capacity(173);
+        let mut output = Vec::with_capacity(206);
         output.extend_from_slice(b"CND2");
+        output.push(DEPLOYMENT_PREIMAGE_REVISION);
         output.extend_from_slice(validated.core_runtime_id.as_bytes());
         output.extend_from_slice(names_application_id().as_bytes());
         output.extend_from_slice(&NAMES_APPLICATION_VERSION.to_be_bytes());
+        output.extend_from_slice(&validated.ruleset_fingerprint);
         output.extend_from_slice(&validated.activation_height.to_be_bytes());
         output.extend_from_slice(&validated.epoch_blocks.to_be_bytes());
         output.extend_from_slice(&validated.window_blocks.to_be_bytes());
@@ -340,7 +351,7 @@ mod tests {
     fn deployment_identity_binds_every_variable_input() {
         let baseline = deployment();
         let expected = baseline.deployment_id().unwrap();
-        assert_eq!(baseline.canonical_preimage().unwrap().len(), 173);
+        assert_eq!(baseline.canonical_preimage().unwrap().len(), 206);
 
         let changes: [fn(&mut DeploymentParameters); 10] = [
             |value| value.core_runtime_id = CoreRuntimeId::from_bytes([4; 32]),
@@ -382,5 +393,8 @@ mod tests {
             [2; 32],
         );
         assert_eq!(invalid.validate(), Err(DeploymentError::InvalidProofSize));
+        invalid = deployment();
+        invalid.ruleset_fingerprint[0] ^= 1;
+        assert_eq!(invalid.validate(), Err(DeploymentError::RulesetMismatch));
     }
 }

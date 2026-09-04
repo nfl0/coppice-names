@@ -142,13 +142,13 @@ COMMIT secret, and all note plaintexts remain hidden.
    CommitRef, UA, action index, action nullifier, action commitment,
    successor future nullifier, bond value — verifies against the
    replay-constructed facts ✓;
-7. lineage: no existing head for `alice`, or it is `Claimable` ✓.
+7. lineage: no retained head for `alice` after block-start compaction ✓.
 
 An attacker who copied Alice's bulletin byte-for-byte fails at step 6: the
 proof binds *her* hidden owner and *her* successor note; substituting a
 different note or owner breaks the statement. An attacker who published their
 own valid REVEAL for `alice` at 1,000,635 would fail at step 7 — the head
-already exists and is `Active`, not `Claimable`. Canonical order, not
+already exists and is `Active`. Canonical order, not
 commitment order, decides [SPEC §8.2](SPECIFICATION.md#82-reveal).
 
 The accepted head is now:
@@ -271,7 +271,7 @@ names is [SPEC §15](SPECIFICATION.md#15-rejection-taxonomy).
 | REVEAL outside `window(alice, e)` | Rejected before any proof work (`schedule` stage) |
 | REVEAL referencing an immature or expired COMMIT | Rejected (`maturity ≤ r − c < TTL`) |
 | Copied REVEAL substituting a different bond note or owner | Proof fails: the statement binds the original hidden authority and note |
-| Second valid REVEAL while a head is `Active` | Rejected: no head, or head `Claimable`, is required |
+| Second valid REVEAL while a head is `Active` | Rejected: no retained head is required |
 | REFRESH citing a stale head, or inside the predecessor's epoch | Rejected: exact current predecessor, strictly later epoch |
 | Carrier note carrying value, or wrong application identity | Rejected at transport before decoding deeper |
 | Trailing bytes, wrong tag, wrong proof length | Rejected at codec |

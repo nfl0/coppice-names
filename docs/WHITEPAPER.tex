@@ -411,7 +411,7 @@ Ordinary spend & Release the name & No new bulletin; linkable through the curren
 \end{center}
 
 Figure~\ref{fig:lifecycle} summarizes the lifecycle. \operation{COMMIT} does
-not reserve a name. If competing registrations target the same claimable
+not reserve a name. If competing registrations target the same reusable
 name, canonical block and transaction order determine which valid
 \operation{REVEAL} is accepted first.
 
@@ -427,12 +427,12 @@ name, canonical block and transaction order determine which valid
 \node[state] (commit) {\operation{COMMIT}};
 \node[state, right=of commit] (active) {Active};
 \node[state, right=of active] (cooldown) {Cooldown};
-\node[state, right=of cooldown] (claimable) {Claimable};
+\node[state, right=of cooldown] (missing) {Missing};
 
 \draw[flow] (commit) -- node[note, above=4mm] {\operation{REVEAL}: maturity,\\ window, proof} (active);
 \draw[flow] (active) -- node[note, above=4mm] {lease expiry or\\ ordinary bond spend} (cooldown);
-\draw[flow] (cooldown) -- node[note, above=4mm] {one epoch;\\ resolves to nothing} (claimable);
-\draw[flow] (claimable.south) to[out=-90,in=-90,looseness=1.25]
+\draw[flow] (cooldown) -- node[note, above=4mm] {one epoch;\\ delete head} (missing);
+\draw[flow] (missing.south) to[out=-90,in=-90,looseness=1.25]
   node[note, below] {new \operation{REVEAL}:\\ first canonically valid} (active.south);
 \draw[flow] (active.north east) to[out=60,in=120,looseness=4]
   node[note, above=2mm] {\operation{REFRESH}: new UA and/or new lease (proof-carrying)} (active.north west);
@@ -702,12 +702,14 @@ non-resolving interval reduces the risk that a recently terminated name
 immediately begins paying a new owner. The rule does not distinguish
 voluntary release from natural expiry, and the former owner receives no
 special reclaim priority. Cooldown is an anti-impersonation quarantine, not
-an ownership grace period: once claimable, the first canonically ordered
-valid \operation{REVEAL} may replace the old head.
+an ownership grace period: at the first height after cooldown, the reducer
+deletes the old head at block start and the first canonically ordered valid
+\operation{REVEAL} may install a new head.
 
-Resolution returns the UA only for the \code{Active} lifecycle. Cooldown and
-claimable results may include head metadata for auditing but must not be
-presented as a payable current record.
+Resolution returns the UA only for the \code{Active} lifecycle. Cooldown may
+include head metadata for diagnostics but must not be presented as payable.
+Missing returns neither a head nor a UA and intentionally does not distinguish
+never-used from formerly-used names.
 
 \section{Hidden ownership: the zero-knowledge proofs}
 \label{sec:proofs}
@@ -775,11 +777,10 @@ or invalid. Step~3 is the point: a proof-valid physical note can never
 silently replace accepted Names state, so the record lives in accepted
 lineage, not in whichever bond-like note happens to exist.
 
-Transactions are processed in canonical block order with lease expiry
-applied between steps; the first canonically ordered valid operation that
+At block start, lease expiry is applied and terminal heads past cooldown are
+deleted. Transactions are then processed in canonical order; the first valid operation that
 changes a name can make later conflicting operations invalid. A
-\operation{REVEAL} is accepted only when no head exists or the existing head
-is \code{Claimable}; a \operation{REFRESH} only against the exact current
+\operation{REVEAL} is accepted only when no retained head exists; a \operation{REFRESH} only against the exact current
 \code{Active} head.
 
 \subsection{Resolving an arbitrary name}
@@ -992,8 +993,8 @@ mechanisms that defeat it and the residual risk that remains.
 \operation{REVEAL}. A copied \operation{REVEAL} cannot substitute another
 hidden owner or successor note without satisfying the bound proof. A
 \operation{COMMIT} does not reserve the name, so canonical ordering still
-decides between independently valid competing registrations after the name
-becomes claimable.
+decides between independently valid competing registrations after the old
+head is compacted.
 
 A \operation{REFRESH} must spend the exact current accepted predecessor and
 prove the same hidden authority controls its successor; an attacker cannot
@@ -1436,14 +1437,13 @@ envelope and carried by zero-value notes.
 \item[CA01] Coppice's application envelope, naming application identity and
 version.
 \item[Carrier] A zero-value note whose ciphertext carries bulletin bytes.
-\item[Claimable] Lifecycle state after cooldown, during which a new
-\operation{REVEAL} may replace the old head.
 \item[Cooldown] One epoch of non-resolving quarantine after expiry or
 release.
 \item[\textsf{CommitRef}] Canonical reference to one transaction:
 height, transaction index, transaction ID.
 \item[Deployment identifier] Hash over the fixed deployment preimage
-(parameters, identities, verifiers); separates deployments cryptographically.
+(parameters, identities, semantic-ruleset fingerprint, verifiers); separates
+deployments cryptographically.
 \item[Designated action] The Ironwood action that spends and creates bond
 notes, bound by the operation proof.
 \item[Epoch] $E$ consecutive canonical blocks starting at activation; each

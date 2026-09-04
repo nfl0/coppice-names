@@ -52,7 +52,7 @@
         },
         {"kind": "apply", "label": "last-cooldown-block", "block": {"height": 16, "branch_byte": 1, "transactions": []}},
         {
-          "kind": "apply", "label": "first-claimable-replacement",
+          "kind": "apply", "label": "first-missing-replacement",
           "block": {"height": 17, "branch_byte": 1, "transactions": [
             {"tx_index": 0, "txid_hex": "1818181818181818181818181818181818181818181818181818181818181818", "actions": [{"action_index": 0, "nullifier": 20, "commitment": 201}], "operation": {"type": "reveal", "name": "alice", "commit": {"height": 15, "tx_index": 0, "txid_hex": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"}, "ua": "uregtest1rxnn8qurdex552draeuvvvucggeknmmsxazg52mkatf0hrclhppe5jeqj6w7svqtxvxq320tw6ejsk4nm8zk8f35274vlwqerfx74904pydaxe27wnpq8llqxclaa0n04zg764ppzfruu4gsagmqw0mlvx", "action_index": 0, "successor_future_nf": 21, "proof_valid": true}}
           ]}
@@ -75,7 +75,7 @@
         {"kind": "advance_empty", "label": "last-active-block", "through_height": 43, "branch_byte": 2},
         {"kind": "advance_empty", "label": "expiry-boundary", "through_height": 44, "branch_byte": 2},
         {"kind": "advance_empty", "label": "last-expiry-cooldown-block", "through_height": 51, "branch_byte": 2},
-        {"kind": "advance_empty", "label": "expiry-claimable-boundary", "through_height": 52, "branch_byte": 2}
+        {"kind": "advance_empty", "label": "expiry-missing-boundary", "through_height": 52, "branch_byte": 2}
       ]
     },
     {

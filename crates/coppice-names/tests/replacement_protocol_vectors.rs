@@ -7,7 +7,10 @@
 use coppice::identity::CoreRuntimeId;
 use coppice_names::{
     codec::{CodecParameters, Operation, decode, encode},
-    deployment::{DeploymentParameters, NAMES_APPLICATION_VERSION, verifier_suite_id},
+    deployment::{
+        DEPLOYMENT_PREIMAGE_REVISION, DeploymentParameters, NAMES_APPLICATION_VERSION,
+        verifier_suite_id,
+    },
     names_application_id,
     proof::keygen,
     protocol::{
@@ -68,6 +71,7 @@ fn deployment(proof: coppice_names::deployment::ProofIdentity) -> DeploymentPara
         commit_ttl_blocks: candidate.commit_ttl_blocks,
         lease_blocks: candidate.lease_blocks,
         cooldown_blocks: candidate.cooldown_blocks,
+        ruleset_fingerprint: coppice_names::ruleset::ruleset_fingerprint(),
         proof,
     }
 }
@@ -291,7 +295,7 @@ fn build_document() -> Value {
         previous_hash = hash;
     }
     let resolution = reducer.resolve(&name, refresh_height);
-    let exact_resolution = exact.resolve(refresh_height);
+    let exact_resolution = exact.resolve(refresh_height).unwrap();
     assert_eq!(exact_resolution, resolution);
     assert_eq!(resolution.lifecycle, Lifecycle::Active);
     assert_eq!(resolution.ua.as_ref(), Some(&ua));
@@ -326,6 +330,9 @@ fn build_document() -> Value {
         "identity": {
             "core_runtime_id_hex": CORE_RUNTIME_ID,
             "names_application_id_hex": hex::encode(names_application_id().to_bytes()),
+            "deployment_preimage_revision": DEPLOYMENT_PREIMAGE_REVISION,
+            "ruleset_revision": coppice_names::ruleset::RULESET_REVISION,
+            "ruleset_fingerprint_hex": hex::encode(deployment.ruleset_fingerprint),
             "verifier_suite_manifest_utf8": String::from_utf8_lossy(coppice_names::deployment::VERIFIER_SUITE_MANIFEST),
             "verifier_suite_id_hex": hex::encode(verifier_suite_id()),
             "circuit_k": CIRCUIT_K,

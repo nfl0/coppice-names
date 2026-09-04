@@ -14,6 +14,7 @@ CPV1, CA01, canonical Zcash replay, or Core rendezvous semantics.
 ```text
 crates/coppice-names                 Names reducer, resolver, proofs, and wire
 crates/coppice-names-wallet          Recoverable operation and V6 PCZT construction
+ruleset/names-v2.json                Canonical semantic ruleset identity
 test-vectors/                        Replacement protocol conformance artifact
 ```
 
@@ -34,7 +35,9 @@ evidence. A worked end-to-end lifecycle example is in
 is documented in
 [`docs/SPECIFICATION.md`](docs/SPECIFICATION.md). The checked-in conformance
 artifact and its independent consumers are described in
-[`test-vectors/MANIFEST.md`](test-vectors/MANIFEST.md).
+[`test-vectors/MANIFEST.md`](test-vectors/MANIFEST.md). The claimable-head
+compaction and ruleset-identity decision is recorded in
+[`docs/decisions/0004-claimable-compaction-and-ruleset-identity.md`](docs/decisions/0004-claimable-compaction-and-ruleset-identity.md).
 
 ## License
 

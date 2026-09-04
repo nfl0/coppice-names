@@ -534,6 +534,7 @@ mod tests {
             commit_ttl_blocks: 10,
             lease_blocks: 50,
             cooldown_blocks: 20,
+            ruleset_fingerprint: crate::ruleset::ruleset_fingerprint(),
             proof: ProofIdentity::derive(11, 64, 96, [1; 32], [2; 32]),
         }
     }

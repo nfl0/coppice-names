@@ -4,18 +4,24 @@ use crate::{
     codec::Operation,
     protocol::{Name, NameId, Network},
     reducer::{
-        Accepted, ApplyError, Block, FinalizationError, ProofVerifier, Reducer, ReducerTip,
-        ReferencedCommit, Resolution, RollbackError, SnapshotError,
+        Accepted, ApplyError, Block, BlockOutcome, FinalizationError, ProofVerifier,
+        ProtocolIdentity, Reducer, ReducerTip, ReferencedCommit, Resolution, ResolutionError,
+        RollbackError, RollbackRange, SnapshotError,
     },
+    ruleset::{RULESET_REVISION, ruleset_fingerprint},
     schedule::Parameters,
 };
 use serde::{Deserialize, Serialize};
 
-const EXACT_RESOLVER_SNAPSHOT_FORMAT_VERSION: u32 = 1;
+const EXACT_RESOLVER_SNAPSHOT_FORMAT_VERSION: u32 = 2;
 
 #[derive(Serialize, Deserialize)]
 struct StoredExactResolver {
     format_version: u32,
+    deployment_id: [u8; 32],
+    ruleset_revision: u32,
+    ruleset_fingerprint: [u8; 32],
+    rollback_range: Option<RollbackRange>,
     name: String,
     reducer: Vec<u8>,
 }
@@ -80,13 +86,41 @@ impl<V: ProofVerifier> ExactResolver<V> {
             .apply_block_with_referenced_commits(&filtered, referenced_commits)
     }
 
+    /// Applies exact-name state and exposes normative lifecycle transitions for
+    /// cross-client trace qualification.
+    pub fn apply_block_detailed(
+        &mut self,
+        block: &Block,
+        referenced_commits: &[ReferencedCommit],
+    ) -> Result<BlockOutcome, ApplyError> {
+        let mut filtered = block.clone();
+        for transaction in &mut filtered.transactions {
+            let relevant = match transaction.operation.as_ref() {
+                Some(Operation::Commit { .. }) => true,
+                Some(Operation::Reveal { name, .. } | Operation::Refresh { name, .. }) => {
+                    name.id() == Ok(self.name_id)
+                }
+                None => false,
+            };
+            if !relevant {
+                transaction.operation = None;
+            }
+        }
+        self.reducer
+            .apply_block_detailed(&filtered, referenced_commits)
+    }
+
     /// Resolves at an applied canonical height.
-    pub fn resolve(&self, height: u32) -> Resolution {
-        self.reducer.resolve(&self.name, height)
+    pub fn resolve(&self, height: u32) -> Result<Resolution, ResolutionError> {
+        self.reducer.resolve_authenticated(&self.name, height)
     }
 
     pub fn tip(&self) -> Option<ReducerTip> {
         self.reducer.tip()
+    }
+
+    pub fn protocol_identity(&self) -> ProtocolIdentity {
+        self.reducer.protocol_identity()
     }
 
     pub fn pending_commit(
@@ -115,6 +149,10 @@ impl<V: ProofVerifier> ExactResolver<V> {
     pub fn save_snapshot(&self) -> Result<Vec<u8>, SnapshotError> {
         let stored = StoredExactResolver {
             format_version: EXACT_RESOLVER_SNAPSHOT_FORMAT_VERSION,
+            deployment_id: self.reducer.protocol_identity().deployment_id,
+            ruleset_revision: RULESET_REVISION,
+            ruleset_fingerprint: ruleset_fingerprint(),
+            rollback_range: self.reducer.rollback_range(),
             name: self.name.as_str().to_owned(),
             reducer: self.reducer.save_snapshot()?,
         };
@@ -139,10 +177,19 @@ impl<V: ProofVerifier> ExactResolver<V> {
         if stored.name != name.as_str() {
             return Err(SnapshotError::NameMismatch);
         }
+        if stored.deployment_id != parameters.deployment_id
+            || stored.ruleset_revision != RULESET_REVISION
+            || stored.ruleset_fingerprint != ruleset_fingerprint()
+        {
+            return Err(SnapshotError::ParametersMismatch);
+        }
         let name_id = name.id().map_err(|_| SnapshotError::NameMismatch)?;
         let reducer = Reducer::load_snapshot(parameters, network, verifier, &stored.reducer)?;
         if !reducer.is_exact_for(name_id) {
             return Err(SnapshotError::NameMismatch);
+        }
+        if reducer.rollback_range() != stored.rollback_range {
+            return Err(SnapshotError::InvalidHistory);
         }
         Ok(Self {
             name,
@@ -276,7 +323,7 @@ mod tests {
             previous_hash = block_hash;
         }
         assert_eq!(
-            resolver.resolve(spend_height).lifecycle,
+            resolver.resolve(spend_height).unwrap().lifecycle,
             Lifecycle::Cooldown
         );
         assert_eq!(
@@ -291,11 +338,11 @@ mod tests {
         let mut candidate = resolver.clone();
         candidate.rollback_tip(hash(spend_height)).unwrap();
         assert_eq!(
-            candidate.resolve(spend_height - 1).lifecycle,
+            candidate.resolve(spend_height - 1).unwrap().lifecycle,
             Lifecycle::Active
         );
         assert_eq!(
-            resolver.resolve(spend_height).lifecycle,
+            resolver.resolve(spend_height).unwrap().lifecycle,
             Lifecycle::Cooldown
         );
 
@@ -325,6 +372,32 @@ mod tests {
             )
             .map(|_| ()),
             Err(SnapshotError::ParametersMismatch)
+        );
+        let mut wrong_ruleset: serde_json::Value = serde_json::from_slice(&snapshot).unwrap();
+        wrong_ruleset["ruleset_fingerprint"][0] = serde_json::Value::from(255);
+        assert_eq!(
+            ExactResolver::load_snapshot(
+                parameters,
+                Network::Regtest,
+                Name::parse("alice").unwrap(),
+                AcceptProofs,
+                &serde_json::to_vec(&wrong_ruleset).unwrap(),
+            )
+            .map(|_| ()),
+            Err(SnapshotError::ParametersMismatch)
+        );
+        let mut wrong_range: serde_json::Value = serde_json::from_slice(&snapshot).unwrap();
+        wrong_range["rollback_range"]["first_height"] = serde_json::Value::from(1_000);
+        assert_eq!(
+            ExactResolver::load_snapshot(
+                parameters,
+                Network::Regtest,
+                Name::parse("alice").unwrap(),
+                AcceptProofs,
+                &serde_json::to_vec(&wrong_range).unwrap(),
+            )
+            .map(|_| ()),
+            Err(SnapshotError::InvalidHistory)
         );
         let mut invalid_history: serde_json::Value = serde_json::from_slice(&snapshot).unwrap();
         let reducer_bytes: Vec<u8> =
@@ -358,7 +431,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            resolver.resolve(spend_height).lifecycle,
+            resolver.resolve(spend_height).unwrap().lifecycle,
             Lifecycle::Cooldown
         );
 
@@ -367,13 +440,13 @@ mod tests {
             Err(RollbackError::WrongTipHash)
         );
         assert_eq!(
-            resolver.resolve(spend_height).lifecycle,
+            resolver.resolve(spend_height).unwrap().lifecycle,
             Lifecycle::Cooldown
         );
 
         resolver.rollback_tip(hash(spend_height)).unwrap();
         assert_eq!(
-            resolver.resolve(spend_height - 1).lifecycle,
+            resolver.resolve(spend_height - 1).unwrap().lifecycle,
             Lifecycle::Active
         );
 
@@ -385,12 +458,69 @@ mod tests {
                 transactions: vec![],
             })
             .unwrap();
-        assert_eq!(resolver.resolve(spend_height).lifecycle, Lifecycle::Active);
+        assert_eq!(
+            resolver.resolve(spend_height).unwrap().lifecycle,
+            Lifecycle::Active
+        );
 
         resolver.finalize_through(spend_height).unwrap();
         assert_eq!(
             resolver.rollback_tip([40; 32]),
             Err(RollbackError::BeyondRetention)
+        );
+    }
+
+    #[test]
+    fn exact_resolution_separates_missing_from_incomplete_history() {
+        let parameters = Parameters {
+            deployment_id: [7; 32],
+            activation_height: 0,
+            epoch_blocks: 20,
+            window_blocks: 4,
+            commit_maturity_blocks: 4,
+            commit_ttl_blocks: 10,
+            lease_blocks: 50,
+            cooldown_blocks: 20,
+        };
+        let name = Name::parse("alice").unwrap();
+        let mut resolver = ExactResolver::new(parameters, [0; 32], name, AcceptProofs).unwrap();
+        assert_eq!(
+            resolver.resolve(0),
+            Err(ResolutionError::IncompleteHistory {
+                requested_height: 0,
+                tip_height: None,
+            })
+        );
+        resolver
+            .apply_block(&Block {
+                height: 0,
+                hash: hash(0),
+                prev_hash: [0; 32],
+                transactions: vec![],
+            })
+            .unwrap();
+        assert_eq!(resolver.resolve(0).unwrap().lifecycle, Lifecycle::Missing);
+        assert_eq!(
+            resolver.resolve(1),
+            Err(ResolutionError::IncompleteHistory {
+                requested_height: 1,
+                tip_height: Some(0),
+            })
+        );
+        resolver
+            .apply_block(&Block {
+                height: 1,
+                hash: hash(1),
+                prev_hash: hash(0),
+                transactions: vec![],
+            })
+            .unwrap();
+        assert_eq!(
+            resolver.resolve(0),
+            Err(ResolutionError::HistoricalResolutionUnavailable {
+                requested_height: 0,
+                tip_height: 1,
+            })
         );
     }
 
@@ -475,7 +605,10 @@ mod tests {
             }
             previous_hash = block_hash;
         }
-        assert_eq!(resolver.resolve(reveal_height).lifecycle, Lifecycle::Active);
+        assert_eq!(
+            resolver.resolve(reveal_height).unwrap().lifecycle,
+            Lifecycle::Active
+        );
         assert_eq!(resolver.pending_commit(&commit_ref), Some(commitment));
 
         resolver.rollback_tip(hash(reveal_height)).unwrap();
@@ -497,7 +630,7 @@ mod tests {
         };
         assert!(resolver.apply_block(&alternate).unwrap().is_empty());
         assert_eq!(
-            resolver.resolve(reveal_height).lifecycle,
+            resolver.resolve(reveal_height).unwrap().lifecycle,
             Lifecycle::Missing
         );
     }

@@ -4,7 +4,7 @@ This is the pinned consumer for the internally reviewed Lean 4 model of the
 normative Names v2 state semantics. The authoritative sources live in the
 [`nfl0/ironwood`](https://github.com/nfl0/ironwood) fork under
 `Zcash/Coppice/Names/` at commit
-`123260e1a2a1edd9117a1a0f30136fa57f1b7c62`, based on upstream
+`57004513532fea990ae760ce573497bcade02312`, based on upstream
 `zcash/ironwood` commit
 `ad4a6ad8f75a64368bae4186006480410a687cce`.
 
@@ -29,7 +29,7 @@ proofs establish:
 
 - relational step determinism;
 - uniqueness and ordering of first-canonical-valid selection;
-- terminal, last-cooldown, and first-claimable boundary behavior;
+- terminal, last-cooldown, first-Missing, and exact compaction behavior;
 - stale-predecessor and same-epoch REFRESH rejection;
 - ordinary-spend termination even for an inert bulletin;
 - protection of a newly accepted replacement from the old-head spend pass;
@@ -37,9 +37,10 @@ proofs establish:
 - full/exact replay equivalence for a requested name under authenticated-input
   assumptions.
 
-The lifecycle is parameterized by `RetentionPolicy`. Current v2 uses
-`retainClaimable`; `compactClaimable` supplies the formal seam needed for
-PR-04's terminal-head compaction proof.
+The model normalizes state at block start and proves that a terminal head is
+retained through the final cooldown block, deleted at the first Missing block,
+and observationally equivalent for payable resolution before and after the
+representation change.
 
 ## Assurance boundary
 

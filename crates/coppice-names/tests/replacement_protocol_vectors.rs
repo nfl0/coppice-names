@@ -41,7 +41,7 @@ const WORKSPACE_MANIFEST: &str = include_str!("../../../Cargo.toml");
 const WORKSPACE_LOCK: &str = include_str!("../../../Cargo.lock");
 const UA: &str = "uregtest1rxnn8qurdex552draeuvvvucggeknmmsxazg52mkatf0hrclhppe5jeqj6w7svqtxvxq320tw6ejsk4nm8zk8f35274vlwqerfx74904pydaxe27wnpq8llqxclaa0n04zg764ppzfruu4gsagmqw0mlvx";
 const CORE_RUNTIME_ID: &str = "6d9370bb8eb3f6cf28fc2c1a943196b630233eb89d03625877910a49320a8cb0";
-const ORCHARD_REVISION: &str = "51c374d9d36ac1728b00d8978456d7d98a232d82";
+const ORCHARD_REVISION: &str = "e702d0525d5086d41b66ab870ede0a94b05fdcae";
 
 fn bytes32(value: &str) -> [u8; 32] {
     hex::decode(value).unwrap().try_into().unwrap()

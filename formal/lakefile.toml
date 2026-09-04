@@ -1,0 +1,11 @@
+name = "coppice-names-formal"
+version = "0.1.0"
+defaultTargets = ["CoppiceNames"]
+
+[[require]]
+name = "Zcash"
+git = "https://github.com/nfl0/ironwood.git"
+rev = "123260e1a2a1edd9117a1a0f30136fa57f1b7c62"
+
+[[lean_lib]]
+name = "CoppiceNames"

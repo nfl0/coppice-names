@@ -1,7 +1,7 @@
 {
   "application_version": 2,
   "dependencies": {
-    "orchard_coppice_revision": "51c374d9d36ac1728b00d8978456d7d98a232d82",
+    "orchard_coppice_revision": "e702d0525d5086d41b66ab870ede0a94b05fdcae",
     "zakura_halo2_proofs": "1.0.0/7c1386cce49a4d9e4a1b1e32fbbb3ba34d23e53dcefd700ee976d736d72f302a",
     "zakura_pasta_curves": "1.0.0/9b11ea111779520b119485fdb0fd69c3ec96b6eaab0e1bfbfb3f9cb67c55815a"
   },

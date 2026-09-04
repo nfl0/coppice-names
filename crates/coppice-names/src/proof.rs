@@ -148,6 +148,10 @@ mod tests {
 
     const UA: &str = "uregtest1rxnn8qurdex552draeuvvvucggeknmmsxazg52mkatf0hrclhppe5jeqj6w7svqtxvxq320tw6ejsk4nm8zk8f35274vlwqerfx74904pydaxe27wnpq8llqxclaa0n04zg764ppzfruu4gsagmqw0mlvx";
 
+    fn field(value: u64) -> FieldElement {
+        FieldElement::from_bytes(pallas::Base::from(value).to_repr()).unwrap()
+    }
+
     #[test]
     fn proof_identity_matches_frozen_verifier_manifests() {
         let (_, verifier) = keygen();
@@ -221,9 +225,57 @@ mod tests {
         assert_eq!(proof.len(), orchard_names::REVEAL_PROOF_BYTES);
         assert!(verifier.verify_reveal(&statement, &proof));
 
-        let mut wrong_statement = statement;
-        wrong_statement.action_index = 1;
-        assert!(!verifier.verify_reveal(&wrong_statement, &proof));
+        macro_rules! reject_reveal_mutation {
+            ($field:ident, $value:expr) => {{
+                let mut mutated = statement.clone();
+                mutated.$field = $value;
+                assert!(
+                    !verifier.verify_reveal(&mutated, &proof),
+                    "REVEAL mutation was accepted: {}",
+                    stringify!($field)
+                );
+            }};
+        }
+
+        reject_reveal_mutation!(deployment_id, [9; 32]);
+        reject_reveal_mutation!(name_id, Name::parse("bob").unwrap().id().unwrap());
+        reject_reveal_mutation!(inclusion_epoch, statement.inclusion_epoch + 1);
+        reject_reveal_mutation!(
+            commitment,
+            Commitment::from_bytes(pallas::Base::from(88).to_repr()).unwrap()
+        );
+        reject_reveal_mutation!(
+            commit_ref,
+            CommitRef {
+                height: statement.commit_ref.height + 1,
+                ..statement.commit_ref
+            }
+        );
+        reject_reveal_mutation!(action_index, statement.action_index + 1);
+        reject_reveal_mutation!(action_nullifier, field(91));
+        reject_reveal_mutation!(action_commitment, field(92));
+        reject_reveal_mutation!(successor_future_nf, field(93));
+
+        let substituted_statement = RefreshStatement {
+            deployment_id: statement.deployment_id,
+            name_id: statement.name_id,
+            predecessor_ref: crate::protocol::StateRef {
+                height: 1,
+                tx_index: 0,
+                txid: [3; 32],
+                action_index: 0,
+            },
+            predecessor_commitment: field(94),
+            predecessor_future_nf: field(95),
+            predecessor_epoch: 17,
+            inclusion_epoch: 18,
+            ua: statement.ua.clone(),
+            action_index: statement.action_index,
+            action_nullifier: statement.action_nullifier,
+            action_commitment: statement.action_commitment,
+            successor_future_nf: statement.successor_future_nf,
+        };
+        assert!(!verifier.verify_refresh(&substituted_statement, &proof));
     }
 
     #[test]
@@ -289,9 +341,53 @@ mod tests {
         assert_eq!(proof.len(), orchard_names::REFRESH_PROOF_BYTES);
         assert!(verifier.verify_refresh(&statement, &proof));
 
-        let mut wrong_statement = statement;
-        wrong_statement.inclusion_epoch += 1;
-        assert!(!verifier.verify_refresh(&wrong_statement, &proof));
+        macro_rules! reject_refresh_mutation {
+            ($field:ident, $value:expr) => {{
+                let mut mutated = statement.clone();
+                mutated.$field = $value;
+                assert!(
+                    !verifier.verify_refresh(&mutated, &proof),
+                    "REFRESH mutation was accepted: {}",
+                    stringify!($field)
+                );
+            }};
+        }
+
+        reject_refresh_mutation!(deployment_id, [9; 32]);
+        reject_refresh_mutation!(name_id, Name::parse("bob").unwrap().id().unwrap());
+        reject_refresh_mutation!(
+            predecessor_ref,
+            crate::protocol::StateRef {
+                height: statement.predecessor_ref.height + 1,
+                ..statement.predecessor_ref
+            }
+        );
+        reject_refresh_mutation!(predecessor_commitment, field(81));
+        reject_refresh_mutation!(predecessor_future_nf, field(82));
+        reject_refresh_mutation!(predecessor_epoch, statement.predecessor_epoch + 1);
+        reject_refresh_mutation!(inclusion_epoch, statement.inclusion_epoch + 1);
+        reject_refresh_mutation!(action_index, statement.action_index + 1);
+        reject_refresh_mutation!(action_nullifier, field(83));
+        reject_refresh_mutation!(action_commitment, field(84));
+        reject_refresh_mutation!(successor_future_nf, field(85));
+
+        let substituted_statement = RevealStatement {
+            deployment_id: statement.deployment_id,
+            name_id: statement.name_id,
+            inclusion_epoch: statement.inclusion_epoch,
+            commitment: Commitment::from_bytes(pallas::Base::from(86).to_repr()).unwrap(),
+            commit_ref: CommitRef {
+                height: 1,
+                tx_index: 0,
+                txid: [3; 32],
+            },
+            ua: statement.ua.clone(),
+            action_index: statement.action_index,
+            action_nullifier: statement.action_nullifier,
+            action_commitment: statement.action_commitment,
+            successor_future_nf: statement.successor_future_nf,
+        };
+        assert!(!verifier.verify_reveal(&substituted_statement, &proof));
     }
 
     #[test]

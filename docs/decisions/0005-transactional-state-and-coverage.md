@@ -31,6 +31,15 @@ keys, and `synchronous=FULL`, and stores:
   staged Core metadata; and
 - bounded per-block prior records for rollback.
 
+When embedded in a `zcash_client_sqlite` wallet, every schema object uses its
+reserved `ext_` namespace. The optional `wallet-extension` adapter accepts the
+wallet's restricted extension-transaction handle, so it can write Names rows
+inside the wallet's already-open transaction without gaining permission to
+write wallet tables or issue transaction-control statements. The same outer
+commit therefore publishes the wallet scan, Core checkpoint, indexed Names
+records, and rollback journal. The stored Core checkpoint is cleared on a
+rewind and replaced only after the host has replayed to the wallet's new tip.
+
 The host owns an outer transaction for a bounded sync batch and a savepoint per
 block. A deterministic block failure may roll back that savepoint and commit
 the preceding consistent prefix. A storage, integrity, transaction,

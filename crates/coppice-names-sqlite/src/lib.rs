@@ -20,16 +20,16 @@ pub const SCHEMA_VERSION: u32 = 1;
 pub const DEFAULT_MINIMUM_ROLLBACK_BLOCKS: u32 = 100;
 
 const CREATE_DERIVED_INDEXES: &str = "
-CREATE INDEX IF NOT EXISTS names_heads_future_nf
-    ON names_heads(future_nf);
-CREATE INDEX IF NOT EXISTS names_heads_active_expiry
-    ON names_heads(expiry_height, name_id)
+CREATE INDEX IF NOT EXISTS ext_coppice_names_heads_future_nf
+    ON ext_coppice_names_heads(future_nf);
+CREATE INDEX IF NOT EXISTS ext_coppice_names_heads_active_expiry
+    ON ext_coppice_names_heads(expiry_height, name_id)
     WHERE terminal_height IS NULL;
-CREATE INDEX IF NOT EXISTS names_heads_terminal_height
-    ON names_heads(terminal_height, name_id)
+CREATE INDEX IF NOT EXISTS ext_coppice_names_heads_terminal_height
+    ON ext_coppice_names_heads(terminal_height, name_id)
     WHERE terminal_height IS NOT NULL;
-CREATE INDEX IF NOT EXISTS names_pending_commits_height
-    ON names_pending_commits(height, tx_index, txid);
+CREATE INDEX IF NOT EXISTS ext_coppice_names_pending_commits_height
+    ON ext_coppice_names_pending_commits(height, tx_index, txid);
 ";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -146,79 +146,18 @@ pub struct SqliteNamesTransaction<'conn> {
 
 impl SqliteNamesStore {
     pub fn open(path: impl AsRef<Path>, identity: StoreIdentity) -> Result<Self, StoreError> {
-        Self::from_connection(Connection::open(path)?, identity)
+        Self::from_connection_for_wallet(Connection::open(path)?, identity)
     }
 
     pub fn open_in_memory(identity: StoreIdentity) -> Result<Self, StoreError> {
-        Self::from_connection(Connection::open_in_memory()?, identity)
+        Self::from_connection_for_wallet(Connection::open_in_memory()?, identity)
     }
 
-    fn from_connection(
+    pub fn from_connection_for_wallet(
         connection: Connection,
         identity: StoreIdentity,
     ) -> Result<Self, StoreError> {
-        connection.execute_batch(
-            "PRAGMA foreign_keys = ON;
-             PRAGMA journal_mode = WAL;
-             PRAGMA synchronous = FULL;
-             CREATE TABLE IF NOT EXISTS names_metadata (
-                 singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
-                 schema_version INTEGER NOT NULL,
-                 deployment_id BLOB NOT NULL,
-                 ruleset_fingerprint BLOB NOT NULL,
-                 network INTEGER NOT NULL,
-                 coverage_kind INTEGER NOT NULL,
-                 coverage_name_id BLOB,
-                 minimum_rollback_blocks INTEGER NOT NULL,
-                 tip_height INTEGER,
-                 tip_hash BLOB,
-                 finalized_height INTEGER,
-                 core_snapshot BLOB
-             );
-             CREATE TABLE IF NOT EXISTS names_heads (
-                 name_id BLOB PRIMARY KEY,
-                 name TEXT NOT NULL,
-                 ua TEXT NOT NULL,
-                 producer_height INTEGER NOT NULL,
-                 producer_tx_index INTEGER NOT NULL,
-                 producer_txid BLOB NOT NULL,
-                 producer_action_index INTEGER NOT NULL,
-                 commitment BLOB NOT NULL,
-                 future_nf BLOB NOT NULL,
-                 producer_epoch INTEGER NOT NULL,
-                 expiry_height INTEGER NOT NULL,
-                 terminal_height INTEGER
-             );
-             CREATE TABLE IF NOT EXISTS names_pending_commits (
-                 height INTEGER NOT NULL,
-                 tx_index INTEGER NOT NULL,
-                 txid BLOB NOT NULL,
-                 commitment BLOB NOT NULL,
-                 PRIMARY KEY(height, tx_index, txid)
-             );
-             CREATE TABLE IF NOT EXISTS names_rollback_blocks (
-                 height INTEGER PRIMARY KEY,
-                 hash BLOB NOT NULL,
-                 previous_tip_height INTEGER,
-                 previous_tip_hash BLOB
-             );
-             CREATE TABLE IF NOT EXISTS names_rollback_heads (
-                 block_height INTEGER NOT NULL REFERENCES names_rollback_blocks(height) ON DELETE CASCADE,
-                 name_id BLOB NOT NULL,
-                 previous_record BLOB,
-                 PRIMARY KEY(block_height, name_id)
-             );
-             CREATE TABLE IF NOT EXISTS names_rollback_commits (
-                 block_height INTEGER NOT NULL REFERENCES names_rollback_blocks(height) ON DELETE CASCADE,
-                 height INTEGER NOT NULL,
-                 tx_index INTEGER NOT NULL,
-                 txid BLOB NOT NULL,
-                 previous_commitment BLOB,
-                 PRIMARY KEY(block_height, height, tx_index, txid)
-             );",
-        )?;
-        connection.execute_batch(CREATE_DERIVED_INDEXES)?;
-        initialize_or_validate_metadata(&connection, identity)?;
+        initialize_wallet_connection(&connection, identity)?;
         Ok(Self {
             connection,
             identity,
@@ -235,6 +174,16 @@ impl SqliteNamesStore {
 
     pub fn head(&self, name_id: NameId) -> Result<Option<HeadRecord>, StoreError> {
         read_head(&self.connection, name_id)
+    }
+
+    pub fn core_snapshot(&self) -> Result<Option<Vec<u8>>, StoreError> {
+        self.connection
+            .query_row(
+                "SELECT core_snapshot FROM ext_coppice_names_metadata WHERE singleton = 1",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(StoreError::from)
     }
 
     /// Whether this store's authenticated coverage can establish `Missing` at
@@ -279,10 +228,10 @@ impl SqliteNamesStore {
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         transaction.execute_batch(
-            "DROP INDEX IF EXISTS names_heads_future_nf;
-             DROP INDEX IF EXISTS names_heads_active_expiry;
-             DROP INDEX IF EXISTS names_heads_terminal_height;
-             DROP INDEX IF EXISTS names_pending_commits_height;",
+            "DROP INDEX IF EXISTS ext_coppice_names_heads_future_nf;
+             DROP INDEX IF EXISTS ext_coppice_names_heads_active_expiry;
+             DROP INDEX IF EXISTS ext_coppice_names_heads_terminal_height;
+             DROP INDEX IF EXISTS ext_coppice_names_pending_commits_height;",
         )?;
         transaction.execute_batch(CREATE_DERIVED_INDEXES)?;
         transaction.commit()?;
@@ -293,16 +242,87 @@ impl SqliteNamesStore {
         let count: u32 = self.connection.query_row(
             "SELECT COUNT(*) FROM sqlite_master
              WHERE type = 'index' AND name IN (
-                 'names_heads_future_nf',
-                 'names_heads_active_expiry',
-                 'names_heads_terminal_height',
-                 'names_pending_commits_height'
+                 'ext_coppice_names_heads_future_nf',
+                 'ext_coppice_names_heads_active_expiry',
+                 'ext_coppice_names_heads_terminal_height',
+                 'ext_coppice_names_pending_commits_height'
              )",
             [],
             |row| row.get(0),
         )?;
         Ok(count == 4)
     }
+}
+
+/// Installs or validates the Coppice Names extension schema on an existing
+/// wallet connection. All objects use the `ext_` namespace reserved by
+/// `zcash_client_sqlite` for application-owned state.
+pub fn initialize_wallet_connection(
+    connection: &Connection,
+    identity: StoreIdentity,
+) -> Result<(), StoreError> {
+    connection.execute_batch(
+        "PRAGMA foreign_keys = ON;
+             PRAGMA journal_mode = WAL;
+             PRAGMA synchronous = FULL;
+             CREATE TABLE IF NOT EXISTS ext_coppice_names_metadata (
+                 singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+                 schema_version INTEGER NOT NULL,
+                 deployment_id BLOB NOT NULL,
+                 ruleset_fingerprint BLOB NOT NULL,
+                 network INTEGER NOT NULL,
+                 coverage_kind INTEGER NOT NULL,
+                 coverage_name_id BLOB,
+                 minimum_rollback_blocks INTEGER NOT NULL,
+                 tip_height INTEGER,
+                 tip_hash BLOB,
+                 finalized_height INTEGER,
+                 core_snapshot BLOB
+             );
+             CREATE TABLE IF NOT EXISTS ext_coppice_names_heads (
+                 name_id BLOB PRIMARY KEY,
+                 name TEXT NOT NULL,
+                 ua TEXT NOT NULL,
+                 producer_height INTEGER NOT NULL,
+                 producer_tx_index INTEGER NOT NULL,
+                 producer_txid BLOB NOT NULL,
+                 producer_action_index INTEGER NOT NULL,
+                 commitment BLOB NOT NULL,
+                 future_nf BLOB NOT NULL,
+                 producer_epoch INTEGER NOT NULL,
+                 expiry_height INTEGER NOT NULL,
+                 terminal_height INTEGER
+             );
+             CREATE TABLE IF NOT EXISTS ext_coppice_names_pending_commits (
+                 height INTEGER NOT NULL,
+                 tx_index INTEGER NOT NULL,
+                 txid BLOB NOT NULL,
+                 commitment BLOB NOT NULL,
+                 PRIMARY KEY(height, tx_index, txid)
+             );
+             CREATE TABLE IF NOT EXISTS ext_coppice_names_rollback_blocks (
+                 height INTEGER PRIMARY KEY,
+                 hash BLOB NOT NULL,
+                 previous_tip_height INTEGER,
+                 previous_tip_hash BLOB
+             );
+             CREATE TABLE IF NOT EXISTS ext_coppice_names_rollback_heads (
+                 block_height INTEGER NOT NULL REFERENCES ext_coppice_names_rollback_blocks(height) ON DELETE CASCADE,
+                 name_id BLOB NOT NULL,
+                 previous_record BLOB,
+                 PRIMARY KEY(block_height, name_id)
+             );
+             CREATE TABLE IF NOT EXISTS ext_coppice_names_rollback_commits (
+                 block_height INTEGER NOT NULL REFERENCES ext_coppice_names_rollback_blocks(height) ON DELETE CASCADE,
+                 height INTEGER NOT NULL,
+                 tx_index INTEGER NOT NULL,
+                 txid BLOB NOT NULL,
+                 previous_commitment BLOB,
+                 PRIMARY KEY(block_height, height, tx_index, txid)
+             );",
+    )?;
+    connection.execute_batch(CREATE_DERIVED_INDEXES)?;
+    initialize_or_validate_metadata(connection, identity)
 }
 
 impl TransactionHost for SqliteNamesStore {
@@ -361,7 +381,7 @@ impl SqliteNamesTransaction<'_> {
 
     pub fn put_core_snapshot(&mut self, snapshot: &[u8]) -> Result<(), StoreError> {
         self.transaction.execute(
-            "UPDATE names_metadata SET core_snapshot = ?1 WHERE singleton = 1",
+            "UPDATE ext_coppice_names_metadata SET core_snapshot = ?1 WHERE singleton = 1",
             [snapshot],
         )?;
         Ok(())
@@ -383,7 +403,7 @@ impl SqliteNamesTransaction<'_> {
             return Err(StoreError::CoverageViolation);
         }
         self.transaction.execute(
-            "INSERT INTO names_rollback_blocks(
+            "INSERT INTO ext_coppice_names_rollback_blocks(
                  height, hash, previous_tip_height, previous_tip_hash
              ) VALUES (?1, ?2, ?3, ?4)",
             params![
@@ -422,7 +442,7 @@ impl SqliteNamesTransaction<'_> {
                 .map(|record| serde_json::to_vec(&record))
                 .transpose()?;
             self.transaction.execute(
-                "INSERT INTO names_rollback_heads(block_height, name_id, previous_record)
+                "INSERT INTO ext_coppice_names_rollback_heads(block_height, name_id, previous_record)
                  VALUES (?1, ?2, ?3)",
                 params![
                     to_tip.height,
@@ -443,7 +463,7 @@ impl SqliteNamesTransaction<'_> {
                 return Err(StoreError::AuthoritativeRecordMismatch);
             }
             self.transaction.execute(
-                "INSERT INTO names_rollback_commits(
+                "INSERT INTO ext_coppice_names_rollback_commits(
                      block_height, height, tx_index, txid, previous_commitment
                  ) VALUES (?1, ?2, ?3, ?4, ?5)",
                 params![
@@ -477,7 +497,7 @@ impl SqliteNamesTransaction<'_> {
             .transaction
             .query_row(
                 "SELECT previous_tip_height, previous_tip_hash
-                 FROM names_rollback_blocks WHERE height = ?1 AND hash = ?2",
+                 FROM ext_coppice_names_rollback_blocks WHERE height = ?1 AND hash = ?2",
                 params![tip.height, expected_hash.as_slice()],
                 |row| {
                     let height: Option<u32> = row.get(0)?;
@@ -491,7 +511,7 @@ impl SqliteNamesTransaction<'_> {
 
         let mut statement = self.transaction.prepare(
             "SELECT name_id, previous_record
-             FROM names_rollback_heads WHERE block_height = ?1 ORDER BY name_id",
+             FROM ext_coppice_names_rollback_heads WHERE block_height = ?1 ORDER BY name_id",
         )?;
         let changes = statement
             .query_map([tip.height], |row| {
@@ -517,7 +537,7 @@ impl SqliteNamesTransaction<'_> {
 
         let mut statement = self.transaction.prepare(
             "SELECT height, tx_index, txid, previous_commitment
-             FROM names_rollback_commits
+             FROM ext_coppice_names_rollback_commits
              WHERE block_height = ?1 ORDER BY height, tx_index, txid",
         )?;
         let changes = statement
@@ -545,7 +565,7 @@ impl SqliteNamesTransaction<'_> {
         }
 
         self.transaction.execute(
-            "DELETE FROM names_rollback_blocks WHERE height = ?1",
+            "DELETE FROM ext_coppice_names_rollback_blocks WHERE height = ?1",
             [tip.height],
         )?;
         write_tip(&self.transaction, previous_tip)?;
@@ -567,11 +587,11 @@ impl SqliteNamesTransaction<'_> {
             return Err(StoreError::InsufficientRollbackRetention);
         }
         self.transaction.execute(
-            "DELETE FROM names_rollback_blocks WHERE height <= ?1",
+            "DELETE FROM ext_coppice_names_rollback_blocks WHERE height <= ?1",
             [height],
         )?;
         self.transaction.execute(
-            "UPDATE names_metadata
+            "UPDATE ext_coppice_names_metadata
              SET finalized_height = CASE
                  WHEN finalized_height IS NULL OR finalized_height < ?1 THEN ?1
                  ELSE finalized_height
@@ -579,6 +599,452 @@ impl SqliteNamesTransaction<'_> {
              WHERE singleton = 1",
             [height],
         )?;
+        Ok(())
+    }
+}
+
+/// Coppice Names writes hosted by an existing `zcash_client_sqlite` wallet
+/// transaction. The wallet owns commit/rollback; this adapter cannot issue
+/// transaction control or touch wallet-owned tables.
+#[cfg(feature = "wallet-extension")]
+pub struct WalletNamesTransaction<'tx> {
+    transaction: &'tx zcash_client_sqlite::ExtensionTransaction<'tx>,
+    identity: StoreIdentity,
+}
+
+#[cfg(feature = "wallet-extension")]
+impl<'tx> WalletNamesTransaction<'tx> {
+    pub fn new(
+        transaction: &'tx zcash_client_sqlite::ExtensionTransaction<'tx>,
+        identity: StoreIdentity,
+    ) -> Result<Self, StoreError> {
+        let existing = transaction.query_row(
+            "SELECT schema_version, deployment_id, ruleset_fingerprint,
+                    network, coverage_kind, coverage_name_id, minimum_rollback_blocks
+             FROM ext_coppice_names_metadata WHERE singleton = 1",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, u32>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                    row.get::<_, u8>(3)?,
+                    row.get::<_, u8>(4)?,
+                    row.get::<_, Option<Vec<u8>>>(5)?,
+                    row.get::<_, u32>(6)?,
+                ))
+            },
+        )?;
+        let (coverage_kind, coverage_name_id) = encode_coverage(identity.coverage);
+        if existing.0 != SCHEMA_VERSION {
+            return Err(StoreError::UnsupportedSchema { actual: existing.0 });
+        }
+        if decode_32(existing.1)? != identity.deployment_id
+            || decode_32(existing.2)? != identity.ruleset_fingerprint
+            || existing.3 != encode_network(identity.network)
+        {
+            return Err(StoreError::IdentityMismatch);
+        }
+        if existing.4 != coverage_kind || existing.5 != coverage_name_id {
+            return Err(StoreError::CoverageMismatch);
+        }
+        if existing.6 < identity.minimum_rollback_blocks {
+            return Err(StoreError::InsufficientRollbackRetention);
+        }
+        Ok(Self {
+            transaction,
+            identity,
+        })
+    }
+
+    pub fn tip(&self) -> Result<Option<ReducerTip>, StoreError> {
+        let value = self.transaction.query_row(
+            "SELECT tip_height, tip_hash
+             FROM ext_coppice_names_metadata WHERE singleton = 1",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, Option<u32>>(0)?,
+                    row.get::<_, Option<Vec<u8>>>(1)?,
+                ))
+            },
+        )?;
+        decode_optional_tip(value)
+    }
+
+    pub fn put_core_snapshot(&self, snapshot: &[u8]) -> Result<(), StoreError> {
+        self.transaction.execute(
+            "UPDATE ext_coppice_names_metadata SET core_snapshot = ?1 WHERE singleton = 1",
+            [snapshot],
+        )?;
+        Ok(())
+    }
+
+    /// Clears derived reducer records before an authenticated full replay.
+    /// Identity and schema metadata are retained.
+    pub fn reset_for_replay(&self) -> Result<(), StoreError> {
+        self.transaction
+            .execute("DELETE FROM ext_coppice_names_rollback_heads", [])?;
+        self.transaction
+            .execute("DELETE FROM ext_coppice_names_rollback_commits", [])?;
+        self.transaction
+            .execute("DELETE FROM ext_coppice_names_rollback_blocks", [])?;
+        self.transaction
+            .execute("DELETE FROM ext_coppice_names_pending_commits", [])?;
+        self.transaction
+            .execute("DELETE FROM ext_coppice_names_heads", [])?;
+        self.transaction.execute(
+            "UPDATE ext_coppice_names_metadata
+             SET tip_height = NULL, tip_hash = NULL, finalized_height = NULL,
+                 core_snapshot = NULL
+             WHERE singleton = 1",
+            [],
+        )?;
+        Ok(())
+    }
+
+    pub fn apply_delta(&self, delta: &StateDelta) -> Result<(), StoreError> {
+        if self.tip()? != delta.from_tip {
+            return Err(StoreError::TipMismatch);
+        }
+        let to_tip = delta.to_tip.ok_or(StoreError::NonSequentialDelta)?;
+        if delta.from_tip.is_some_and(|from| {
+            from.height.checked_add(1) != Some(to_tip.height) || from.hash == to_tip.hash
+        }) {
+            return Err(StoreError::NonSequentialDelta);
+        }
+        if let Coverage::Exact(expected) = self.identity.coverage
+            && delta.heads.iter().any(|change| change.name_id != expected)
+        {
+            return Err(StoreError::CoverageViolation);
+        }
+        self.transaction.execute(
+            "INSERT INTO ext_coppice_names_rollback_blocks(
+                 height, hash, previous_tip_height, previous_tip_hash
+             ) VALUES (?1, ?2, ?3, ?4)",
+            params![
+                to_tip.height,
+                to_tip.hash.as_slice(),
+                delta.from_tip.map(|tip| tip.height),
+                delta.from_tip.map(|tip| tip.hash.to_vec()),
+            ],
+        )?;
+
+        for change in &delta.heads {
+            if let Some(head) = &change.previous {
+                validate_head(
+                    change.name_id,
+                    &HeadRecord::from(head),
+                    self.identity.network,
+                    delta.from_tip.map(|tip| tip.height),
+                )?;
+            }
+            if let Some(head) = &change.current {
+                validate_head(
+                    change.name_id,
+                    &HeadRecord::from(head),
+                    self.identity.network,
+                    Some(to_tip.height),
+                )?;
+            }
+            let actual = self.read_head(change.name_id)?;
+            if actual != change.previous.as_ref().map(HeadRecord::from) {
+                return Err(StoreError::AuthoritativeRecordMismatch);
+            }
+            let previous = change
+                .previous
+                .as_ref()
+                .map(HeadRecord::from)
+                .map(|record| serde_json::to_vec(&record))
+                .transpose()?;
+            self.transaction.execute(
+                "INSERT INTO ext_coppice_names_rollback_heads(
+                     block_height, name_id, previous_record
+                 ) VALUES (?1, ?2, ?3)",
+                params![
+                    to_tip.height,
+                    change.name_id.to_bytes().as_slice(),
+                    previous
+                ],
+            )?;
+            self.write_head(
+                change.name_id,
+                change.current.as_ref().map(HeadRecord::from).as_ref(),
+            )?;
+        }
+
+        for change in &delta.commits {
+            let actual = self.read_commit(change.reference)?;
+            if actual != change.previous.map(Commitment::to_bytes) {
+                return Err(StoreError::AuthoritativeRecordMismatch);
+            }
+            self.transaction.execute(
+                "INSERT INTO ext_coppice_names_rollback_commits(
+                     block_height, height, tx_index, txid, previous_commitment
+                 ) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    to_tip.height,
+                    change.reference.height,
+                    change.reference.tx_index,
+                    change.reference.txid.as_slice(),
+                    change.previous.map(|value| value.to_bytes().to_vec()),
+                ],
+            )?;
+            self.write_commit(change.reference, change.current.map(Commitment::to_bytes))?;
+        }
+        self.transaction.execute(
+            "UPDATE ext_coppice_names_metadata
+             SET tip_height = ?1, tip_hash = ?2 WHERE singleton = 1",
+            params![to_tip.height, to_tip.hash.as_slice()],
+        )?;
+        Ok(())
+    }
+
+    /// Rolls the extension back to the height selected by the wallet's own
+    /// checkpoint-aware rewind. Every reverted tip must still be journaled.
+    pub fn rollback_to_height(&self, height: u32) -> Result<Option<ReducerTip>, StoreError> {
+        let original_tip = self.tip()?;
+        while self.tip()?.is_some_and(|tip| tip.height > height) {
+            self.rollback_tip()?;
+        }
+        if self.tip()? != original_tip {
+            self.transaction.execute(
+                "UPDATE ext_coppice_names_metadata
+                 SET core_snapshot = NULL WHERE singleton = 1",
+                [],
+            )?;
+        }
+        Ok(self.tip()?)
+    }
+
+    fn rollback_tip(&self) -> Result<Option<ReducerTip>, StoreError> {
+        let tip = self.tip()?.ok_or(StoreError::MissingRollbackJournal)?;
+        let previous = self
+            .transaction
+            .query_row(
+                "SELECT previous_tip_height, previous_tip_hash
+                 FROM ext_coppice_names_rollback_blocks
+                 WHERE height = ?1 AND hash = ?2",
+                params![tip.height, tip.hash.as_slice()],
+                |row| {
+                    Ok((
+                        row.get::<_, Option<u32>>(0)?,
+                        row.get::<_, Option<Vec<u8>>>(1)?,
+                    ))
+                },
+            )
+            .optional()?
+            .ok_or(StoreError::MissingRollbackJournal)?;
+        let previous_tip = decode_optional_tip(previous)?;
+
+        loop {
+            let row = self
+                .transaction
+                .query_row(
+                    "SELECT name_id, previous_record
+                     FROM ext_coppice_names_rollback_heads
+                     WHERE block_height = ?1 ORDER BY name_id LIMIT 1",
+                    [tip.height],
+                    |row| Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Option<Vec<u8>>>(1)?)),
+                )
+                .optional()?;
+            let Some((name_id_bytes, previous)) = row else {
+                break;
+            };
+            let name_id = decode_name_id(name_id_bytes)?;
+            let previous = previous
+                .map(|bytes| serde_json::from_slice::<HeadRecord>(&bytes))
+                .transpose()?;
+            if let Some(record) = &previous {
+                validate_head(
+                    name_id,
+                    record,
+                    self.identity.network,
+                    previous_tip.map(|value| value.height),
+                )?;
+            }
+            self.write_head(name_id, previous.as_ref())?;
+            self.transaction.execute(
+                "DELETE FROM ext_coppice_names_rollback_heads
+                 WHERE block_height = ?1 AND name_id = ?2",
+                params![tip.height, name_id.to_bytes().as_slice()],
+            )?;
+        }
+
+        loop {
+            let row = self
+                .transaction
+                .query_row(
+                    "SELECT height, tx_index, txid, previous_commitment
+                     FROM ext_coppice_names_rollback_commits
+                     WHERE block_height = ?1
+                     ORDER BY height, tx_index, txid LIMIT 1",
+                    [tip.height],
+                    |row| {
+                        Ok((
+                            row.get::<_, u32>(0)?,
+                            row.get::<_, u32>(1)?,
+                            row.get::<_, Vec<u8>>(2)?,
+                            row.get::<_, Option<Vec<u8>>>(3)?,
+                        ))
+                    },
+                )
+                .optional()?;
+            let Some((height, tx_index, txid_bytes, previous)) = row else {
+                break;
+            };
+            let reference = CommitRef {
+                height,
+                tx_index,
+                txid: decode_32(txid_bytes)?,
+            };
+            self.write_commit(reference, previous.map(decode_32).transpose()?)?;
+            self.transaction.execute(
+                "DELETE FROM ext_coppice_names_rollback_commits
+                 WHERE block_height = ?1 AND height = ?2 AND tx_index = ?3 AND txid = ?4",
+                params![
+                    tip.height,
+                    reference.height,
+                    reference.tx_index,
+                    reference.txid.as_slice()
+                ],
+            )?;
+        }
+        self.transaction.execute(
+            "DELETE FROM ext_coppice_names_rollback_blocks WHERE height = ?1",
+            [tip.height],
+        )?;
+        self.transaction.execute(
+            "UPDATE ext_coppice_names_metadata
+             SET tip_height = ?1, tip_hash = ?2 WHERE singleton = 1",
+            params![
+                previous_tip.map(|value| value.height),
+                previous_tip.map(|value| value.hash.to_vec())
+            ],
+        )?;
+        Ok(previous_tip)
+    }
+
+    fn read_head(&self, name_id: NameId) -> Result<Option<HeadRecord>, StoreError> {
+        self.transaction
+            .query_row(
+                "SELECT name, ua, producer_height, producer_tx_index, producer_txid,
+                        producer_action_index, commitment, future_nf, producer_epoch,
+                        expiry_height, terminal_height
+                 FROM ext_coppice_names_heads WHERE name_id = ?1",
+                [name_id.to_bytes().as_slice()],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, u32>(2)?,
+                        row.get::<_, u32>(3)?,
+                        row.get::<_, Vec<u8>>(4)?,
+                        row.get::<_, u32>(5)?,
+                        row.get::<_, Vec<u8>>(6)?,
+                        row.get::<_, Vec<u8>>(7)?,
+                        row.get::<_, u32>(8)?,
+                        row.get::<_, u32>(9)?,
+                        row.get::<_, Option<u32>>(10)?,
+                    ))
+                },
+            )
+            .optional()?
+            .map(|value| {
+                Ok(HeadRecord {
+                    name: value.0,
+                    ua: value.1,
+                    producer: StateRef {
+                        height: value.2,
+                        tx_index: value.3,
+                        txid: decode_32(value.4)?,
+                        action_index: value.5,
+                    },
+                    commitment: decode_32(value.6)?,
+                    future_nf: decode_32(value.7)?,
+                    producer_epoch: value.8,
+                    expiry_height: value.9,
+                    terminal_height: value.10,
+                })
+            })
+            .transpose()
+    }
+
+    fn write_head(&self, name_id: NameId, record: Option<&HeadRecord>) -> Result<(), StoreError> {
+        self.transaction.execute(
+            "DELETE FROM ext_coppice_names_heads WHERE name_id = ?1",
+            [name_id.to_bytes().as_slice()],
+        )?;
+        if let Some(record) = record {
+            self.transaction.execute(
+                "INSERT INTO ext_coppice_names_heads(
+                     name_id, name, ua, producer_height, producer_tx_index,
+                     producer_txid, producer_action_index, commitment, future_nf,
+                     producer_epoch, expiry_height, terminal_height
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                params![
+                    name_id.to_bytes().as_slice(),
+                    record.name,
+                    record.ua,
+                    record.producer.height,
+                    record.producer.tx_index,
+                    record.producer.txid.as_slice(),
+                    record.producer.action_index,
+                    record.commitment.as_slice(),
+                    record.future_nf.as_slice(),
+                    record.producer_epoch,
+                    record.expiry_height,
+                    record.terminal_height,
+                ],
+            )?;
+        }
+        Ok(())
+    }
+
+    fn read_commit(&self, reference: CommitRef) -> Result<Option<[u8; 32]>, StoreError> {
+        self.transaction
+            .query_row(
+                "SELECT commitment FROM ext_coppice_names_pending_commits
+                 WHERE height = ?1 AND tx_index = ?2 AND txid = ?3",
+                params![
+                    reference.height,
+                    reference.tx_index,
+                    reference.txid.as_slice()
+                ],
+                |row| row.get::<_, Vec<u8>>(0),
+            )
+            .optional()?
+            .map(decode_32)
+            .transpose()
+    }
+
+    fn write_commit(
+        &self,
+        reference: CommitRef,
+        commitment: Option<[u8; 32]>,
+    ) -> Result<(), StoreError> {
+        self.transaction.execute(
+            "DELETE FROM ext_coppice_names_pending_commits
+             WHERE height = ?1 AND tx_index = ?2 AND txid = ?3",
+            params![
+                reference.height,
+                reference.tx_index,
+                reference.txid.as_slice()
+            ],
+        )?;
+        if let Some(commitment) = commitment {
+            self.transaction.execute(
+                "INSERT INTO ext_coppice_names_pending_commits(
+                     height, tx_index, txid, commitment
+                 ) VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    reference.height,
+                    reference.tx_index,
+                    reference.txid.as_slice(),
+                    commitment.as_slice()
+                ],
+            )?;
+        }
         Ok(())
     }
 }
@@ -591,7 +1057,7 @@ fn initialize_or_validate_metadata(
         .query_row(
             "SELECT schema_version, deployment_id, ruleset_fingerprint,
                     network, coverage_kind, coverage_name_id, minimum_rollback_blocks
-             FROM names_metadata WHERE singleton = 1",
+             FROM ext_coppice_names_metadata WHERE singleton = 1",
             [],
             |row| {
                 Ok((
@@ -628,7 +1094,7 @@ fn initialize_or_validate_metadata(
         return Ok(());
     }
     connection.execute(
-        "INSERT INTO names_metadata(
+        "INSERT INTO ext_coppice_names_metadata(
              singleton, schema_version, deployment_id, ruleset_fingerprint,
              network, coverage_kind, coverage_name_id, minimum_rollback_blocks
          ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7)",
@@ -690,7 +1156,7 @@ fn validate_head(
 
 fn read_tip(connection: &Connection) -> Result<Option<ReducerTip>, StoreError> {
     let (height, hash) = connection.query_row(
-        "SELECT tip_height, tip_hash FROM names_metadata WHERE singleton = 1",
+        "SELECT tip_height, tip_hash FROM ext_coppice_names_metadata WHERE singleton = 1",
         [],
         |row| {
             Ok((
@@ -717,7 +1183,7 @@ fn decode_optional_tip(
 
 fn write_tip(connection: &Connection, tip: Option<ReducerTip>) -> Result<(), StoreError> {
     connection.execute(
-        "UPDATE names_metadata SET tip_height = ?1, tip_hash = ?2 WHERE singleton = 1",
+        "UPDATE ext_coppice_names_metadata SET tip_height = ?1, tip_hash = ?2 WHERE singleton = 1",
         params![
             tip.map(|value| value.height),
             tip.map(|value| value.hash.to_vec()),
@@ -732,7 +1198,7 @@ fn read_head(connection: &Connection, name_id: NameId) -> Result<Option<HeadReco
             "SELECT name, ua, producer_height, producer_tx_index, producer_txid,
                     producer_action_index, commitment, future_nf, producer_epoch,
                     expiry_height, terminal_height
-             FROM names_heads WHERE name_id = ?1",
+             FROM ext_coppice_names_heads WHERE name_id = ?1",
             [name_id.to_bytes().as_slice()],
             |row| {
                 Ok((
@@ -777,12 +1243,12 @@ fn write_head(
     record: Option<&HeadRecord>,
 ) -> Result<(), StoreError> {
     connection.execute(
-        "DELETE FROM names_heads WHERE name_id = ?1",
+        "DELETE FROM ext_coppice_names_heads WHERE name_id = ?1",
         [name_id.to_bytes().as_slice()],
     )?;
     if let Some(record) = record {
         connection.execute(
-            "INSERT INTO names_heads(
+            "INSERT INTO ext_coppice_names_heads(
                  name_id, name, ua, producer_height, producer_tx_index,
                  producer_txid, producer_action_index, commitment, future_nf,
                  producer_epoch, expiry_height, terminal_height
@@ -812,7 +1278,7 @@ fn read_commit(
 ) -> Result<Option<[u8; 32]>, StoreError> {
     connection
         .query_row(
-            "SELECT commitment FROM names_pending_commits
+            "SELECT commitment FROM ext_coppice_names_pending_commits
              WHERE height = ?1 AND tx_index = ?2 AND txid = ?3",
             params![
                 reference.height,
@@ -832,7 +1298,7 @@ fn write_commit(
     commitment: Option<[u8; 32]>,
 ) -> Result<(), StoreError> {
     connection.execute(
-        "DELETE FROM names_pending_commits
+        "DELETE FROM ext_coppice_names_pending_commits
          WHERE height = ?1 AND tx_index = ?2 AND txid = ?3",
         params![
             reference.height,
@@ -842,7 +1308,7 @@ fn write_commit(
     )?;
     if let Some(commitment) = commitment {
         connection.execute(
-            "INSERT INTO names_pending_commits(height, tx_index, txid, commitment)
+            "INSERT INTO ext_coppice_names_pending_commits(height, tx_index, txid, commitment)
              VALUES (?1, ?2, ?3, ?4)",
             params![
                 reference.height,
@@ -989,9 +1455,61 @@ mod tests {
         );
         let snapshot: Option<Vec<u8>> = store
             .connection
-            .query_row("SELECT core_snapshot FROM names_metadata", [], |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT core_snapshot FROM ext_coppice_names_metadata",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(snapshot, None);
+    }
+
+    #[cfg(feature = "wallet-extension")]
+    #[test]
+    fn wallet_extension_failure_rolls_back_wallet_and_names_writes() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let connection = Connection::open(file.path()).unwrap();
+        initialize_wallet_connection(&connection, identity(Coverage::Owned)).unwrap();
+        connection
+            .execute(
+                "CREATE TABLE ext_wallet_scan_state(height INTEGER NOT NULL)",
+                [],
+            )
+            .unwrap();
+        let mut wallet = zcash_client_sqlite::WalletDb::from_connection(connection, (), (), ());
+        let delta = delta();
+        let result: Result<(), rusqlite::Error> =
+            wallet.transactionally_with_extension(|_wallet_tx, extension| {
+                extension.execute("INSERT INTO ext_wallet_scan_state(height) VALUES (10)", [])?;
+                let names = WalletNamesTransaction::new(extension, identity(Coverage::Owned))
+                    .map_err(|_| rusqlite::Error::InvalidQuery)?;
+                names
+                    .apply_delta(&delta)
+                    .map_err(|_| rusqlite::Error::InvalidQuery)?;
+                names
+                    .put_core_snapshot(b"staged-core")
+                    .map_err(|_| rusqlite::Error::InvalidQuery)?;
+                Err(rusqlite::Error::InvalidQuery)
+            });
+        assert!(result.is_err());
+        drop(wallet);
+
+        let reopened = Connection::open(file.path()).unwrap();
+        assert_eq!(
+            reopened
+                .query_row("SELECT COUNT(*) FROM ext_wallet_scan_state", [], |row| {
+                    row.get::<_, u32>(0)
+                })
+                .unwrap(),
+            0
+        );
+        assert_eq!(read_tip(&reopened).unwrap(), None);
+        let snapshot: Option<Vec<u8>> = reopened
+            .query_row(
+                "SELECT core_snapshot FROM ext_coppice_names_metadata",
+                [],
+                |row| row.get(0),
+            )
             .unwrap();
         assert_eq!(snapshot, None);
     }
@@ -1071,7 +1589,10 @@ mod tests {
             let store = SqliteNamesStore::open(path.path(), identity(Coverage::Complete)).unwrap();
             store
                 .connection
-                .execute("UPDATE names_metadata SET schema_version = 99", [])
+                .execute(
+                    "UPDATE ext_coppice_names_metadata SET schema_version = 99",
+                    [],
+                )
                 .unwrap();
         }
         assert!(matches!(
@@ -1086,7 +1607,7 @@ mod tests {
         assert!(store.derived_indexes_present().unwrap());
         store
             .connection
-            .execute("DROP INDEX names_heads_future_nf", [])
+            .execute("DROP INDEX ext_coppice_names_heads_future_nf", [])
             .unwrap();
         assert!(!store.derived_indexes_present().unwrap());
         store.rebuild_derived_indexes().unwrap();
@@ -1095,7 +1616,7 @@ mod tests {
         let sql: String = store
             .connection
             .query_row(
-                "SELECT sql FROM sqlite_master WHERE name = 'names_heads_future_nf'",
+                "SELECT sql FROM sqlite_master WHERE name = 'ext_coppice_names_heads_future_nf'",
                 [],
                 |row| row.get(0),
             )

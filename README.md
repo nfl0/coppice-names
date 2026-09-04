@@ -14,6 +14,7 @@ Zcash replay, or rendezvous semantics.
 
 ```text
 crates/coppice-names                 Names reducer, resolver, proofs, and wire
+crates/coppice-names-sqlite          Transactional indexed state and wallet adapter
 crates/coppice-names-wallet          Recoverable operation and V6 PCZT construction
 ruleset/names.json                   Canonical semantic ruleset identity
 test-vectors/                        Protocol conformance artifact

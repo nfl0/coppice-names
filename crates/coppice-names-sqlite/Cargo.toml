@@ -7,6 +7,10 @@ license = "Apache-2.0"
 repository = "https://github.com/nfl0/coppice-names"
 publish = false
 
+[features]
+default = []
+wallet-extension = ["dep:zcash_client_sqlite"]
+
 [lints]
 workspace = true
 
@@ -16,6 +20,7 @@ coppice-names.workspace = true
 rusqlite.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+zcash_client_sqlite = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = "3"

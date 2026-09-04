@@ -38,6 +38,7 @@ subtle = "2.6"
 # coppice-wallet and zcash-devtool. The Zakura forks do not alter this parser.
 zcash_address = "0.13.0"
 zcash_client_backend = { package = "zakura-client-backend", version = "=0.1.0-rc4" }
+zcash_client_sqlite = { package = "zakura-client-sqlite", version = "=0.1.0-rc4" }
 zcash_primitives = { package = "zakura-primitives", version = "=1.0.0", features = ["std"] }
 zcash_protocol = { version = "=0.10.5", features = ["std", "local-consensus"] }
 zeroize = "1"

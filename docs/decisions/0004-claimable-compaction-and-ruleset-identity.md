@@ -35,6 +35,12 @@ IDs, and RFC 8785 canonical JSON. Personalized BLAKE2b-256 under
 application version 2, adds an explicit preimage-encoding revision, and binds
 the 32-byte fingerprint. Unknown rulesets and old snapshots fail closed.
 
+Versioning has two axes. `Names v2` identifies the protocol family and its
+wire/circuit generation; the monotonic ruleset revision and fingerprint
+identify exact reducer semantics. A future normative semantic change updates
+the manifest and deployment identity, but does not require `v3` unless it also
+introduces an incompatible wire format, circuit family, or authority model.
+
 ## Consequences
 
 - Current authoritative head count is bounded by active and cooldown names,

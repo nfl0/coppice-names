@@ -491,6 +491,22 @@ mod tests {
                 tip_height: None,
             })
         );
+
+        let pre_activation_parameters = Parameters {
+            activation_height: 2,
+            ..parameters
+        };
+        let pre_activation = ExactResolver::new(
+            pre_activation_parameters,
+            [9; 32],
+            Name::parse("alice").unwrap(),
+            AcceptProofs,
+        )
+        .unwrap();
+        assert_eq!(
+            pre_activation.resolve(1).unwrap().lifecycle,
+            Lifecycle::Missing
+        );
         resolver
             .apply_block(&Block {
                 height: 0,

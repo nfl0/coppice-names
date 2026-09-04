@@ -657,6 +657,11 @@ impl<V: ProofVerifier> Reducer<V> {
         name: &Name,
         height: u32,
     ) -> Result<Resolution, ResolutionError> {
+        if self.tip_height.is_none()
+            && self.parameters.activation_height.checked_sub(1) == Some(height)
+        {
+            return Ok(self.resolve(name, height));
+        }
         if self.tip_height.is_none_or(|tip| height > tip) {
             return Err(ResolutionError::IncompleteHistory {
                 requested_height: height,

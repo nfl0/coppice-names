@@ -498,6 +498,8 @@ Exact resolution MUST return an explicit incomplete-history error when the
 requested height is beyond its authenticated canonical tip. It MUST NOT infer
 `Missing` merely from elapsed time because a same-block or later replacement
 may exist in evidence it has not processed.
+The authenticated activation-parent checkpoint is a complete pre-deployment
+view and resolves `Missing` even though no Names block has yet been applied.
 The current-state resolver MUST also reject a requested height below its tip as
 historical resolution unavailable. Historical answers require a separate
 authenticated replay ending at that height; current head state is never

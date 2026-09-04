@@ -1,6 +1,10 @@
 [workspace]
 resolver = "2"
-members = ["crates/coppice-names", "crates/coppice-names-wallet"]
+members = [
+    "crates/coppice-names",
+    "crates/coppice-names-sqlite",
+    "crates/coppice-names-wallet",
+]
 
 [workspace.package]
 edition = "2024"
@@ -12,7 +16,7 @@ repository = "https://github.com/nfl0/coppice-names"
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(zcash_unstable, values("nu7"))'] }
 
 [workspace.dependencies]
-coppice = { package = "coppice", git = "https://github.com/nfl0/coppice.git", rev = "eb7e2c926f5deab313a571217857d582c4275082" }
+coppice = { package = "coppice", git = "https://github.com/nfl0/coppice.git", rev = "a424c094a1fd802c7760d61c41031961a5a7c5ab" }
 coppice-names = { package = "coppice-names", path = "crates/coppice-names" }
 anyhow = "1"
 blake2b_simd = "1"
@@ -24,6 +28,7 @@ pasta_curves = { package = "zakura-pasta-curves", version = "=1.0.0" }
 rand_chacha = "0.10"
 rand = "0.10"
 rand_core = "0.10"
+rusqlite = "0.37"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"

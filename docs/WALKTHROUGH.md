@@ -286,7 +286,8 @@ names is [SPEC §15](SPECIFICATION.md#15-rejection-taxonomy).
 | Registration latency | Bounded by schedule: maturity (24 blocks) + up to one epoch to the next window |
 | Renewal cadence | At least once per 250,000-block lease; each REFRESH restarts the lease in full |
 | Release latency | Immediate (ordinary spend); name then sits out one epoch of cooldown |
-| Resolver storage | ~143 MB rolling compact evidence for a six-month horizon (measured baseline), or less with the sparse fallback; derived, reconstructible, never authority |
+| Exact/owned resolver evidence | ~143 MB rolling compact evidence for a six-month horizon (historical measured baseline), or less with sparse acquisition; derived and reconstructible |
+| Complete local Names state | Indexed local records derived from the user's archival canonical history; a 1M-active-head SQLite proxy measured ~489 MB, but this is neither a trusted global directory nor a mobile result |
 
 ## 10. Where to go next
 

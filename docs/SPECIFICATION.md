@@ -551,6 +551,31 @@ transition as the block containing its candidate REVEAL. A failed block leaves
 no referenced evidence behind, and rolling back that block removes evidence
 that was not already present from forward replay.
 
+A complete local implementation SHOULD persist heads and pending COMMITs as
+individually indexed authoritative records rather than rewriting one monolithic
+snapshot per block. A future-nullifier index MUST be non-unique: if several
+accepted heads carry the same future nullifier, an authenticated spend
+terminates every matching current head. Expiry, terminal-height, and COMMIT
+height indexes are reconstructible acceleration and MUST NOT become protocol
+authority. Index disagreement is an integrity failure; the implementation must
+refuse the questionable result and rebuild from authoritative records.
+
+The host transaction spans wallet scan state, staged Core advancement, Names
+records, indexes, and rollback journals. It commits only after every layer
+succeeds. A deterministic block error may leave a preceding block-aligned
+prefix eligible to commit through a savepoint; a storage, integrity,
+transaction, interruption, or panic failure rolls back the complete outer
+batch. A panic also requires controlled host restart from durable state.
+
+Every persisted view records explicit `Complete`, `Exact(NameId)`, or `Owned`
+coverage. Only complete coverage or exact coverage for the requested name may
+establish absence, and only at the exact authenticated `(height, block_hash)`
+tip. Negative cache entries are invalidated by tip advance or reorganization.
+Remote Names snapshots are not authority. Public chain-derived state may be
+replayed when its schema is unsupported; account-private workflow, custody,
+locks, and recovery state requires explicit migration or documented fail-closed
+recovery and must never be silently discarded.
+
 ## 13. Wallet recovery policy (non-normative)
 
 The companion wallet crate implements a simple recoverable policy:

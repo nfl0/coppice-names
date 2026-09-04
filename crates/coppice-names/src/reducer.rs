@@ -185,6 +185,32 @@ pub struct BlockOutcome {
     pub decisions: Vec<OperationDecision>,
     pub compacted: Vec<Compaction>,
     pub terminated: Vec<Termination>,
+    /// Exact authoritative record changes for incremental transactional
+    /// persistence. Derived indexes are deliberately absent.
+    pub state_delta: StateDelta,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HeadChange {
+    pub name_id: NameId,
+    pub previous: Option<Head>,
+    pub current: Option<Head>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CommitChange {
+    pub reference: CommitRef,
+    pub previous: Option<Commitment>,
+    pub current: Option<Commitment>,
+}
+
+/// One atomic transition between authenticated canonical tips.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StateDelta {
+    pub from_tip: Option<ReducerTip>,
+    pub to_tip: Option<ReducerTip>,
+    pub heads: Vec<HeadChange>,
+    pub commits: Vec<CommitChange>,
 }
 
 /// Clause-addressed result for one canonically ordered transaction operation.
@@ -299,6 +325,12 @@ pub struct Reducer<V> {
     previous_hash: [u8; 32],
     commits: BTreeMap<CommitRef, Commitment>,
     heads: BTreeMap<NameId, Head>,
+    // Rebuildable acceleration only. None of these indexes is protocol
+    // evidence; authoritative records above decide every transition.
+    commits_by_height: BTreeMap<u32, BTreeSet<CommitRef>>,
+    heads_by_future_nf: BTreeMap<[u8; 32], BTreeSet<NameId>>,
+    active_heads_by_expiry: BTreeMap<u32, BTreeSet<NameId>>,
+    terminal_heads_by_height: BTreeMap<u32, BTreeSet<NameId>>,
     history: VecDeque<Undo>,
 }
 
@@ -319,6 +351,10 @@ impl<V: ProofVerifier> Reducer<V> {
             previous_hash: activation_parent_hash,
             commits: BTreeMap::new(),
             heads: BTreeMap::new(),
+            commits_by_height: BTreeMap::new(),
+            heads_by_future_nf: BTreeMap::new(),
+            active_heads_by_expiry: BTreeMap::new(),
+            terminal_heads_by_height: BTreeMap::new(),
             history: VecDeque::new(),
         })
     }
@@ -398,13 +434,14 @@ impl<V: ProofVerifier> Reducer<V> {
             }
         }
 
+        let from_tip = self.tip();
         let mut undo = self.new_undo(block.height, block.hash);
         self.mark_expired(block.height, &mut undo);
         let compacted = self.compact_claimable(block.height, &mut undo);
         self.prune_commits(block.height, &mut undo);
         for (reference, commitment) in supplied {
             self.remember_commit(&mut undo, reference);
-            self.commits.insert(reference, commitment);
+            self.replace_commit(reference, Some(commitment));
         }
         let mut accepted = Vec::new();
         let mut decisions = Vec::new();
@@ -424,12 +461,14 @@ impl<V: ProofVerifier> Reducer<V> {
         self.next_height = block.height.checked_add(1);
         self.tip_height = Some(block.height);
         self.previous_hash = block.hash;
+        let state_delta = self.delta_from_undo(from_tip, self.tip(), &undo);
         self.history.push_back(undo);
         Ok(BlockOutcome {
             accepted,
             decisions,
             compacted,
             terminated,
+            state_delta,
         })
     }
 
@@ -446,6 +485,15 @@ impl<V: ProofVerifier> Reducer<V> {
 
     /// Reverts exactly the current canonical tip without replaying older state.
     pub fn rollback_tip(&mut self, expected_hash: [u8; 32]) -> Result<(), RollbackError> {
+        self.rollback_tip_detailed(expected_hash).map(|_| ())
+    }
+
+    /// Reverts the current tip and returns the exact inverse record delta for
+    /// transactional persistence.
+    pub fn rollback_tip_detailed(
+        &mut self,
+        expected_hash: [u8; 32],
+    ) -> Result<StateDelta, RollbackError> {
         let undo = self.history.back().ok_or_else(|| {
             if self.tip_height.is_some() {
                 RollbackError::BeyondRetention
@@ -456,31 +504,47 @@ impl<V: ProofVerifier> Reducer<V> {
         if undo.hash != expected_hash || self.previous_hash != expected_hash {
             return Err(RollbackError::WrongTipHash);
         }
+        let from_tip = self.tip();
         let undo = self.history.pop_back().expect("checked nonempty history");
+        let current_commits = undo
+            .commits
+            .keys()
+            .map(|reference| (*reference, self.commits.get(reference).copied()))
+            .collect::<BTreeMap<_, _>>();
+        let current_heads = undo
+            .heads
+            .keys()
+            .map(|name_id| (*name_id, self.heads.get(name_id).cloned()))
+            .collect::<BTreeMap<_, _>>();
         for (commit_ref, previous) in undo.commits {
-            match previous {
-                Some(commitment) => {
-                    self.commits.insert(commit_ref, commitment);
-                }
-                None => {
-                    self.commits.remove(&commit_ref);
-                }
-            }
+            self.replace_commit(commit_ref, previous);
         }
         for (name_id, previous) in undo.heads {
-            match previous {
-                Some(head) => {
-                    self.heads.insert(name_id, head);
-                }
-                None => {
-                    self.heads.remove(&name_id);
-                }
-            }
+            self.replace_head(name_id, previous);
         }
         self.previous_hash = undo.previous_hash;
         self.next_height = undo.previous_next_height;
         self.tip_height = undo.previous_tip_height;
-        Ok(())
+        Ok(StateDelta {
+            from_tip,
+            to_tip: self.tip(),
+            commits: current_commits
+                .into_iter()
+                .map(|(reference, previous)| CommitChange {
+                    reference,
+                    previous,
+                    current: self.commits.get(&reference).copied(),
+                })
+                .collect(),
+            heads: current_heads
+                .into_iter()
+                .map(|(name_id, previous)| HeadChange {
+                    name_id,
+                    previous,
+                    current: self.heads.get(&name_id).cloned(),
+                })
+                .collect(),
+        })
     }
 
     /// Permanently drops rollback journals at or below a finalized height.
@@ -579,7 +643,7 @@ impl<V: ProofVerifier> Reducer<V> {
             return Err(SnapshotError::InvalidHistory);
         }
 
-        Ok(Self {
+        let mut reducer = Self {
             parameters,
             verifier,
             next_height: stored.next_height,
@@ -587,8 +651,14 @@ impl<V: ProofVerifier> Reducer<V> {
             previous_hash: stored.previous_hash,
             commits,
             heads,
+            commits_by_height: BTreeMap::new(),
+            heads_by_future_nf: BTreeMap::new(),
+            active_heads_by_expiry: BTreeMap::new(),
+            terminal_heads_by_height: BTreeMap::new(),
             history,
-        })
+        };
+        reducer.rebuild_derived_indexes();
+        Ok(reducer)
     }
 
     pub(crate) fn is_exact_for(&self, name_id: NameId) -> bool {
@@ -696,48 +766,173 @@ impl<V: ProofVerifier> Reducer<V> {
             .or_insert_with(|| self.heads.get(&name_id).cloned());
     }
 
+    fn delta_from_undo(
+        &self,
+        from_tip: Option<ReducerTip>,
+        to_tip: Option<ReducerTip>,
+        undo: &Undo,
+    ) -> StateDelta {
+        StateDelta {
+            from_tip,
+            to_tip,
+            commits: undo
+                .commits
+                .iter()
+                .map(|(reference, previous)| CommitChange {
+                    reference: *reference,
+                    previous: *previous,
+                    current: self.commits.get(reference).copied(),
+                })
+                .collect(),
+            heads: undo
+                .heads
+                .iter()
+                .map(|(name_id, previous)| HeadChange {
+                    name_id: *name_id,
+                    previous: previous.clone(),
+                    current: self.heads.get(name_id).cloned(),
+                })
+                .collect(),
+        }
+    }
+
+    fn replace_commit(&mut self, reference: CommitRef, commitment: Option<Commitment>) {
+        if self.commits.remove(&reference).is_some()
+            && let Some(bucket) = self.commits_by_height.get_mut(&reference.height)
+        {
+            bucket.remove(&reference);
+            if bucket.is_empty() {
+                self.commits_by_height.remove(&reference.height);
+            }
+        }
+        if let Some(commitment) = commitment {
+            self.commits.insert(reference, commitment);
+            self.commits_by_height
+                .entry(reference.height)
+                .or_default()
+                .insert(reference);
+        }
+    }
+
+    fn replace_head(&mut self, name_id: NameId, head: Option<Head>) {
+        if let Some(previous) = self.heads.remove(&name_id) {
+            remove_index_entry(
+                &mut self.heads_by_future_nf,
+                previous.future_nf.to_bytes(),
+                name_id,
+            );
+            match previous.terminal_height {
+                Some(height) => {
+                    remove_index_entry(&mut self.terminal_heads_by_height, height, name_id)
+                }
+                None => remove_index_entry(
+                    &mut self.active_heads_by_expiry,
+                    previous.expiry_height,
+                    name_id,
+                ),
+            }
+        }
+        if let Some(head) = head {
+            self.heads_by_future_nf
+                .entry(head.future_nf.to_bytes())
+                .or_default()
+                .insert(name_id);
+            match head.terminal_height {
+                Some(height) => {
+                    self.terminal_heads_by_height
+                        .entry(height)
+                        .or_default()
+                        .insert(name_id);
+                }
+                None => {
+                    self.active_heads_by_expiry
+                        .entry(head.expiry_height)
+                        .or_default()
+                        .insert(name_id);
+                }
+            }
+            self.heads.insert(name_id, head);
+        }
+    }
+
+    fn rebuild_derived_indexes(&mut self) {
+        self.commits_by_height.clear();
+        self.heads_by_future_nf.clear();
+        self.active_heads_by_expiry.clear();
+        self.terminal_heads_by_height.clear();
+        for reference in self.commits.keys().copied() {
+            self.commits_by_height
+                .entry(reference.height)
+                .or_default()
+                .insert(reference);
+        }
+        for (name_id, head) in &self.heads {
+            self.heads_by_future_nf
+                .entry(head.future_nf.to_bytes())
+                .or_default()
+                .insert(*name_id);
+            match head.terminal_height {
+                Some(height) => {
+                    self.terminal_heads_by_height
+                        .entry(height)
+                        .or_default()
+                        .insert(*name_id);
+                }
+                None => {
+                    self.active_heads_by_expiry
+                        .entry(head.expiry_height)
+                        .or_default()
+                        .insert(*name_id);
+                }
+            }
+        }
+    }
+
     fn prune_commits(&mut self, height: u32, undo: &mut Undo) {
-        let expired: Vec<_> = self
-            .commits
-            .keys()
-            .copied()
-            .filter(|commit_ref| {
-                height
-                    .checked_sub(commit_ref.height)
-                    .is_some_and(|age| age >= self.parameters.commit_ttl_blocks)
-            })
-            .collect();
+        let Some(last_expired_height) = height.checked_sub(self.parameters.commit_ttl_blocks)
+        else {
+            return;
+        };
+        let expired = self
+            .commits_by_height
+            .range(..=last_expired_height)
+            .flat_map(|(_, references)| references.iter().copied())
+            .collect::<Vec<_>>();
         for commit_ref in expired {
             self.remember_commit(undo, commit_ref);
-            self.commits.remove(&commit_ref);
+            self.replace_commit(commit_ref, None);
         }
     }
 
     fn mark_expired(&mut self, height: u32, undo: &mut Undo) {
-        let expired: Vec<_> = self
-            .heads
-            .iter()
-            .filter(|(_, head)| head.terminal_height.is_none() && height >= head.expiry_height)
-            .map(|(name_id, _)| *name_id)
-            .collect();
+        let expired = self
+            .active_heads_by_expiry
+            .range(..=height)
+            .flat_map(|(_, name_ids)| name_ids.iter().copied())
+            .collect::<Vec<_>>();
         for name_id in expired {
             self.remember_head(undo, name_id);
-            if let Some(head) = self.heads.get_mut(&name_id) {
+            if let Some(mut head) = self.heads.get(&name_id).cloned() {
                 head.terminal_height = Some(head.expiry_height);
+                self.replace_head(name_id, Some(head));
             }
         }
     }
 
     fn compact_claimable(&mut self, height: u32, undo: &mut Undo) -> Vec<Compaction> {
-        let claimable: Vec<_> = self
-            .heads
-            .iter()
-            .filter(|(_, head)| head.is_claimable(height, self.parameters))
-            .map(|(name_id, head)| (*name_id, head.producer))
-            .collect();
+        let Some(last_claimable_terminal) = height.checked_sub(self.parameters.cooldown_blocks)
+        else {
+            return Vec::new();
+        };
+        let claimable = self
+            .terminal_heads_by_height
+            .range(..=last_claimable_terminal)
+            .flat_map(|(_, name_ids)| name_ids.iter().copied())
+            .map(|name_id| (name_id, self.heads[&name_id].producer))
+            .collect::<Vec<_>>();
         for (name_id, _) in &claimable {
             self.remember_head(undo, *name_id);
-            self.heads.remove(name_id);
+            self.replace_head(*name_id, None);
         }
         claimable
             .into_iter()
@@ -767,17 +962,16 @@ impl<V: ProofVerifier> Reducer<V> {
         undo: &mut Undo,
         terminated: &mut Vec<Termination>,
     ) -> OperationDecision {
-        let spent: Vec<(NameId, StateRef)> = self
-            .heads
+        let spent = transaction
+            .actions
             .iter()
-            .filter(|(_, head)| {
-                transaction
-                    .actions
-                    .iter()
-                    .any(|action| action.nullifier == head.future_nf)
-            })
-            .map(|(name_id, head)| (*name_id, head.producer))
-            .collect();
+            .filter_map(|action| self.heads_by_future_nf.get(&action.nullifier.to_bytes()))
+            .flatten()
+            .copied()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .map(|name_id| (name_id, self.heads[&name_id].producer))
+            .collect::<Vec<_>>();
 
         let decision = match transaction.operation.as_ref() {
             Some(Operation::Commit { commitment }) => {
@@ -787,7 +981,7 @@ impl<V: ProofVerifier> Reducer<V> {
                     txid: transaction.txid,
                 };
                 self.remember_commit(undo, commit_ref);
-                self.commits.insert(commit_ref, *commitment);
+                self.replace_commit(commit_ref, Some(*commitment));
                 OperationDecision {
                     accepted: Some(Accepted::Commit),
                     clause_id: "NAMES.COMMIT.ACCEPT",
@@ -824,7 +1018,7 @@ impl<V: ProofVerifier> Reducer<V> {
         };
 
         for (name_id, spent_producer) in spent {
-            if let Some(head) = self.heads.get_mut(&name_id)
+            if let Some(mut head) = self.heads.get(&name_id).cloned()
                 && head.producer == spent_producer
             {
                 undo.heads
@@ -832,6 +1026,7 @@ impl<V: ProofVerifier> Reducer<V> {
                     .or_insert_with(|| Some(head.clone()));
                 if head.terminal_height.is_none() {
                     head.terminal_height = Some(height);
+                    self.replace_head(name_id, Some(head));
                     terminated.push(Termination {
                         name_id,
                         previous_head: spent_producer,
@@ -903,9 +1098,9 @@ impl<V: ProofVerifier> Reducer<V> {
             .expiry(height)
             .map_err(|_| "NAMES.REVEAL.SCHEDULE")?;
         self.remember_head(undo, name_id);
-        self.heads.insert(
+        self.replace_head(
             name_id,
-            Head {
+            Some(Head {
                 name: name.clone(),
                 ua: ua.clone(),
                 producer: StateRef {
@@ -919,7 +1114,7 @@ impl<V: ProofVerifier> Reducer<V> {
                 producer_epoch: epoch,
                 expiry_height,
                 terminal_height: None,
-            },
+            }),
         );
         Ok(name_id)
     }
@@ -992,9 +1187,9 @@ impl<V: ProofVerifier> Reducer<V> {
             .expiry(height)
             .map_err(|_| "NAMES.REFRESH.SCHEDULE")?;
         self.remember_head(undo, name_id);
-        self.heads.insert(
+        self.replace_head(
             name_id,
-            Head {
+            Some(Head {
                 name: name.clone(),
                 ua: ua.clone(),
                 producer: StateRef {
@@ -1008,9 +1203,25 @@ impl<V: ProofVerifier> Reducer<V> {
                 producer_epoch: epoch,
                 expiry_height,
                 terminal_height: None,
-            },
+            }),
         );
         Ok(name_id)
+    }
+}
+
+fn remove_index_entry<K: Ord + Copy, V: Ord>(
+    index: &mut BTreeMap<K, BTreeSet<V>>,
+    key: K,
+    value: V,
+) {
+    let remove_bucket = if let Some(bucket) = index.get_mut(&key) {
+        bucket.remove(&value);
+        bucket.is_empty()
+    } else {
+        false
+    };
+    if remove_bucket {
+        index.remove(&key);
     }
 }
 
@@ -1342,7 +1553,7 @@ mod tests {
         };
         let commitment = Commitment::from_bytes(pallas::Base::from(9).to_repr()).unwrap();
         let mut reducer = Reducer::new(parameters, [0; 32], AcceptProofs).unwrap();
-        reducer.commits.insert(commit_ref, commitment);
+        reducer.replace_commit(commit_ref, Some(commitment));
         let reveal = Transaction {
             tx_index: 0,
             txid: [2; 32],
@@ -1423,9 +1634,9 @@ mod tests {
         let name_id = name.id().unwrap();
         let parameters = parameters();
         let mut reducer = Reducer::new(parameters, [0; 32], AcceptProofs).unwrap();
-        reducer.heads.insert(
+        reducer.replace_head(
             name_id,
-            Head {
+            Some(Head {
                 name: name.clone(),
                 ua: ua(),
                 producer: StateRef {
@@ -1439,7 +1650,7 @@ mod tests {
                 producer_epoch: 0,
                 expiry_height: 51,
                 terminal_height: None,
-            },
+            }),
         );
         let transaction = Transaction {
             tx_index: 0,
@@ -1468,6 +1679,49 @@ mod tests {
     }
 
     #[test]
+    fn one_nullifier_spend_terminates_every_matching_head() {
+        let parameters = parameters();
+        let mut reducer = Reducer::new(parameters, [0; 32], AcceptProofs).unwrap();
+        let shared_future_nf = field(3);
+        let names = [Name::parse("alice").unwrap(), Name::parse("bob").unwrap()];
+        for (position, name) in names.iter().enumerate() {
+            reducer.replace_head(
+                name.id().unwrap(),
+                Some(Head {
+                    name: name.clone(),
+                    ua: ua(),
+                    producer: StateRef {
+                        height: 1,
+                        tx_index: position as u32,
+                        txid: [position as u8 + 1; 32],
+                        action_index: 0,
+                    },
+                    commitment: field(position as u64 + 10),
+                    future_nf: shared_future_nf,
+                    producer_epoch: 0,
+                    expiry_height: 51,
+                    terminal_height: None,
+                }),
+            );
+        }
+        let transaction = Transaction {
+            tx_index: 0,
+            txid: [8; 32],
+            actions: vec![Action {
+                action_index: 0,
+                nullifier: shared_future_nf,
+                commitment: field(9),
+            }],
+            operation: None,
+        };
+
+        assert_eq!(apply_transaction(&mut reducer, 25, &transaction), None);
+        for name in names {
+            assert_eq!(reducer.heads[&name.id().unwrap()].terminal_height, Some(25));
+        }
+    }
+
+    #[test]
     fn reclaim_spending_expired_head_does_not_terminate_new_head() {
         let name = Name::parse("alice").unwrap();
         let name_id = name.id().unwrap();
@@ -1481,9 +1735,9 @@ mod tests {
             txid: [7; 32],
         };
         let mut reducer = Reducer::new(parameters, [0; 32], AcceptProofs).unwrap();
-        reducer.heads.insert(
+        reducer.replace_head(
             name_id,
-            Head {
+            Some(Head {
                 name: name.clone(),
                 ua: ua(),
                 producer: StateRef {
@@ -1497,11 +1751,11 @@ mod tests {
                 producer_epoch: 0,
                 expiry_height: 2,
                 terminal_height: Some(2),
-            },
+            }),
         );
-        reducer.commits.insert(
+        reducer.replace_commit(
             commit_ref,
-            Commitment::from_bytes(pallas::Base::from(8).to_repr()).unwrap(),
+            Some(Commitment::from_bytes(pallas::Base::from(8).to_repr()).unwrap()),
         );
 
         let reclaim = Transaction {
@@ -1574,10 +1828,10 @@ mod tests {
         reducer.next_height = Some(replacement_height);
         reducer.tip_height = replacement_height.checked_sub(1);
         reducer.previous_hash = [4; 32];
-        reducer.heads.insert(name_id, old.clone());
-        reducer.commits.insert(
+        reducer.replace_head(name_id, Some(old.clone()));
+        reducer.replace_commit(
             commit_ref,
-            Commitment::from_bytes(pallas::Base::from(8).to_repr()).unwrap(),
+            Some(Commitment::from_bytes(pallas::Base::from(8).to_repr()).unwrap()),
         );
         let replacement = Transaction {
             tx_index: 0,
@@ -1616,8 +1870,24 @@ mod tests {
         let replacement_head = reducer.resolve(&name, replacement_height).head.unwrap();
         assert_ne!(replacement_head.producer, old.producer);
         assert_eq!(replacement_head.terminal_height, None);
+        assert_eq!(
+            outcome.state_delta.heads,
+            vec![HeadChange {
+                name_id,
+                previous: Some(old.clone()),
+                current: Some(replacement_head.clone()),
+            }]
+        );
 
-        reducer.rollback_tip(block.hash).unwrap();
+        let inverse = reducer.rollback_tip_detailed(block.hash).unwrap();
+        assert_eq!(
+            inverse.heads,
+            vec![HeadChange {
+                name_id,
+                previous: Some(replacement_head),
+                current: Some(old.clone()),
+            }]
+        );
         assert_eq!(reducer.heads.get(&name_id), Some(&old));
         assert_eq!(
             reducer.resolve(&name, replacement_height - 1).lifecycle,
@@ -1691,7 +1961,7 @@ mod tests {
             expiry_height: 50,
             terminal_height: None,
         };
-        reducer.heads.insert(name_id, original.clone());
+        reducer.replace_head(name_id, Some(original.clone()));
         let abandoned = Block {
             height: 25,
             hash: [5; 32],
